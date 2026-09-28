@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-09-28
+
+### Fixed
+
+- Prevent OpenCode V2 permission reviews from starting additional configured
+  MCP processes for each review. Reviews now share an isolated Location without
+  MCP servers while keeping their sessions independent.
+- Retry reviewer Location setup after a transient failure and clean up reviewer
+  hooks registered after a Location reload.
+
 ## [2.3.0] - 2026-09-24
 
 ### Added
