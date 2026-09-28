@@ -102,6 +102,7 @@ async function fixture(
     createBackend: () => ({
       owns: () => false,
       waitForIdle: async () => {},
+      dispose: async () => {},
       review: async () => {
         reviews++
         await options.delay

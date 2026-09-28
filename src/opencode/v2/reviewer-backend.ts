@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto"
-import { rm, unlink } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { OpenCodeClient } from "@opencode/client"
@@ -44,10 +43,20 @@ interface PendingGeneration {
   closing?: boolean
 }
 
+interface ReviewerLocation {
+  directory: string
+  dispose(): Promise<void>
+  release(): void
+}
+
 /** Owns auxiliary sessions and host hooks, never operational permission replies. */
 export class V2ReviewerBackend {
   private readonly sessions = new Map<string, PendingGeneration>()
   private readonly jobs = new Set<Promise<ReviewExecutionResult>>()
+  private readonly locationAbort = new AbortController()
+  private locationPromise?: Promise<ReviewerLocation>
+  private disposal?: Promise<void>
+  private closing = false
   constructor(
     private readonly ctx: Context,
     private readonly config: ReviewerConfig,
@@ -59,64 +68,70 @@ export class V2ReviewerBackend {
 
   async register(ctx: Context = this.ctx): Promise<() => Promise<void>> {
     const registrations: Array<{ dispose(): Promise<void> }> = []
-    registrations.push(
-      await ctx.tool.transform((editor) =>
-        editor.add({
-          name: TOOL,
-          description:
-            "Return exactly one final permission review decision matching the required schema.",
-          options: { codemode: false, permission: TOOL },
-          input: resultSchema,
-          execute: async (input, execution) => {
-            const pending = this.sessions.get(execution.sessionID)
-            if (!pending?.attempt.active() || pending.closing || !pending.structured)
-              throw new Error("Not an active structured reviewer session")
-            const decision = parseDecision(input)
-            if (!decision) throw new Error("Invalid review decision")
-            pending.results.push(decision)
-            if (pending.results.length > 1)
-              throw new Error("Multiple review decisions are ambiguous")
-            return { content: "Decision captured. Finish without further actions." }
-          },
+    try {
+      registrations.push(
+        await ctx.tool.transform((editor) =>
+          editor.add({
+            name: TOOL,
+            description:
+              "Return exactly one final permission review decision matching the required schema.",
+            options: { codemode: false, permission: TOOL },
+            input: resultSchema,
+            execute: async (input, execution) => {
+              const pending = this.sessions.get(execution.sessionID)
+              if (!pending?.attempt.active() || pending.closing || !pending.structured)
+                throw new Error("Not an active structured reviewer session")
+              const decision = parseDecision(input)
+              if (!decision) throw new Error("Invalid review decision")
+              pending.results.push(decision)
+              if (pending.results.length > 1)
+                throw new Error("Multiple review decisions are ambiguous")
+              return { content: "Decision captured. Finish without further actions." }
+            },
+          }),
+        ),
+      )
+      registrations.push(
+        await ctx.session.hook("context", (event) => {
+          const pending = this.sessions.get(event.sessionID)
+          if (!pending) {
+            delete event.tools[TOOL]
+            return
+          }
+          if (pending.closing || !pending.attempt.active())
+            throw new Error("Review no longer active")
+          event.system = [
+            {
+              type: "text",
+              text:
+                REVIEWER_SYSTEM_PROMPT +
+                (pending.structured
+                  ? `\nReturn the decision using ${TOOL} exactly once, then stop.`
+                  : ""),
+            },
+          ]
+          event.messages = [{ role: "user", content: [{ type: "text", text: pending.prompt }] }]
+          const definition = event.tools[TOOL]
+          event.tools =
+            pending.structured && pending.results.length === 0 && definition
+              ? { [TOOL]: definition }
+              : {}
         }),
-      ),
-    )
-    registrations.push(
-      await ctx.session.hook("context", (event) => {
-        const pending = this.sessions.get(event.sessionID)
-        if (!pending) {
-          delete event.tools[TOOL]
-          return
-        }
-        if (pending.closing || !pending.attempt.active()) throw new Error("Review no longer active")
-        event.system = [
-          {
-            type: "text",
-            text:
-              REVIEWER_SYSTEM_PROMPT +
-              (pending.structured
-                ? `\nReturn the decision using ${TOOL} exactly once, then stop.`
-                : ""),
-          },
-        ]
-        event.messages = [{ role: "user", content: [{ type: "text", text: pending.prompt }] }]
-        const definition = event.tools[TOOL]
-        event.tools =
-          pending.structured && pending.results.length === 0 && definition
-            ? { [TOOL]: definition }
-            : {}
-      }),
-    )
-    registrations.push(
-      await ctx.tool.hook("execute.before", (event) => {
-        const pending = this.sessions.get(event.sessionID)
-        if (pending && (pending.closing || event.tool !== TOOL)) {
-          throw new Error("Operational tools are disabled in reviewer sessions")
-        }
-      }),
-    )
-    return async () => {
-      await Promise.all(registrations.map((registration) => registration.dispose()))
+      )
+      registrations.push(
+        await ctx.tool.hook("execute.before", (event) => {
+          const pending = this.sessions.get(event.sessionID)
+          if (pending && (pending.closing || event.tool !== TOOL)) {
+            throw new Error("Operational tools are disabled in reviewer sessions")
+          }
+        }),
+      )
+      return async () => {
+        await Promise.all(registrations.map((registration) => registration.dispose()))
+      }
+    } catch (error) {
+      await Promise.allSettled(registrations.map((registration) => registration.dispose()))
+      throw error
     }
   }
 
@@ -125,6 +140,7 @@ export class V2ReviewerBackend {
     attempt: ReviewAttempt,
     client: OpenCodeClient,
   ): Promise<ReviewExecutionResult> {
+    if (this.closing) throw new Error("Reviewer backend is shutting down")
     if (this.sessions.size >= 64) throw new Error("Reviewer session cleanup capacity exhausted")
     const job = this.runReview(envelope, attempt, client).finally(() => this.jobs.delete(job))
     this.jobs.add(job)
@@ -135,6 +151,48 @@ export class V2ReviewerBackend {
     await Promise.allSettled([...this.jobs])
   }
 
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal
+    this.closing = true
+    this.locationAbort.abort(new Error("Reviewer backend is shutting down"))
+    this.disposal = (async () => {
+      await this.waitForIdle()
+      const location = await this.locationPromise?.catch(() => undefined)
+      // An uncertain session deletion must retain the guards in its cached location.
+      if (!location || this.sessions.size > 0) return
+      try {
+        await location.dispose()
+      } finally {
+        location.release()
+      }
+    })()
+    return this.disposal
+  }
+
+  private ensureLocation(client: OpenCodeClient): Promise<ReviewerLocation> {
+    this.locationPromise ??= this.openLocation(client)
+    return this.locationPromise
+  }
+
+  private async openLocation(client: OpenCodeClient): Promise<ReviewerLocation> {
+    let dispose: (() => Promise<void>) | undefined
+    const isolated = await createIsolatedLocation(async (context) => {
+      dispose = await this.register(context)
+      return dispose
+    })
+    try {
+      const signal = AbortSignal.any([this.locationAbort.signal, AbortSignal.timeout(15_000)])
+      await waitForIsolationActive(client, isolated.directory, isolated.pluginID, signal)
+      if (!dispose) throw new Error("Reviewer isolation hooks did not activate")
+      return { directory: isolated.directory, dispose, release: isolated.release }
+    } catch (error) {
+      await dispose?.().catch(() => {})
+      isolated.release()
+      // The host may have cached this location, so its MCP exclusion stays on disk.
+      throw error
+    }
+  }
+
   private async runReview(
     envelope: ReviewEnvelope,
     attempt: ReviewAttempt,
@@ -142,21 +200,16 @@ export class V2ReviewerBackend {
   ): Promise<ReviewExecutionResult> {
     const { providerID, modelID } = splitModel(this.config.model)
     const id = `ses_${randomBytes(16).toString("hex")}`
-    let directory: string | undefined
-    let release: (() => void) | undefined
-    let dispose: (() => Promise<void>) | undefined
     let createIssued = false
     try {
-      const isolated = await createIsolatedLocation(async (context) => {
-        dispose = await this.register(context)
-        return dispose
-      })
-      directory = isolated.directory
-      release = isolated.release
-      await attempt.wait(
-        waitForIsolationActive(client, directory, isolated.pluginID, attempt.signal),
+      const { directory } = await attempt.wait(this.ensureLocation(client))
+      const inventory = await attempt.wait(
+        client.mcp.list({ location: { directory } }, { signal: attempt.signal }),
       )
-      if (!dispose) throw new Error("Reviewer isolation hooks did not activate")
+      if (inventory.location.directory !== directory)
+        throw new Error("Reviewer MCP inventory belongs to another location")
+      if (inventory.data.length > 0)
+        throw new Error("Reviewer isolation location contains MCP servers")
       const catalog = await attempt.wait(
         client.model.list({ location: { directory } }, { signal: attempt.signal }),
       )
@@ -329,21 +382,6 @@ export class V2ReviewerBackend {
         }
       } finally {
         if (cleanupConfirmed) this.sessions.delete(id)
-        try {
-          if (cleanupConfirmed) await dispose?.()
-        } finally {
-          if (cleanupConfirmed) release?.()
-          if (directory && cleanupConfirmed) {
-            if (!this.config.retainReviewSessions)
-              await rm(directory, { recursive: true, force: true })
-            else
-              await Promise.all(
-                ["index.js", "package.json", "opencode.json"].map((file) =>
-                  unlink(join(directory!, file)),
-                ),
-              )
-          }
-        }
       }
     }
   }

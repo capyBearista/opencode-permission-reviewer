@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { rm } from "node:fs/promises"
+import { readFile, rm } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
 import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
@@ -35,6 +35,7 @@ function fixture(
     activationFailed?: boolean
     activationDelayed?: boolean
     activationRepresentation?: "directory-slash" | "file-url" | "id-only" | "id-new-path"
+    mcpServers?: boolean | "after-first"
   } = {},
 ) {
   let tool!: Tool
@@ -42,8 +43,12 @@ function fixture(
   let toolHook!: (event: { sessionID: string; tool: string }) => void
   let directory = ""
   let sessionID = ""
-  let removed = false
+  const sessionIDs: string[] = []
+  const removed = new Set<string>()
+  const messagesBySession = new Map<string, string>()
+  const attempts: ReviewAttempt[] = []
   let prompts = 0
+  let mcpLists = 0
   let disposed = 0
   let checks = 0
   let setups = 0
@@ -133,6 +138,18 @@ function fixture(
             ],
       }),
     },
+    mcp: {
+      list: async () => {
+        mcpLists++
+        return {
+          location: { directory },
+          data:
+            options.mcpServers === true || (options.mcpServers === "after-first" && mcpLists > 1)
+              ? [{ name: "fixture" }]
+              : [],
+        }
+      },
+    },
     session: {
       create: async (input: {
         id: string
@@ -140,29 +157,33 @@ function fixture(
         permissions: unknown[]
       }) => {
         sessionID = input.id
+        sessionIDs.push(sessionID)
         expect(input.permissions[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
         return {
           id: sessionID,
           location: { directory: options.wrongLocation ? "/workspace/operational" : directory },
         }
       },
-      prompt: async () => {
+      prompt: async ({ sessionID: current }: { sessionID: string }) => {
         prompts++
         const event: ContextEvent = {
-          sessionID,
+          sessionID: current,
           system: ["UNTRUSTED_SYSTEM"],
           messages: ["UNTRUSTED_HISTORY"],
           tools: { permission_reviewer_result: tool, shell: {} },
         }
         contextHook(event)
+        messagesBySession.set(current, JSON.stringify(event.messages))
         expect(JSON.stringify(event.system)).not.toContain("UNTRUSTED_SYSTEM")
         expect(JSON.stringify(event.messages)).not.toContain("UNTRUSTED_HISTORY")
         expect(event.tools.shell).toBeUndefined()
-        expect(() => toolHook({ sessionID, tool: "shell" })).toThrow("Operational tools")
+        expect(() => toolHook({ sessionID: current, tool: "shell" })).toThrow("Operational tools")
         if (options.format !== "text" && !options.invalid) {
-          await tool.execute(tool.input.parse(decision("allow")), { sessionID })
+          await tool.execute(tool.input.parse(decision("allow")), { sessionID: current })
           if (options.ambiguous)
-            await expect(tool.execute(decision("deny"), { sessionID })).rejects.toThrow("ambiguous")
+            await expect(tool.execute(decision("deny"), { sessionID: current })).rejects.toThrow(
+              "ambiguous",
+            )
         }
         return { id: "inbox_fixture" }
       },
@@ -195,12 +216,12 @@ function fixture(
         },
       ],
       interrupt: async () => {},
-      remove: async () => {
-        removed = true
+      remove: async ({ sessionID: current }: { sessionID: string }) => {
+        removed.add(current)
       },
-      get: async () => {
-        if (removed) throw { _tag: "SessionNotFoundError" }
-        return { id: sessionID }
+      get: async ({ sessionID: current }: { sessionID: string }) => {
+        if (removed.has(current)) throw { _tag: "SessionNotFoundError" }
+        return { id: current }
       },
     },
   } as unknown as OpenCodeClient
@@ -213,7 +234,6 @@ function fixture(
       retainReviewSessions: options.retain ?? false,
     }),
   )
-  const attempt = new ReviewAttempt("generation_fixture", 5000)
   const envelope: ReviewEnvelope = {
     request: request(),
     directory: "/workspace/operational",
@@ -225,9 +245,26 @@ function fixture(
   }
   return {
     backend,
-    attempt,
-    run: () => backend.review(envelope, attempt, client),
-    state: () => ({ directory, sessionID, removed, prompts, disposed, setups }),
+    run: (command = "Run printf safe") => {
+      const attempt = new ReviewAttempt("generation_fixture", 5000)
+      attempts.push(attempt)
+      return backend.review(
+        { ...envelope, transcript: command, intentHistory: command },
+        attempt,
+        client,
+      )
+    },
+    state: () => ({
+      directory,
+      sessionID,
+      sessionIDs,
+      removed: removed.has(sessionID),
+      messagesBySession,
+      prompts,
+      mcpLists,
+      disposed,
+      setups,
+    }),
     unrelated: () => {
       const event: ContextEvent = {
         sessionID: "ses_other",
@@ -242,8 +279,8 @@ function fixture(
       return tool.execute(decision("allow"), { sessionID: "ses_other" })
     },
     cleanup: async () => {
-      attempt.close("cancelled")
-      await backend.waitForIdle()
+      for (const attempt of attempts) attempt.close("cancelled")
+      await backend.dispose()
       if (directory && existsSync(directory)) await rm(directory, { recursive: true })
     },
   }
@@ -257,9 +294,9 @@ test("isolated structured and text backends preserve scope, variant, and retenti
       const state = harness.state()
       expect(state.prompts).toBe(1)
       expect(state.removed).toBe(format !== "text")
-      expect(state.disposed).toBe(3)
+      expect(state.disposed).toBe(0)
       expect(harness.backend.owns(state.sessionID)).toBe(false)
-      expect(existsSync(state.directory + "/index.js")).toBe(false)
+      expect(existsSync(state.directory + "/index.js")).toBe(true)
       await expect(harness.unrelated()).rejects.toThrow("Not an active")
     } finally {
       await harness.cleanup()
@@ -334,9 +371,64 @@ test("unavailable model, unsupported format or variant, and wrong isolation fail
     try {
       expect((await harness.run()).kind).toBe("escalate")
       expect(harness.state().prompts).toBe(0)
-      expect(existsSync(harness.state().directory)).toBe(false)
+      expect(existsSync(harness.state().directory + "/opencode.json")).toBe(true)
     } finally {
       await harness.cleanup()
     }
+  }
+})
+
+test("review sessions share one MCP-free location without mixing concurrent evidence", async () => {
+  const harness = fixture()
+  try {
+    const commands = Array.from({ length: 16 }, (_, index) => `Review unique marker[${index}]`)
+    const results = await Promise.all(commands.map((command) => harness.run(command)))
+    expect(results.every((result) => result.kind === "allow")).toBe(true)
+    const state = harness.state()
+    expect(state.setups).toBe(1)
+    expect(new Set(state.sessionIDs).size).toBe(commands.length)
+    for (const [index, id] of state.sessionIDs.entries()) {
+      const message = state.messagesBySession.get(id)
+      expect(message).toContain(commands[index])
+      for (const other of commands.filter((_, otherIndex) => otherIndex !== index))
+        expect(message).not.toContain(other)
+    }
+    const isolatedConfig = JSON.parse(await readFile(state.directory + "/opencode.json", "utf8"))
+    expect(isolatedConfig.plugins).toEqual(["-opencode.config.mcp", state.directory])
+    expect((await harness.run("Review one more unique marker")).kind).toBe("allow")
+    expect(harness.state().directory).toBe(state.directory)
+    expect(harness.state().setups).toBe(1)
+    await harness.backend.dispose()
+    expect(harness.state().disposed).toBe(3)
+    expect(existsSync(state.directory + "/opencode.json")).toBe(true)
+    expect(() => harness.run()).toThrow("shutting down")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("reviewer fails closed when its isolated location contains MCP servers", async () => {
+  const harness = fixture({ mcpServers: true })
+  try {
+    const result = await harness.run()
+    expect(result.kind).toBe("escalate")
+    expect(result.reason).toContain("contains MCP servers")
+    expect(harness.state().sessionIDs).toHaveLength(0)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("a later MCP addition prevents another review in the shared location", async () => {
+  const harness = fixture({ mcpServers: "after-first" })
+  try {
+    expect((await harness.run()).kind).toBe("allow")
+    const result = await harness.run()
+    expect(result.kind).toBe("escalate")
+    expect(result.reason).toContain("contains MCP servers")
+    expect(harness.state().sessionIDs).toHaveLength(1)
+    expect(harness.state().mcpLists).toBe(2)
+  } finally {
+    await harness.cleanup()
   }
 })

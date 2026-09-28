@@ -3,7 +3,9 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -213,12 +215,13 @@ def test_v2_reviewer_applies_and_cleans_up(launch_host, activate_host, model_ser
         isolated = Path(retained["location"]["directory"])
         assert isolated.parent == Path(tempfile.gettempdir()) and isolated.name.startswith("opencode-reviewer-")
         assert isolated != host["project"]
-        assert not (isolated / "index.js").exists()
+        assert (isolated / "index.js").exists()
         assert "permission_reviewer_result" in json.dumps(request(f"/api/session/{reviewer_id}/context"))
         with urllib.request.urlopen(urllib.request.Request(host["url"] + "/api/session/" + reviewer_id,
                 headers=host["headers"], method="DELETE"), timeout=5):
             pass
-        shutil.rmtree(isolated)
+        host["stop"]()
+        shutil.rmtree(isolated, ignore_errors=True)
         return
     with pytest.raises(urllib.error.HTTPError) as failure:
         request("/api/session/" + records[-1]["reviewerSessionID"])
@@ -234,3 +237,135 @@ def test_v2_reviewer_applies_and_cleans_up(launch_host, activate_host, model_ser
         assert "COMPATIBILITY_EXECUTED" in json.dumps(context), context
         assert any(part.get("type") == "tool" and part.get("name") == "shell" and part.get("state", {}).get("status") == "completed"
                    for message in context["data"] if message["type"] == "assistant" for part in message["content"]), context
+
+
+@pytest.mark.parametrize("host_version", V2_VERSIONS)
+def test_v2_reuses_mcp_free_reviewer_location(launch_host, activate_host, model_server, host_version, tmp_path):
+    binary = os.environ[f"OPENCODE_V2_{host_version.replace('.', '_')}"]
+    package = os.environ.get("PLUGIN_PACKAGE_PATH", str(Path(__file__).resolve().parents[2]))
+    starts = tmp_path / "mcp-starts.txt"
+    mcp = tmp_path / "mcp.py"
+    mcp.write_text('''import json
+import os
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open("a") as output:
+    output.write(str(os.getpid()) + "\\n")
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+              "serverInfo": {"name": "fixture", "version": "1"}} if request["method"] == "initialize" else {"tools": []}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+''', encoding="utf-8")
+    provider = {"providers": {"fixture": {
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {"baseURL": model_server["url"], "apiKey": "synthetic-fixture"},
+        "models": {"reviewer": {"name": "Fixture reviewer", "variants": [{"id": "medium", "settings": {}}],
+            "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
+            "limit": {"context": 32000, "output": 1000}}},
+    }}, "mcp": {"servers": {"fixture": {"type": "local", "command": [sys.executable, str(mcp), str(starts)]}}}}
+    host = launch_host("v2", binary, {"plugins": [package]},
+                       reviewer={"model": "fixture/reviewer", "timeoutMs": 5000,
+                                 "reviewBudgetMs": 15000, "retainReviewSessions": True},
+                       global_config=provider)
+    activate_host(host, "v2")
+
+    def request(path, body=None):
+        req = urllib.request.Request(host["url"] + path,
+            data=None if body is None else json.dumps(body).encode(),
+            headers={**host["headers"], "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return json.load(response) if response.status != 204 else None
+
+    def mcp_servers(directory):
+        query = urllib.parse.urlencode({"location[directory]": str(directory)})
+        response = request("/api/mcp?" + query)
+        return response.get("data", response)
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not starts.exists():
+        mcp_servers(host["project"])
+        time.sleep(0.05)
+    assert starts.exists(), "Operational MCP did not start"
+    assert len(starts.read_text().splitlines()) == 1
+
+    def review(index):
+        session = request("/api/session", {"title": f"Fixture operation {index}",
+            "location": {"directory": str(host["project"])},
+            "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}]})
+        session_id = session.get("data", session)["id"]
+        outcome = request(f"/api/session/{session_id}/permission", {
+            "action": "shell", "resources": ["printf *"],
+            "metadata": {"command": f"printf fixture-{index}"},
+        })
+        assert outcome["data"]["effect"] == "allow", outcome
+        return session_id
+
+    operational_sessions = [review(index) for index in range(3)]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        operational_sessions.extend(pool.map(review, range(3, 7)))
+
+    audit_path = host["root"] / "reviewer-audit.jsonl"
+    def audit_records():
+        try:
+            return [json.loads(line) for line in audit_path.read_text().splitlines()]
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    deadline = time.monotonic() + 10
+    records = []
+    while time.monotonic() < deadline:
+        records = audit_records()
+        records = [record for record in records if record.get("sessionID") in operational_sessions]
+        if len(records) == len(operational_sessions):
+            break
+        time.sleep(0.05)
+    assert len(records) == len(operational_sessions), records
+    reviewer_ids = [record["reviewerSessionID"] for record in records]
+    assert len(set(reviewer_ids)) == len(reviewer_ids)
+    locations = {request("/api/session/" + session_id)["data"]["location"]["directory"]
+                 for session_id in reviewer_ids}
+    assert len(locations) == 1, locations
+    reviewer_directory = next(iter(locations))
+    assert reviewer_directory != str(host["project"])
+    assert mcp_servers(reviewer_directory) == []
+    assert len(starts.read_text().splitlines()) == 1, starts.read_text()
+    assert mcp_servers(host["project"])[0]["status"]["status"] == "connected"
+    for session_id in reviewer_ids:
+        req = urllib.request.Request(host["url"] + "/api/session/" + session_id,
+            headers=host["headers"], method="DELETE")
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    new_directory = None
+    if tuple(map(int, host_version.split("."))) >= (2, 0, 18):
+        reload_request = urllib.request.Request(host["url"] + "/api/location/reload",
+            data=b"", headers=host["headers"], method="POST")
+        with urllib.request.urlopen(reload_request, timeout=30) as response:
+            assert response.status == 204
+        assert mcp_servers(reviewer_directory) == []
+        reloaded_session = review(7)
+        deadline = time.monotonic() + 10
+        reloaded_record = None
+        while time.monotonic() < deadline:
+            reloaded_record = next((record for record in audit_records()
+                if record.get("sessionID") == reloaded_session), None)
+            if reloaded_record:
+                break
+            time.sleep(0.05)
+        assert reloaded_record
+        new_reviewer_id = reloaded_record["reviewerSessionID"]
+        new_directory = request("/api/session/" + new_reviewer_id)["data"]["location"]["directory"]
+        assert new_directory != reviewer_directory
+        assert mcp_servers(new_directory) == []
+        req = urllib.request.Request(host["url"] + "/api/session/" + new_reviewer_id,
+            headers=host["headers"], method="DELETE")
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    host["stop"]()
+    shutil.rmtree(reviewer_directory, ignore_errors=True)
+    if new_directory:
+        shutil.rmtree(new_directory, ignore_errors=True)

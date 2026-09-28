@@ -460,7 +460,7 @@ export async function setupWithServices(
     await withTimeout(Promise.allSettled([...notifications]), 2000).catch((error) =>
       log("Review notifications did not finish before shutdown", String(error)),
     )
-    await withTimeout(backend.waitForIdle(), 12_000).catch((error) =>
+    await withTimeout(backend.dispose(), 12_000).catch((error) =>
       log("Reviewer shutdown cleanup timed out", String(error)),
     )
     await eventTask
