@@ -24,7 +24,8 @@
     "integrities": {
       "2.0.3": "sha512-FC4+2a5kwdKS2o/pIcGCscpSQB7PuhBObwGMfqnx/2XtoaZBMtSq/99nuEdeDNAFvy1qyK6mp2hwvoiMWsiI4w==",
       "2.0.11": "sha512-7hnjVw7+zlcjt34hXFQ+aWuLiG20iq/nKq3O9SRwq2Dahch5RNI+Q3mbj5X3db5l1Cn1U6WcvEF2u7kQFo7JLw==",
-      "2.0.15": "sha512-Ynxz9HRJiHQBotBrQeEt3T/3TyEpkwdZkMTE7HPxT2nB1IU3WAqFXBYiIpWTYLKifXga4L5UG0sXEDISe/rJxg=="
+      "2.0.15": "sha512-Ynxz9HRJiHQBotBrQeEt3T/3TyEpkwdZkMTE7HPxT2nB1IU3WAqFXBYiIpWTYLKifXga4L5UG0sXEDISe/rJxg==",
+      "2.0.18": "sha512-EkIxIa2goJ2v8U3Os2gpRckOIjN9gpUBXy6fyVOFbPZl71rkGpoF3NFsm4nlDiF2BgnIqcgJU5NgdV1k6/OZuw=="
     },
     "optionalIntegrities": {
       "2.0.4": "sha512-2b1WYZoKewgKxMmMG+Lv3V7f/aZVQCULYq35x0Q8JHp1fBLK3EZVvRvp30YxurM2PVIGYnqletf2Gezykq5izQ==",

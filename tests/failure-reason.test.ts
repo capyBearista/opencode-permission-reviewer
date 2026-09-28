@@ -231,6 +231,7 @@ test("v2 permission review hook failure denies with phase and cause", async () =
     createBackend: () => ({
       owns: () => false,
       waitForIdle: async () => {},
+      dispose: async () => {},
       review: async () => {
         throw clientError()
       },

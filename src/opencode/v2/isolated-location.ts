@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { rmSync } from "node:fs"
 import { mkdtemp, writeFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -11,8 +12,18 @@ const symbol = Symbol.for(KEY)
 const globals = globalThis as typeof globalThis & { [symbol]: Map<string, Activate> | undefined }
 const activations = globals[symbol] ?? new Map<string, Activate>()
 globals[symbol] = activations
+const directories = new Set<string>()
+process.once("exit", () => {
+  for (const directory of directories) {
+    try {
+      rmSync(directory, { recursive: true, force: true })
+    } catch {
+      // Temporary files can be reclaimed by the operating system.
+    }
+  }
+})
 
-/** A host-loaded bootstrap registers only this attempt's isolated hooks. */
+/** A host-loaded bootstrap registers only this backend's isolated hooks. */
 export async function createIsolatedLocation(
   activate: Activate,
 ): Promise<{ directory: string; pluginID: string; release(): void }> {
@@ -24,9 +35,11 @@ export async function createIsolatedLocation(
       throw new Error("Reviewer isolation location mismatch")
     return activate(ctx)
   })
+  // A cached location may reload after its backend releases the activation.
+  // Its bootstrap stays inert while the local config continues to exclude MCP.
   const source = `export default { id: ${JSON.stringify(pluginID)}, setup(ctx) {
     const activate = globalThis[Symbol.for(${JSON.stringify(KEY)})]?.get(${JSON.stringify(key)});
-    if (!activate) throw new Error("Reviewer isolation activation expired");
+    if (!activate) return Promise.resolve(async () => {});
     return activate(ctx);
   } };`
   try {
@@ -41,10 +54,12 @@ export async function createIsolatedLocation(
       }),
       { flag: "wx", mode: 0o600 },
     )
-    await writeFile(join(directory, "opencode.json"), JSON.stringify({ plugins: [directory] }), {
-      flag: "wx",
-      mode: 0o600,
-    })
+    await writeFile(
+      join(directory, "opencode.json"),
+      JSON.stringify({ plugins: ["-opencode.config.mcp", directory] }),
+      { flag: "wx", mode: 0o600 },
+    )
+    directories.add(directory)
     return {
       directory,
       pluginID,

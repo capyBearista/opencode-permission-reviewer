@@ -16,6 +16,7 @@ export interface V2ReviewBackend {
     client: OpenCodeClient,
   ): Promise<ReviewExecutionResult>
   waitForIdle(): Promise<void>
+  dispose(): Promise<void>
 }
 
 function escalationConfig(config: ReviewerConfig): ReviewerConfig | undefined {
@@ -44,6 +45,9 @@ export function createV2ReviewerBackend(context: Context, config: ReviewerConfig
       ),
     waitForIdle: async () => {
       await Promise.all([primary.waitForIdle(), secondary?.waitForIdle()])
+    },
+    dispose: async () => {
+      await Promise.all([primary.waitForIdle(), secondary?.dispose()])
     },
   }
 }
