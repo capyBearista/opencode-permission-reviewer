@@ -33,6 +33,7 @@ function fixture(
     retain?: boolean
     wrongLocation?: boolean
     activationFailed?: boolean
+    failFirstActivation?: boolean
     activationDelayed?: boolean
     activationRepresentation?: "directory-slash" | "file-url" | "id-only" | "id-new-path"
     mcpServers?: boolean | "after-first"
@@ -42,6 +43,8 @@ function fixture(
   let contextHook!: (event: ContextEvent) => void
   let toolHook!: (event: { sessionID: string; tool: string }) => void
   let directory = ""
+  const directories: string[] = []
+  const activated = new Set<string>()
   let sessionID = ""
   const sessionIDs: string[] = []
   const removed = new Set<string>()
@@ -53,6 +56,7 @@ function fixture(
   let checks = 0
   let setups = 0
   let pluginID = ""
+  let hostCleanup: (() => Promise<void>) | undefined
   const registration = () => ({
     dispose: async () => {
       disposed++
@@ -86,13 +90,15 @@ function fixture(
       list: async (input: { location: { directory: string } }) => {
         directory = input.location.directory
         checks++
-        if (setups === 0) {
+        if (!activated.has(directory)) {
           const plugin = await import(pathToFileURL(directory + "/index.js").href)
           pluginID = plugin.default.id
-          await plugin.default.setup({ ...ctx, location: { directory } })
+          hostCleanup = await plugin.default.setup({ ...ctx, location: { directory } })
+          activated.add(directory)
+          directories.push(directory)
           setups++
         }
-        if (options.activationFailed)
+        if (options.activationFailed || (options.failFirstActivation && setups === 1))
           return {
             data: [
               {
@@ -139,10 +145,11 @@ function fixture(
       }),
     },
     mcp: {
-      list: async () => {
+      list: async (input: { location: { directory: string } }) => {
+        expect(input.location.directory).toBe(directory)
         mcpLists++
         return {
-          location: { directory },
+          location: input.location,
           data:
             options.mcpServers === true || (options.mcpServers === "after-first" && mcpLists > 1)
               ? [{ name: "fixture" }]
@@ -256,6 +263,7 @@ function fixture(
     },
     state: () => ({
       directory,
+      directories: [...directories],
       sessionID,
       sessionIDs,
       removed: removed.has(sessionID),
@@ -265,6 +273,12 @@ function fixture(
       disposed,
       setups,
     }),
+    reload: async () => {
+      await hostCleanup?.()
+      const plugin = await import(pathToFileURL(directory + "/index.js").href)
+      hostCleanup = await plugin.default.setup({ ...ctx, location: { directory } })
+      setups++
+    },
     unrelated: () => {
       const event: ContextEvent = {
         sessionID: "ses_other",
@@ -281,7 +295,7 @@ function fixture(
     cleanup: async () => {
       for (const attempt of attempts) attempt.close("cancelled")
       await backend.dispose()
-      if (directory && existsSync(directory)) await rm(directory, { recursive: true })
+      for (const path of directories) if (existsSync(path)) await rm(path, { recursive: true })
     },
   }
 }
@@ -343,6 +357,43 @@ test("isolation activation waits for the host report and fails loudly", async ()
   }
 })
 
+test("a failed isolation bootstrap is retried in a new location", async () => {
+  const harness = fixture({ failFirstActivation: true })
+  try {
+    const first = await harness.run()
+    expect(first.kind).toBe("escalate")
+    expect(first.reason).toContain("failed to activate")
+    expect(harness.state().directories).toHaveLength(1)
+    expect(harness.state().disposed).toBe(3)
+    const failedDirectory = harness.state().directory
+
+    expect((await harness.run()).kind).toBe("allow")
+    const recovered = harness.state()
+    expect(recovered.setups).toBe(2)
+    expect(recovered.disposed).toBe(3)
+    expect(recovered.directories).toHaveLength(2)
+    expect(recovered.directory).not.toBe(failedDirectory)
+    expect(existsSync(failedDirectory + "/opencode.json")).toBe(true)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("backend disposal releases hooks registered by a later location activation", async () => {
+  const harness = fixture()
+  try {
+    expect((await harness.run()).kind).toBe("allow")
+    await harness.reload()
+    expect(harness.state().disposed).toBe(3)
+    expect((await harness.run()).kind).toBe("allow")
+    await harness.backend.dispose()
+    expect(harness.state().disposed).toBe(6)
+    expect(existsSync(harness.state().directory + "/opencode.json")).toBe(true)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
 test("isolation activation accepts normalized local plugin representations", async () => {
   for (const activationRepresentation of [
     "directory-slash",
@@ -387,12 +438,13 @@ test("review sessions share one MCP-free location without mixing concurrent evid
     const state = harness.state()
     expect(state.setups).toBe(1)
     expect(new Set(state.sessionIDs).size).toBe(commands.length)
-    for (const [index, id] of state.sessionIDs.entries()) {
-      const message = state.messagesBySession.get(id)
-      expect(message).toContain(commands[index])
-      for (const other of commands.filter((_, otherIndex) => otherIndex !== index))
-        expect(message).not.toContain(other)
-    }
+    const captured = state.sessionIDs.map((id) => state.messagesBySession.get(id) ?? "")
+    const markers = captured.map((message) => {
+      const matches = commands.filter((command) => message.includes(command))
+      expect(matches).toHaveLength(1)
+      return matches[0]
+    })
+    expect(new Set(markers)).toEqual(new Set(commands))
     const isolatedConfig = JSON.parse(await readFile(state.directory + "/opencode.json", "utf8"))
     expect(isolatedConfig.plugins).toEqual(["-opencode.config.mcp", state.directory])
     expect((await harness.run("Review one more unique marker")).kind).toBe("allow")

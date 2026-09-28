@@ -18,7 +18,7 @@ import pytest
 V2_VERSIONS = (
     [os.environ["V2_HOST_VERSION"]]
     if os.environ.get("V2_HOST_VERSION")
-    else ["2.0.3", "2.0.11", "2.0.15"]
+    else ["2.0.3", "2.0.11", "2.0.15", "2.0.18"]
 )
 V2_CASES = [
     (version, "json_schema", outcome)
@@ -305,9 +305,10 @@ for line in sys.stdin:
         assert outcome["data"]["effect"] == "allow", outcome
         return session_id
 
-    operational_sessions = [review(index) for index in range(3)]
+    operational_sessions = []
     with ThreadPoolExecutor(max_workers=4) as pool:
-        operational_sessions.extend(pool.map(review, range(3, 7)))
+        operational_sessions.extend(pool.map(review, range(4)))
+    operational_sessions.extend(review(index) for index in range(4, 7))
 
     audit_path = host["root"] / "reviewer-audit.jsonl"
     def audit_records():

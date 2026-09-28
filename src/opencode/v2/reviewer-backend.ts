@@ -54,7 +54,7 @@ export class V2ReviewerBackend {
   private readonly sessions = new Map<string, PendingGeneration>()
   private readonly jobs = new Set<Promise<ReviewExecutionResult>>()
   private readonly locationAbort = new AbortController()
-  private locationPromise?: Promise<ReviewerLocation>
+  private locationPromise: Promise<ReviewerLocation> | undefined
   private disposal?: Promise<void>
   private closing = false
   constructor(
@@ -170,23 +170,42 @@ export class V2ReviewerBackend {
   }
 
   private ensureLocation(client: OpenCodeClient): Promise<ReviewerLocation> {
-    this.locationPromise ??= this.openLocation(client)
-    return this.locationPromise
+    if (this.locationPromise) return this.locationPromise
+    const location = this.openLocation(client)
+    this.locationPromise = location
+    void location.catch(() => {
+      if (this.locationPromise === location) this.locationPromise = undefined
+    })
+    return location
   }
 
   private async openLocation(client: OpenCodeClient): Promise<ReviewerLocation> {
-    let dispose: (() => Promise<void>) | undefined
+    const registrations = new Set<() => Promise<void>>()
+    const dispose = async () => {
+      const results = await Promise.allSettled(
+        [...registrations].map((registration) => registration()),
+      )
+      const failed = results.find((result) => result.status === "rejected")
+      if (failed) throw failed.reason
+    }
     const isolated = await createIsolatedLocation(async (context) => {
-      dispose = await this.register(context)
-      return dispose
+      if (this.closing) return async () => {}
+      const cleanup = await this.register(context)
+      const registration = async () => {
+        if (!registrations.delete(registration)) return
+        await cleanup()
+      }
+      registrations.add(registration)
+      if (this.closing) await registration()
+      return registration
     })
     try {
       const signal = AbortSignal.any([this.locationAbort.signal, AbortSignal.timeout(15_000)])
       await waitForIsolationActive(client, isolated.directory, isolated.pluginID, signal)
-      if (!dispose) throw new Error("Reviewer isolation hooks did not activate")
+      if (registrations.size === 0) throw new Error("Reviewer isolation hooks did not activate")
       return { directory: isolated.directory, dispose, release: isolated.release }
     } catch (error) {
-      await dispose?.().catch(() => {})
+      await dispose().catch(() => {})
       isolated.release()
       // The host may have cached this location, so its MCP exclusion stays on disk.
       throw error

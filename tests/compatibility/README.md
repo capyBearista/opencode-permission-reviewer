@@ -11,6 +11,7 @@ export OPENCODE_V1_1_18_32=/absolute/path/to/opencode-1.18.32
 export OPENCODE_V2_2_0_3=/absolute/path/to/opencode-2.0.3
 export OPENCODE_V2_2_0_11=/absolute/path/to/opencode-2.0.11
 export OPENCODE_V2_2_0_15=/absolute/path/to/opencode-2.0.15
+export OPENCODE_V2_2_0_18=/absolute/path/to/opencode-2.0.18
 python -m pytest tests/compatibility -q
 ```
 
@@ -20,7 +21,8 @@ print the required variables. They never replace an existing installation or
 edit shell aliases. CI receives these paths through `GITHUB_ENV`.
 
 The V2 server and TUI compile against the minimum supported plugin SDK while
-the real-host matrix exercises the minimum and reference host binaries.
+the real-host matrix exercises the minimum, reference, and recently verified
+host binaries.
 
 To verify every pinned stable V2 release locally without making CI install the
 full compatibility window, run the sequential window harness. It installs one
@@ -32,8 +34,8 @@ PYTHON=/path/to/python-with-pytest \
   bun tests/compatibility/verify-v2-window.ts
 ```
 
-The default command and CI remain limited to the minimum and reference V2
-hosts. The optional window verifies the intermediate releases on demand.
+The default command and CI cover the minimum, reference, and recently verified
+V2 hosts. The optional window verifies the intermediate releases on demand.
 
 `tests/live-v2-smoke.ts` is the paid-provider smoke for a fresh V2 host. Its
 fixture uses a placeholder plugin path that must point at the checkout before
