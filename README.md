@@ -356,13 +356,20 @@ Config is layered: built-in defaults ← global
 The project layer crosses a trust boundary: it can only **tighten**
 security-sensitive fields, and its hardening survives even when a trusted layer
 set the same field. The project layer cannot choose the reviewer `model`,
-`escalationReviewer`, or replace the `policy` text (these decide where
-code/context travels and what the
-reviewer enforces), cannot redirect `auditPath`, grant `actorProfiles`, set
+`escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
+(these decide where code/context travels and how the
+reviewer enforces and reports), cannot redirect `auditPath`, flip
+`retainReviewSessions` or `askDecisions`, grant `actorProfiles`, set
 `repositoryTrust: "trusted"`, downgrade a global `enforcementMode: "enforce"`,
 or relax a trusted `escalationMode: "deny"` / failure-mode deny knob /
 `confidenceThreshold` / `systemOneConfidenceThreshold` /
-`systemOneReasoningThreshold` / `riskPolicy`. Project values of the wrong type
+`systemOneReasoningThreshold` / `riskPolicy`. Reviewer context budgets
+(`maxContextChars`, `maxEnrichmentChars`, `transcriptMessages`,
+`historyMessages`, `maxSessionDepth`, and siblings) may only be raised by the
+project layer, never lowered below a trusted value: starving the reviewer of
+context weakens the review. Timing budgets (`timeoutMs`, `reviewBudgetMs`)
+stay project-tunable: lowering them can only fail reviews closed into manual
+escalation, never approve anything. Project values of the wrong type
 (including `null`) are ignored, never normalized back to defaults.
 
 A config file that exists but cannot be honored fails CLOSED on the trusted

@@ -169,6 +169,118 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
     }
   })
 
+  test("project cannot choose the reviewer variant, output format, or retention", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      // Isolate the global layer: a missing file in a temp directory, never
+      // the developer's real global config.
+      setGlobalConfigPathForTests(join(globalDir, "permission-reviewer.jsonc"))
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(
+        projectConfigPath(projectDir),
+        JSON.stringify({
+          variant: "minimal",
+          outputFormat: "text",
+          retainReviewSessions: false,
+          askDecisions: false,
+        }),
+      )
+      const loaded = loadResolvedConfig(
+        { variant: "high", outputFormat: "json_schema", retainReviewSessions: true },
+        projectDir,
+      )
+      expect(loaded.variant).toBe("high")
+      expect(loaded.outputFormat).toBe("json_schema")
+      expect(loaded.retainReviewSessions).toBe(true)
+      expect(loaded.askDecisions).toBe(true)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("project cannot flip a trusted askDecisions false back on", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(globalPath, JSON.stringify({ askDecisions: false }))
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      for (const value of [true, null, "yes"] as const) {
+        writeFileSync(projectConfigPath(projectDir), JSON.stringify({ askDecisions: value }))
+        const loaded = loadResolvedConfig(undefined, projectDir)
+        expect(loaded.askDecisions).toBe(false)
+      }
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("project context budgets can only raise, never lower, trusted values", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(
+        globalPath,
+        JSON.stringify({
+          maxContextChars: 64_000,
+          transcriptMessages: 24,
+          historyMessages: 400,
+          maxSessionDepth: 6,
+        }),
+      )
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(
+        projectConfigPath(projectDir),
+        JSON.stringify({
+          maxContextChars: 4_000,
+          transcriptMessages: 1,
+          historyMessages: null,
+          maxSessionDepth: 1,
+          maxEnrichmentChars: 50_000,
+        }),
+      )
+      const loaded = loadResolvedConfig(undefined, projectDir)
+      expect(loaded.maxContextChars).toBe(64_000)
+      expect(loaded.transcriptMessages).toBe(24)
+      expect(loaded.historyMessages).toBe(400)
+      expect(loaded.maxSessionDepth).toBe(6)
+      // Raising a budget above the trusted floor is a legitimate tightening.
+      expect(loaded.maxEnrichmentChars).toBe(50_000)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("a wrong-type trusted budget does not disable the context floor", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(globalPath, JSON.stringify({ maxContextChars: "garbage" }))
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(projectConfigPath(projectDir), JSON.stringify({ maxContextChars: 4_000 }))
+      const loaded = loadResolvedConfig(undefined, projectDir)
+      // The builtin default stays the floor even when the trusted layer's
+      // value is unusable.
+      expect(loaded.maxContextChars).toBe(32_000)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
   test("a malformed global config warns instead of silently behaving like an absent one", () => {
     const warnDir = tempDir("reviewer-global-")
     const projectDir = tempDir("reviewer-project-")

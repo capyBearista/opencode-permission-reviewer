@@ -158,7 +158,35 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "riskPolicy",
   "escalationMode",
   "policyRules",
+  "variant",
+  "outputFormat",
+  "retainReviewSessions",
+  "maxContextChars",
+  "maxPartChars",
+  "maxEnrichmentChars",
+  "maxIntentChars",
+  "transcriptMessages",
+  "intentMessages",
+  "historyMessages",
+  "maxSessionDepth",
+  "maxParentSessions",
+  "askDecisions",
 ])
+
+/** Reviewer context budgets the project layer may only raise: starving the
+ *  reviewer of transcript, evidence, or session-chain context weakens the
+ *  review, so a lower project value is clamped back to the trusted one. */
+const CONTEXT_FLOOR_KEYS = [
+  "maxContextChars",
+  "maxPartChars",
+  "maxEnrichmentChars",
+  "maxIntentChars",
+  "transcriptMessages",
+  "intentMessages",
+  "historyMessages",
+  "maxSessionDepth",
+  "maxParentSessions",
+] as const
 
 /** Load and merge config from global, project, and inline sources.
  *
@@ -344,18 +372,27 @@ function mergeWithTrustBoundary(
   // field must stay authoritative for the loader that computes it).
   delete clamped.configDegraded
 
-  // Confidence floors: project config can raise but not lower them; non-numeric
+  // Numeric floors: project config can raise but not lower them; non-numeric
   // values (including null) are ignored so they cannot reset a trusted floor.
+  // Confidence floors guard the decision gate; context floors keep the
+  // reviewer from being starved of transcript, evidence, or session-chain
+  // context. A trusted layer with a wrong-type value must not silently
+  // disable the floor, so the fallback comparison uses the builtin default.
   for (const key of [
     "confidenceThreshold",
     "systemOneConfidenceThreshold",
     "systemOneReasoningThreshold",
+    ...CONTEXT_FLOOR_KEYS,
   ] as const) {
     if (hasKey(clamped, key)) {
       if (typeof clamped[key] !== "number" || !Number.isFinite(clamped[key])) {
         delete clamped[key]
-      } else if (typeof trusted[key] === "number" && clamped[key] < trusted[key]) {
-        clamped[key] = trusted[key]
+      } else {
+        const floor =
+          typeof trusted[key] === "number"
+            ? (trusted[key] as number)
+            : (DEFAULT_CONFIG[key as keyof typeof DEFAULT_CONFIG] as number)
+        if (clamped[key] < floor) clamped[key] = floor
       }
     }
   }
@@ -365,6 +402,11 @@ function mergeWithTrustBoundary(
     delete clamped.audit
   }
 
+  // askDecisions: prior user answers are scoped-authorization evidence for
+  // the reviewer. Only trusted layers may decide whether the reviewer sees
+  // them; a repository can neither strip them nor inject them.
+  delete clamped.askDecisions
+
   // auditPath: only trusted global/inline config may choose the audit
   // destination. A repository must never be able to redirect or silence the
   // audit trail by pointing it at /dev/null or a path it controls.
@@ -372,10 +414,16 @@ function mergeWithTrustBoundary(
 
   // model and policy: the reviewer destination and the tenant policy text are
   // trusted decisions. A repository must not choose where code/context is sent
-  // for review, nor rewrite the policy the reviewer enforces.
+  // for review, nor rewrite the policy the reviewer enforces. The reasoning
+  // variant, the decision output format, and review-session retention are the
+  // same class of decision: a weaker variant, a looser output format, or
+  // silenced retention must not be selectable from a repository.
   delete clamped.model
   delete clamped.escalationReviewer
   delete clamped.policy
+  delete clamped.variant
+  delete clamped.outputFormat
+  delete clamped.retainReviewSessions
 
   // repositoryTrust: the project layer may only declare its own repository
   // untrusted; it cannot grant "trusted" or reset a trusted "untrusted".
