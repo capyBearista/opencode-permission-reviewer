@@ -37,6 +37,9 @@ const OPTIONS_WITH_VALUE = new Set([
   "-m",
 ])
 
+// Subcommands whose next operand names a package or workspace, never a local
+// script file. `run` is absent: it accepts a direct file target and is handled
+// by the dedicated run-target logic in scriptPath.
 const BUN_SUBCOMMANDS = new Set([
   "add",
   "build",
@@ -46,27 +49,68 @@ const BUN_SUBCOMMANDS = new Set([
   "pm",
   "publish",
   "remove",
-  "run",
   "test",
   "unlink",
   "update",
   "x",
 ])
 
+// Bun flags that consume a value; that value is never the run target.
+// `--cwd` and `--config` are absent on purpose: see the conservative bail in
+// scriptPath.
+const BUN_VALUE_OPTIONS = new Set([
+  "-F",
+  "--filter",
+  "--elide-lines",
+  "--shell",
+  "--env-file",
+  "--preload",
+  "--tsconfig-override",
+])
+
+// A `bun run` target that names a file. A bare operand may resolve to a
+// package.json script (Bun also falls back to module resolution when no
+// script matches), so only separator- or extension-bearing operands are
+// classified as files; other targets conservatively gather no evidence.
+function bunRunFileTarget(token: string): boolean {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false
+  return token.includes("/") || /\.(?:[mc]?[jt]sx?)$/i.test(token)
+}
+
 function scriptPath(
   tokens: string[],
   interpreterIndex: number,
   interpreter: string,
 ): string | undefined {
+  let bunRunTarget = false
   for (let index = interpreterIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]!
     if (token === "-" || INLINE_CODE_OPTIONS.has(token) || token === "-m") return
-    if (OPTIONS_WITH_VALUE.has(token)) {
+    // Bun applies --cwd before resolving the run target, and --config takes an
+    // optional value that makes the next token ambiguous. Guessing the
+    // resolution could attach evidence to the wrong file, so gather nothing.
+    if (
+      interpreter === "bun" &&
+      (token === "--cwd" ||
+        token.startsWith("--cwd=") ||
+        token === "--config" ||
+        token.startsWith("--config="))
+    ) {
+      return
+    }
+    if (OPTIONS_WITH_VALUE.has(token) || (interpreter === "bun" && BUN_VALUE_OPTIONS.has(token))) {
       index += 1
       continue
     }
     if (token.startsWith("-")) continue
+    if (interpreter === "bun" && token === "run" && !bunRunTarget) {
+      bunRunTarget = true
+      continue
+    }
     if (/[$`*?{}<>]/.test(token)) return
+    // The first non-option operand after `bun run` is decisive: a path-like
+    // token is the executed file, anything else is a manifest script name.
+    if (bunRunTarget) return bunRunFileTarget(token) ? token : undefined
     if (interpreter === "bun" && BUN_SUBCOMMANDS.has(token)) return
     return token
   }

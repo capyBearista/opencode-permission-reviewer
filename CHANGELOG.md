@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Include the executed file as local script evidence for `bun run <file>`
+  commands; package manifest scripts (`bun run check`) and bun option values
+  are not mistaken for the run target.
+
 ## [2.3.1] - 2026-09-28
 
 ### Fixed

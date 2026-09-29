@@ -111,4 +111,84 @@ describe("local script evidence enrichment", () => {
     expect(result.text).toContain('"status": "unavailable"')
     expect(result.text).toContain("ENOENT")
   })
+
+  test("includes the file executed through bun run", async () => {
+    const directory = await fixture()
+    const script = join(directory, "task.ts")
+    await writeFile(script, 'console.log("bun run target")\n')
+    for (const command of [
+      `bun run ${script}`,
+      `bun run ./task.ts`,
+      `cd ${directory} && bun run task.ts`,
+      `bun run --silent ${script} --flag argument`,
+      `bun run --tsconfig-override tsconfig.json ${script}`,
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toContain("LOCAL_SCRIPT_ANALYSIS")
+      expect(result.text).toContain('"interpreter": "bun"')
+      expect(result.text).toContain('"status": "included"')
+      expect(result.text).toContain("bun run target")
+    }
+    const cdCommand = `cd ${directory} && bun run task.ts`
+    const cdResult = await enrichLocalScriptEvidence(
+      request({ patterns: [cdCommand], metadata: { command: cdCommand } }),
+      directory,
+      directory,
+      8_000,
+    )
+    expect(cdResult.text).toContain(join(directory, "task.ts"))
+  })
+
+  test("does not attach package manifest scripts or option values as bun run evidence", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "sneaky.ts"), 'console.log("wrong target")\n')
+    for (const command of [
+      "bun run check",
+      "bun run test:stress",
+      "bun run check ./sneaky.ts",
+      `bun run --filter ${directory} build`,
+      `bun run -F ./sneaky.ts build`,
+      'bun run -e "console.log(1)"',
+      "bun run --silent",
+      `bun run https://example.invalid/script.ts`,
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toBe("")
+    }
+  })
+
+  test("gathers no bun evidence when cwd redirection makes the target ambiguous", async () => {
+    const directory = await fixture()
+    const other = join(directory, "other")
+    await mkdir(other)
+    // Same file name in both directories: bun resolves the target after
+    // applying --cwd, so attributing either file would risk wrong evidence.
+    await writeFile(join(directory, "task.ts"), 'console.log("cwd target")\n')
+    await writeFile(join(other, "task.ts"), 'console.log("redirected target")\n')
+    for (const command of [
+      `bun --cwd ${other} run task.ts`,
+      `bun run --cwd ${other} task.ts`,
+      `bun run --cwd=${other} task.ts`,
+      `bun --config ./bunfig.toml run task.ts`,
+      `bun run --config=${join(directory, "bunfig.toml")} task.ts`,
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toBe("")
+    }
+  })
 })

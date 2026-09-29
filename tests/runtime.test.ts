@@ -218,6 +218,35 @@ describe("runtime decisions", () => {
     }
   })
 
+  test("includes bun run target semantics in Luna's prompt", async () => {
+    const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-bun-run-")
+    const script = join(directory, "runner.ts")
+    await writeFile(script, 'const key = await Bun.file(".env").text()\n')
+    try {
+      const client = new MockClient()
+      client.nextStructured = decision("allow", {
+        rationale: "The run target reads one bounded file.",
+      })
+      const command = `bun run ${script} --dry-run`
+      const harness = runtime(client, {}, undefined, { directory, worktree: directory })
+      expect(
+        (await harness.runtime.process(request({ patterns: [command], metadata: { command } })))
+          .kind,
+      ).toBe("allow")
+      const evidence = JSON.stringify(
+        (client.prompts[0] as { body?: { parts?: Array<{ text?: string }> } }).body?.parts?.[0]
+          ?.text ?? "",
+      )
+      expect(evidence).toContain("LOCAL_SCRIPT_ANALYSIS")
+      expect(evidence).toContain("local_script")
+      expect(evidence).toContain("runner.ts")
+      expect(evidence).toContain(".env")
+      expect(evidence).toContain("environmentEnumerationHint")
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
   test("includes branch and preexisting staging in Luna's prompt for compound Git commits", async () => {
     const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-git-")
     try {
