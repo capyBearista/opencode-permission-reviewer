@@ -191,4 +191,125 @@ describe("local script evidence enrichment", () => {
       expect(result.text).toBe("")
     }
   })
+
+  test("includes the file executed through deno run, serve, and watch", async () => {
+    const directory = await fixture()
+    await mkdir(join(directory, "src"))
+    for (const name of [
+      "task.ts",
+      "dev.ts",
+      "api.ts",
+      "app.ts",
+      "setup.ts",
+      "main.ts",
+      "map.json",
+      join("src", "main.ts"),
+    ]) {
+      await writeFile(join(directory, name), 'console.log("deno run target")\n')
+    }
+    const cases: Array<[string, string]> = [
+      [`deno run ${join(directory, "task.ts")}`, join(directory, "task.ts")],
+      [`cd ${directory} && deno run -A dev.ts`, join(directory, "dev.ts")],
+      [`cd ${directory} && deno run --watch src/main.ts`, join(directory, "src", "main.ts")],
+      [`cd ${directory} && deno run --env-file api.ts`, join(directory, "api.ts")],
+      [`cd ${directory} && deno run --env-file=.env api.ts`, join(directory, "api.ts")],
+      [`cd ${directory} && deno run -r ./app.ts ./data/input.ts`, join(directory, "app.ts")],
+      [`cd ${directory} && deno run --preload ./setup.ts ./main.ts`, join(directory, "main.ts")],
+      [`cd ${directory} && deno run --cpu-prof-dir ./profiles app.ts`, join(directory, "app.ts")],
+      [`cd ${directory} && deno run --config deno.json task.ts`, join(directory, "task.ts")],
+      [`cd ${directory} && deno run -c deno.json main.ts`, join(directory, "main.ts")],
+      [`cd ${directory} && deno run --importmap ./map.json main.ts`, join(directory, "main.ts")],
+      [`cd ${directory} && deno run --conditions development main.ts`, join(directory, "main.ts")],
+      [
+        `cd ${directory} && deno run --minimum-dependency-age 9 main.ts`,
+        join(directory, "main.ts"),
+      ],
+      [`cd ${directory} && deno serve --port 8080 api.ts`, join(directory, "api.ts")],
+      [`cd ${directory} && deno watch app.ts`, join(directory, "app.ts")],
+      [`deno ${join(directory, "task.ts")}`, join(directory, "task.ts")],
+    ]
+    for (const [command, expected] of cases) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toContain('"interpreter": "deno"')
+      expect(result.text).toContain('"status": "included"')
+      expect(result.text).toContain(expected)
+    }
+  })
+
+  test("does not attach deno tasks, packages, or lock values as script evidence", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "app.ts"), 'console.log("deno target")\n')
+    for (const command of [
+      "deno task build",
+      "deno fmt src/",
+      "deno lint",
+      "deno upgrade",
+      "deno bundle ./mod.ts",
+      "deno clean",
+      "deno x esbuild",
+      `cd ${directory} && deno run dev_task`,
+      `cd ${directory} && deno run jsr:@std/http/file-server`,
+      `cd ${directory} && deno run npm:cowsay@1`,
+      `cd ${directory} && deno run https://example.invalid/script.ts`,
+      `cd ${directory} && deno run --lock app.ts`,
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toBe("")
+    }
+  })
+
+  test("includes the file executed through tsx and tsx watch", async () => {
+    const directory = await fixture()
+    for (const name of ["task.ts", "app.ts"]) {
+      await writeFile(join(directory, name), 'console.log("tsx target")\n')
+    }
+    const cases: Array<[string, string]> = [
+      [`tsx ${join(directory, "task.ts")}`, join(directory, "task.ts")],
+      [`cd ${directory} && tsx app.ts`, join(directory, "app.ts")],
+      [`cd ${directory} && tsx watch app.ts`, join(directory, "app.ts")],
+      [`cd ${directory} && tsx watch --include ./src ./app.ts`, join(directory, "app.ts")],
+      [`cd ${directory} && tsx --env-file .env ./app.ts`, join(directory, "app.ts")],
+      [
+        `cd ${directory} && tsx --test --test-reporter-destination ./out.txt ./app.ts`,
+        join(directory, "app.ts"),
+      ],
+    ]
+    for (const [command, expected] of cases) {
+      const result = await enrichLocalScriptEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        directory,
+        8_000,
+      )
+      expect(result.text).toContain('"interpreter": "tsx"')
+      expect(result.text).toContain('"status": "included"')
+      expect(result.text).toContain(expected)
+    }
+  })
+
+  test("reports the first direct tsx operand even when it is not a file", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "app.ts"), 'console.log("tsx target")\n')
+    const command = `cd ${directory} && tsx dev ./app.ts`
+    const result = await enrichLocalScriptEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      directory,
+      8_000,
+    )
+    // tsx resolves the first operand as the module to run, exactly like the
+    // generic interpreter path: "dev" is the target, not a watch subcommand.
+    expect(result.text).toContain("dev")
+    expect(result.text).not.toContain("tsx target")
+  })
 })

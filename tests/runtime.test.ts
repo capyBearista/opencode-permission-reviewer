@@ -247,6 +247,34 @@ describe("runtime decisions", () => {
     }
   })
 
+  test("includes deno run target semantics in Luna's prompt", async () => {
+    const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-deno-run-")
+    const script = join(directory, "runner.ts")
+    await writeFile(script, 'const key = await Deno.readTextFile(".env")\n')
+    try {
+      const client = new MockClient()
+      client.nextStructured = decision("allow", {
+        rationale: "The run target reads one bounded file.",
+      })
+      const command = `deno run --allow-read=${directory} ${script}`
+      const harness = runtime(client, {}, undefined, { directory, worktree: directory })
+      expect(
+        (await harness.runtime.process(request({ patterns: [command], metadata: { command } })))
+          .kind,
+      ).toBe("allow")
+      const evidence = JSON.stringify(
+        (client.prompts[0] as { body?: { parts?: Array<{ text?: string }> } }).body?.parts?.[0]
+          ?.text ?? "",
+      )
+      expect(evidence).toContain("LOCAL_SCRIPT_ANALYSIS")
+      expect(evidence).toContain("local_script")
+      expect(evidence).toContain("runner.ts")
+      expect(evidence).toContain(".env")
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
   test("includes branch and preexisting staging in Luna's prompt for compound Git commits", async () => {
     const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-git-")
     try {

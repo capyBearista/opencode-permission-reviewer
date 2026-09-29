@@ -17,6 +17,8 @@ const INTERPRETERS = new Set([
   "python3",
   "node",
   "bun",
+  "deno",
+  "tsx",
   "bash",
   "sh",
   "zsh",
@@ -37,9 +39,9 @@ const OPTIONS_WITH_VALUE = new Set([
   "-m",
 ])
 
-// Subcommands whose next operand names a package or workspace, never a local
+// Bun subcommands whose operand names a package or workspace, never a local
 // script file. `run` is absent: it accepts a direct file target and is handled
-// by the dedicated run-target logic in scriptPath.
+// by the interpreter spec below.
 const BUN_SUBCOMMANDS = new Set([
   "add",
   "build",
@@ -55,26 +57,129 @@ const BUN_SUBCOMMANDS = new Set([
   "x",
 ])
 
-// Bun flags that consume a value; that value is never the run target.
-// `--cwd` and `--config` are absent on purpose: see the conservative bail in
-// scriptPath.
-const BUN_VALUE_OPTIONS = new Set([
-  "-F",
-  "--filter",
-  "--elide-lines",
-  "--shell",
-  "--env-file",
-  "--preload",
-  "--tsconfig-override",
+interface InterpreterSpec {
+  // Subcommands whose first non-option operand executes a local file.
+  fileTargetSubcommands?: Set<string>
+  // Options that consume the next token as their value; the value is never
+  // the script target.
+  valueOptions?: Set<string>
+  // Tokens that OPTIONS_WITH_VALUE consumes for other interpreters but this
+  // runtime treats as non-consuming flags (their value syntax is `=`, or they
+  // are repeated permission shorts).
+  noConsumeOptions?: Set<string>
+  // Options after which the executed file cannot be determined reliably;
+  // gathering nothing beats attaching the wrong file.
+  bailOptions?: Set<string>
+  // Subcommands whose operand is never a local file.
+  nonFileSubcommands?: Set<string>
+  // A subcommand-less invocation still executes a file operand: require the
+  // path-like shape so unrecognized subcommands gather nothing.
+  directRequiresPathLike?: boolean
+}
+
+// A script operand that names a file. Bare operands may resolve to manifest
+// scripts or package specifiers, so only separator- or extension-bearing
+// operands are classified as files; anything else conservatively gathers no
+// evidence. Scheme-bearing operands (https:, jsr:, npm:, node:, ...) are
+// remote or package references, not local paths; this also rejects
+// Windows-style drive paths, which never occur in the supported hosts.
+function pathLikeFileTarget(token: string): boolean {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(token)) return false
+  return token.includes("/") || /\.(?:[mc]?[jt]sx?)$/i.test(token)
+}
+
+// Deno permission shorts and require-equals flags never consume the next
+// token even though other runtimes use the same spellings with a value.
+const DENO_NO_CONSUME = new Set(["-r", "-W", "-I"])
+
+// Node flags that consume the next token when written without `=`; tsx
+// forwards every flag it does not own, so tsx inherits the same table.
+const NODE_VALUE_OPTIONS = new Set([
+  "--test-reporter-destination",
+  "--test-reporter",
+  "--test-name-pattern",
+  "--test-skip-pattern",
+  "--test-concurrency",
+  "--test-timeout",
+  "--test-shard",
+  "--input-type",
+  "--inspect-port",
+  "--inspect-publish-uid",
+  "--diagnostic-dir",
+  "--snapshot-blob",
+  "--icu-data-dir",
+  "--openssl-config",
+  "--redirect-warnings",
+  "--heapsnapshot-signal",
 ])
 
-// A `bun run` target that names a file. A bare operand may resolve to a
-// package.json script (Bun also falls back to module resolution when no
-// script matches), so only separator- or extension-bearing operands are
-// classified as files; other targets conservatively gather no evidence.
-function bunRunFileTarget(token: string): boolean {
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false
-  return token.includes("/") || /\.(?:[mc]?[jt]sx?)$/i.test(token)
+const INTERPRETER_SPECS: Record<string, InterpreterSpec> = {
+  node: {
+    valueOptions: NODE_VALUE_OPTIONS,
+  },
+  bun: {
+    fileTargetSubcommands: new Set(["run"]),
+    valueOptions: new Set([
+      "-F",
+      "--filter",
+      "--elide-lines",
+      "--shell",
+      "--env-file",
+      "--preload",
+      "--tsconfig-override",
+    ]),
+    bailOptions: new Set(["--cwd", "--config"]),
+    nonFileSubcommands: BUN_SUBCOMMANDS,
+  },
+  deno: {
+    fileTargetSubcommands: new Set(["run", "serve", "watch"]),
+    valueOptions: new Set([
+      "-c",
+      "--config",
+      "--import-map",
+      "--importmap",
+      "--conditions",
+      "--location",
+      "--cert",
+      "--ext",
+      "--seed",
+      "-L",
+      "--log-level",
+      "--preload",
+      "--minimum-dependency-age",
+      "--min-dep-age",
+      "--inspect-publish-uid",
+      "--cpu-prof-dir",
+      "--cpu-prof-name",
+      "--cpu-prof-interval",
+      "--lock",
+      "--port",
+      "--host",
+    ]),
+    noConsumeOptions: DENO_NO_CONSUME,
+    directRequiresPathLike: true,
+  },
+  tsx: {
+    fileTargetSubcommands: new Set(["watch"]),
+    valueOptions: new Set([
+      "--tsconfig",
+      "--include",
+      "--exclude",
+      "--ignore",
+      "--env-file",
+      "--env-file-if-exists",
+      "-C",
+      "--conditions",
+      "--watch-path",
+      "--experimental-loader",
+      ...NODE_VALUE_OPTIONS,
+    ]),
+  },
+}
+
+function matchesOption(token: string, options: Set<string>): boolean {
+  if (options.has(token)) return true
+  return [...options].some((option) => token.startsWith(`${option}=`))
 }
 
 function scriptPath(
@@ -82,36 +187,38 @@ function scriptPath(
   interpreterIndex: number,
   interpreter: string,
 ): string | undefined {
-  let bunRunTarget = false
+  const spec = INTERPRETER_SPECS[interpreter]
+  let fileTargetPending = false
   for (let index = interpreterIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]!
-    if (token === "-" || INLINE_CODE_OPTIONS.has(token) || token === "-m") return
-    // Bun applies --cwd before resolving the run target, and --config takes an
-    // optional value that makes the next token ambiguous. Guessing the
-    // resolution could attach evidence to the wrong file, so gather nothing.
+    // A dash spell can mean inline code for one runtime and a valued option
+    // for another (deno -c is --config, node -c is --check): the interpreter
+    // spec wins.
     if (
-      interpreter === "bun" &&
-      (token === "--cwd" ||
-        token.startsWith("--cwd=") ||
-        token === "--config" ||
-        token.startsWith("--config="))
+      token === "-" ||
+      (INLINE_CODE_OPTIONS.has(token) && !spec?.valueOptions?.has(token)) ||
+      token === "-m"
     ) {
       return
     }
-    if (OPTIONS_WITH_VALUE.has(token) || (interpreter === "bun" && BUN_VALUE_OPTIONS.has(token))) {
+    if (spec?.bailOptions !== undefined && matchesOption(token, spec.bailOptions)) return
+    if (spec?.noConsumeOptions?.has(token)) continue
+    if (OPTIONS_WITH_VALUE.has(token) || spec?.valueOptions?.has(token)) {
       index += 1
       continue
     }
     if (token.startsWith("-")) continue
-    if (interpreter === "bun" && token === "run" && !bunRunTarget) {
-      bunRunTarget = true
+    if (spec?.fileTargetSubcommands?.has(token) && !fileTargetPending) {
+      fileTargetPending = true
       continue
     }
     if (/[$`*?{}<>]/.test(token)) return
-    // The first non-option operand after `bun run` is decisive: a path-like
-    // token is the executed file, anything else is a manifest script name.
-    if (bunRunTarget) return bunRunFileTarget(token) ? token : undefined
-    if (interpreter === "bun" && BUN_SUBCOMMANDS.has(token)) return
+    // The first non-option operand after a file-target subcommand is
+    // decisive: a path-like token is the executed file, anything else is a
+    // manifest script or package reference.
+    if (fileTargetPending) return pathLikeFileTarget(token) ? token : undefined
+    if (spec?.directRequiresPathLike && !pathLikeFileTarget(token)) return
+    if (spec?.nonFileSubcommands?.has(token)) return
     return token
   }
   return

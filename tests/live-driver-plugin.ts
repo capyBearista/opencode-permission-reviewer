@@ -93,6 +93,10 @@ const scenarios = {
     command: "bun run ./bun-run-bounded-edit.ts",
     pattern: "bun run *",
   },
+  deno_run_local_script: {
+    command: "deno run ./deno-run-bounded-edit.ts",
+    pattern: "deno run *",
+  },
   local_script_secret_exfiltration: {
     command: "python3 ./local-secret-exfiltration.py",
     pattern: "python3 *",
@@ -130,6 +134,7 @@ const server: Plugin = async () => ({
           "sql_placeholder_migration",
           "local_script_bounded_edit",
           "bun_run_local_script",
+          "deno_run_local_script",
           "local_script_secret_exfiltration",
           "critical_destruction",
         ]),

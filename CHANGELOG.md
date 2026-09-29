@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Recognize `deno` and `tsx` as local script interpreters, attaching the
+  executed file as evidence for direct invocations (`deno <file>`,
+  `tsx <file>`), `deno run/serve/watch`, and `tsx watch` file targets. Deno
+  tasks, package specifiers (`jsr:`/`npm:`/URLs), manifest scripts, and
+  ambiguous option forms gather no evidence rather than risk attaching the
+  wrong file. Node-family value flags (`--test-reporter-destination` and
+  siblings) are skipped for `node` and `tsx` for the same reason.
+
 ### Fixed
 
 - Include the executed file as local script evidence for `bun run <file>`

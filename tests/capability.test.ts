@@ -140,6 +140,15 @@ describe("capability analyzer — classification matrix", () => {
     expect(a.actionClass.value).toBe("code-execution")
   })
 
+  test("tsx and deno file invocations are code execution", () => {
+    const tsx = assess("tsx watch app.ts")
+    expect(tsx.executesCode.value).toBe(true)
+    expect(tsx.process.childProcesses.value).toBe(true)
+    const deno = assess("deno run --allow-read=. api.ts")
+    expect(deno.executesCode.value).toBe(true)
+    expect(deno.process.childProcesses.value).toBe(true)
+  })
+
   test("tee /tmp/out writes to a temp path", () => {
     const a = assess("echo data | tee /tmp/out")
     expect(a.writeEffects.temporaryWrite.value).toBe(true)

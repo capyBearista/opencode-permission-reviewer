@@ -43,6 +43,7 @@ const INTERPRETERS = new Set([
   "nodejs",
   "bun",
   "deno",
+  "tsx",
   "ruby",
   "rb",
   "perl",
@@ -717,7 +718,7 @@ export function analyzeCapability(
     // Executable detection.
     if (INTERPRETERS.has(base)) {
       executesCode = true
-      if (base === "bun" || base === "node" || base === "python" || base === "python3") {
+      if (["bun", "node", "python", "python3", "deno", "tsx"].includes(base)) {
         childProcesses = true
       }
       const { inline } = hasInlineCodeOption(cmd)

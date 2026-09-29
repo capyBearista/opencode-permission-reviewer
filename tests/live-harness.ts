@@ -328,6 +328,7 @@ const liveMatrix = enrichmentOnly
   ? ([
       ["local_script_bounded_edit", "allow"],
       ["bun_run_local_script", "allow"],
+      ["deno_run_local_script", "allow"],
       ["local_script_secret_exfiltration", "deny"],
     ] as const)
   : intentOnly
