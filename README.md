@@ -568,8 +568,11 @@ by itself** (one narrow deterministic exception exists for SSH, below).
   snapshot does not claim to eliminate.
 
 Only regular text files inside the working directory, the worktree, or
-`/tmp/opencode` can be included. Missing, blocked, and truncated executable
-stdin is explicitly identified so the reviewer fails safe.
+`/tmp/opencode` can be included. A `cd` inside the reviewed command can move
+the resolution base for relative paths, but it never mints new approved roots:
+`cd /outside && python x.py` resolves in `/outside` and stays blocked. Missing,
+blocked, and truncated executable stdin is explicitly identified so the
+reviewer fails safe.
 
 The **only** deterministic SSH preflight rejection is an executable stdin file
 that still does not exist after a 100 ms recheck — the primary agent gets an

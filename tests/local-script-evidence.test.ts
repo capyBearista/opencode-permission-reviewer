@@ -53,6 +53,30 @@ describe("local script evidence enrichment", () => {
     expect(result.text).toContain(join(project, "task.py"))
   })
 
+  test("a cd outside the approved roots never mints an evidence root", async () => {
+    const directory = await fixture()
+    const outside = await mkdtemp(join(tmpdir(), "approval-reviewer-outside-"))
+    await writeFile(join(outside, "payload.py"), 'print("exfiltrated local script")\n')
+    try {
+      for (const command of [
+        `cd ${outside} && python3 payload.py`,
+        `cd ${outside} && python3 ${join(outside, "payload.py")}`,
+      ]) {
+        const result = await enrichLocalScriptEvidence(
+          request({ patterns: [command], metadata: { command } }),
+          directory,
+          directory,
+          12_000,
+        )
+        expect(result.text).toContain('"status": "blocked"')
+        expect(result.text).toContain("outside approved enrichment roots")
+        expect(result.text).not.toContain("exfiltrated local script")
+      }
+    } finally {
+      await rm(outside, { recursive: true })
+    }
+  })
+
   test("surfaces local filesystem, database, URL, and dynamic execution signals", async () => {
     const directory = await fixture()
     const script = join(directory, "mutate.py")

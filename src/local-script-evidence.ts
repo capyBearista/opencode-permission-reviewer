@@ -275,7 +275,13 @@ export async function enrichLocalScriptEvidence(
             status: "unavailable" as const,
             reason: segment.directoryReason ?? "working directory is unresolved",
           }
-        : await includeEvidenceFile(path, segment.directory ?? directory, worktree, maxChars)
+        : await includeEvidenceFile(
+            path,
+            segment.directory ?? directory,
+            directory,
+            worktree,
+            maxChars,
+          )
     records.push(recordFor(interpreter, file.path, file))
   }
 

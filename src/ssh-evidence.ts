@@ -337,9 +337,15 @@ async function descriptorRealPath(fd: number): Promise<string | undefined> {
 async function includeFileOnce(
   source: string,
   directory: string,
+  rootDirectory: string,
   worktree: string,
   maxChars: number,
 ): Promise<FileEvidence> {
+  // `directory` is only the RESOLUTION base: it may be a working directory
+  // tracked across a `cd` in the very command under review, so it can never
+  // mint approved read roots. Containment is judged against `rootDirectory`
+  // (the session's initial directory), the worktree, and /tmp/opencode: a
+  // `cd /outside && python x.py` resolves in /outside but stays blocked.
   const resolved = resolve(directory, source)
   if (SENSITIVE_PATH.test(resolved)) {
     return { source: "file", path: resolved, status: "blocked", reason: "sensitive path" }
@@ -350,7 +356,7 @@ async function includeFileOnce(
     // specific stdin file is missing, never that an auxiliary root vanished.
     const actual = await realpath(resolved)
     const [directoryRoot, worktreeRoot, temporaryRoot] = await Promise.all([
-      realpath(directory).catch(() => resolve(directory)),
+      realpath(rootDirectory).catch(() => resolve(rootDirectory)),
       realpath(worktree).catch(() => resolve(worktree)),
       realpath("/tmp/opencode").catch(() => "/tmp/opencode"),
     ])
@@ -486,13 +492,14 @@ function isMissingFile(result: FileEvidence): boolean {
 export async function includeEvidenceFile(
   source: string,
   directory: string,
+  rootDirectory: string,
   worktree: string,
   maxChars: number,
 ): Promise<FileEvidence> {
-  const first = await includeFileOnce(source, directory, worktree, maxChars)
+  const first = await includeFileOnce(source, directory, rootDirectory, worktree, maxChars)
   if (!isMissingFile(first)) return first
   await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 100))
-  return includeFileOnce(source, directory, worktree, maxChars)
+  return includeFileOnce(source, directory, rootDirectory, worktree, maxChars)
 }
 
 function deterministicDenial(stdin: FileEvidence | undefined): string | undefined {
@@ -596,7 +603,13 @@ export async function enrichSshEvidence(
               status: "unavailable" as const,
               reason: segment.directoryReason ?? "working directory before ssh is unresolved",
             }
-          : await includeEvidenceFile(stdinPath, segment.directory ?? directory, worktree, maxChars)
+          : await includeEvidenceFile(
+              stdinPath,
+              segment.directory ?? directory,
+              directory,
+              worktree,
+              maxChars,
+            )
     const remoteCommandSha256 = parsed.remoteCommand ? sha256(parsed.remoteCommand) : undefined
     const analyzedStdin = stdinSignals(stdin)
     const denial = deterministicDenial(stdin)

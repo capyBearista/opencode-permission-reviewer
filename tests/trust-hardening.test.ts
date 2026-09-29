@@ -530,6 +530,23 @@ describe("trust hardening — ssh stdin resolution after cd", () => {
       rmSync(root, { recursive: true })
     }
   })
+
+  test("cd to a directory outside the approved roots never mints a read root", async () => {
+    const root = tempDir("reviewer-ssh-")
+    const outside = tempDir("reviewer-outside-")
+    try {
+      writeFileSync(join(outside, "secret.sh"), "echo exfiltrated payload\n")
+      const command = `cd ${outside} && cat secret.sh | ssh deploy@prod.invalid 'bash -'`
+      const result = await enrichSshEvidence(bashRequest(command), root, root, 24_000)
+      expect(result.preflightDenial).toBeUndefined()
+      expect(result.text).toContain('"status": "blocked"')
+      expect(result.text).toContain("outside approved enrichment roots")
+      expect(result.text).not.toContain("exfiltrated payload")
+    } finally {
+      rmSync(root, { recursive: true })
+      rmSync(outside, { recursive: true })
+    }
+  })
 })
 
 // --- git evidence filter neutralization -------------------------------------------
@@ -1266,7 +1283,7 @@ describe("trust hardening — ssh stdin file evidence resilience", () => {
       const fifo = join(directory, "pipe")
       await execFileAsync("mkfifo", [fifo])
       const started = Date.now()
-      const result = await includeEvidenceFile(fifo, directory, directory, 10_000)
+      const result = await includeEvidenceFile(fifo, directory, directory, directory, 10_000)
       expect(Date.now() - started).toBeLessThan(5_000)
       expect(result.status).toBe("unavailable")
       expect(result.reason).toContain("not a regular file")
@@ -1283,6 +1300,7 @@ describe("trust hardening — ssh stdin file evidence resilience", () => {
       await execFileAsync("ln", ["-s", join(directory, "real"), join(directory, "sub")])
       const result = await includeEvidenceFile(
         join(directory, "sub", "script.txt"),
+        directory,
         directory,
         directory,
         10_000,
