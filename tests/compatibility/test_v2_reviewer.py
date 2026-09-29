@@ -349,6 +349,10 @@ for line in sys.stdin:
             data=b"", headers=host["headers"], method="POST")
         with urllib.request.urlopen(reload_request, timeout=30) as response:
             assert response.status == 204
+        # The host rebuilds locations after a reload without awaiting plugin
+        # activation; a permission evaluated in that window has no hooks and
+        # would stay pending. Wait for the plugin to be active again.
+        activate_host(host, "v2")
         assert mcp_servers(reviewer_directory) == []
         reloaded_session = review(7)
         deadline = time.monotonic() + 10
