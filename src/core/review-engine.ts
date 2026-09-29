@@ -84,7 +84,9 @@ export async function evaluateReview(
         ? `Automatic approval is disabled: the reviewer configuration is degraded (${degraded.join("; ")}). Fix the trusted config to restore auto-approval.`
         : envelope.actionEvidenceComplete === false
           ? "Automatic approval is blocked: a material part of the pending action was elided or truncated in the reviewer evidence, so the model judged an incomplete view of the action."
-          : undefined
+          : envelope.parsedCommand?.analysisTruncated === true
+            ? "Automatic approval is blocked: the command structure exceeded the static analysis depth or expansion budget, so deterministic analysis only covered part of the action."
+            : undefined
     if (reason !== undefined) {
       result = applyEscalationDisposition(
         {

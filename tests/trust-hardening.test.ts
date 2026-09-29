@@ -1178,6 +1178,19 @@ describe("trust hardening — elided action evidence blocks automatic approval",
     expect(client.replies).toHaveLength(0)
     expect(client.uiStatuses.map((s) => s.phase)).toEqual(["reviewing", "manual"])
   })
+
+  test("an LLM allow for wrapper nesting beyond the lexer budget escalates instead", async () => {
+    // The deterministic brake cannot resolve this structure, so a fooled
+    // model allow must not auto-approve: the truncation flag blocks it.
+    const client = new MockClient()
+    const harness = runtime(client)
+    const command = `${"env -S ".repeat(33)}rm -rf /`
+    const result = await harness.runtime.process(
+      request({ metadata: { command }, patterns: [command] }),
+    )
+    expect(result.kind).toBe("escalate")
+    expect(result.reason).toContain("static analysis depth or expansion budget")
+  })
 })
 
 // --- reviewer isolation -------------------------------------------------------------------

@@ -957,12 +957,17 @@ export function analyzeCapability(
   if (parsed.heredocs.length > 0 && parsed.heredocs.some((h) => h.dynamic)) {
     warnings.push("one or more heredoc bodies have unresolvable expansion")
   }
+  if (parsed.analysisTruncated) {
+    warnings.push("command structure exceeded the static analysis depth or expansion budget")
+  }
 
   const parserCompleteness = parsed.hasDynamicConstructs
     ? hasCommandSubstitution(parsed.sanitizedCommand) || parsed.heredocs.some((h) => h.dynamic)
       ? "opaque"
       : "partial"
-    : "complete-for-supported-form"
+    : parsed.analysisTruncated
+      ? "partial"
+      : "complete-for-supported-form"
 
   const summaryParts: string[] = [dominantClass]
   if (createsAdHocCode) summaryParts.push("ad-hoc code")

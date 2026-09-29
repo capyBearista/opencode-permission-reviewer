@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { emergencyBrakeReason } from "../src/emergency-brake.ts"
+import { analyzeCapability } from "../src/capability/bash-analyzer.ts"
+import { parseCommand } from "../src/capability/command-parser.ts"
 import { request } from "./helpers.ts"
 
 describe("deterministic emergency brake", () => {
@@ -195,5 +197,27 @@ describe("deterministic emergency brake", () => {
     expect(
       emergencyBrakeReason(request({ permission: "edit", metadata: { command: "rm -rf /" } })),
     ).toBeUndefined()
+  })
+
+  test("wrapper nesting beyond the lexer budget is invisible to the brake but flagged truncated", () => {
+    // The lexer's hard depth budget means this destructively-wrapped command
+    // never reaches the brake as effective commands. The contract: the brake
+    // stays quiet (it only judges what it fully resolves), while the
+    // capability analyzer reports partial coverage so the review engine can
+    // block auto-approval for the request.
+    const command = `${"env -S ".repeat(33)}rm -rf /`
+    expect(emergencyBrakeReason(request({ metadata: { command } }))).toBeUndefined()
+    const capability = analyzeCapability(
+      parseCommand(command),
+      "/home/user/project",
+      "/home/user/project",
+    )
+    expect(capability.parserCompleteness).toBe("partial")
+    expect(
+      capability.analysisWarnings.some((warning) =>
+        warning.includes("exceeded the static analysis depth or expansion budget"),
+      ),
+    ).toBe(true)
+    expect(parseCommand(command).analysisTruncated).toBe(true)
   })
 })

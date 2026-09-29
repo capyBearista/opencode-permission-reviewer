@@ -1,5 +1,5 @@
 import type { ParsedCommand, Redirection } from "../types.ts"
-import { effectiveCommands, lexSegments, type ShellToken } from "../shell-lexer.ts"
+import { analyzeEffectiveCommands, lexSegments, type ShellToken } from "../shell-lexer.ts"
 import { extractHeredocs } from "./heredoc-extractor.ts"
 
 /*
@@ -27,9 +27,11 @@ export function parseCommand(rawCommand: string): ParsedCommand {
   // real executable uniformly.
   const effective: ShellToken[][] = []
   const redirections: Redirection[][] = []
+  let analysisTruncated = false
   for (const segment of segments) {
-    const cmds = effectiveCommands(segment)
-    for (const cmd of cmds) {
+    const analysis = analyzeEffectiveCommands(segment)
+    analysisTruncated = analysisTruncated || analysis.truncated
+    for (const cmd of analysis.commands) {
       effective.push(cmd)
       redirections.push(extractRedirections(cmd))
     }
@@ -45,6 +47,7 @@ export function parseCommand(rawCommand: string): ParsedCommand {
     redirections,
     heredocs,
     hasDynamicConstructs: dynamic,
+    analysisTruncated,
   }
 }
 

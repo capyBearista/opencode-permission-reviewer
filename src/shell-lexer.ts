@@ -17,6 +17,9 @@
  * It deliberately does NOT expand variables, globs, command substitutions,
  * heredocs, or arithmetic. Those remain the model reviewer's job; the brake
  * is only a last line of defense for *unmistakable* literal destruction.
+ * Command-string recursion depth and the total number of resolved effective
+ * commands are hard-capped, so adversarial nesting can neither exhaust the
+ * stack nor expand the result without bound.
  */
 
 export interface ShellToken {
@@ -110,6 +113,18 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
 
 const SHELL_BINARIES = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "fish"])
 const SU_BINARIES = new Set(["su", "runuser", "super"])
+
+/** Ceiling on command-string re-entry (`sh -c`, `env -S`, ssh, busybox,
+ *  chroot). Deeper nesting than this is not a legitimate review shape; the
+ *  lexer stops descending and the unanalyzed remainder stays the model
+ *  reviewer's job, keeping unbounded input from exhausting the stack. */
+const MAX_WALK_DEPTH = 32
+
+/** Ceiling on collected effective commands. Command strings can expand
+ *  combinatorially (a level duplicating its script doubles the output), so
+ *  past this bound collection stops instead of exhausting time or memory on
+ *  adversarial input. */
+const MAX_EFFECTIVE_COMMANDS = 4096
 const SSH_VALUE_OPTIONS = new Set([
   "-i",
   "-l",
@@ -251,12 +266,38 @@ export function lexSegments(command: string): ShellSegment[] {
  * itself contains separators.
  */
 export function effectiveCommands(segment: ShellSegment): ShellToken[][] {
-  const out: ShellToken[][] = []
-  walk(segment.tokens, out)
-  return out
+  return analyzeEffectiveCommands(segment).commands
 }
 
-function walk(tokens: ShellToken[], out: ShellToken[][]): void {
+/** Result of bounded command-string resolution. `truncated` is true when the
+ *  depth or expansion budget stopped the descent, meaning `commands` is a
+ *  prefix of the real structure: parts of the command were never analyzed. */
+export interface EffectiveCommandsAnalysis {
+  commands: ShellToken[][]
+  truncated: boolean
+}
+
+export function analyzeEffectiveCommands(segment: ShellSegment): EffectiveCommandsAnalysis {
+  const out: ShellToken[][] = []
+  const state = { truncated: false }
+  walk(segment.tokens, out, 0, state)
+  return { commands: out, truncated: state.truncated }
+}
+
+function walk(
+  tokens: ShellToken[],
+  out: ShellToken[][],
+  depth: number,
+  state: { truncated: boolean },
+): void {
+  // Depth and expansion budget: recursion here is driven by the (untrusted)
+  // command text, so both bounds are hard stops, not tuning knobs. Hitting
+  // either one marks the analysis truncated so downstream gates know the
+  // collected commands do not cover the whole command.
+  if (depth > MAX_WALK_DEPTH || out.length >= MAX_EFFECTIVE_COMMANDS) {
+    state.truncated = true
+    return
+  }
   let i = 0
   while (i < tokens.length && SHELL_KEYWORDS.has(tokens[i]!.value)) i += 1
 
@@ -280,7 +321,8 @@ function walk(tokens: ShellToken[], out: ShellToken[][]): void {
           .slice(sIndex + 2)
           .map((t) => t.value)
           .join(" ")
-        for (const sub of lexSegments(tail ? `${script} ${tail}` : script)) walk(sub.tokens, out)
+        for (const sub of lexSegments(tail ? `${script} ${tail}` : script))
+          walk(sub.tokens, out, depth + 1, state)
         return
       }
     }
@@ -306,7 +348,7 @@ function walk(tokens: ShellToken[], out: ShellToken[][]): void {
         break
       }
       if (j < tokens.length) j += 1
-      if (j < tokens.length) walk(tokens.slice(j), out)
+      if (j < tokens.length) walk(tokens.slice(j), out, depth + 1, state)
       return
     }
     if (TRANSPARENT_WRAPPERS.has(base)) {
@@ -335,19 +377,20 @@ function walk(tokens: ShellToken[], out: ShellToken[][]): void {
     if (SHELL_BINARIES.has(base) || SU_BINARIES.has(base)) {
       const script = findCommandString(tokens, i + 1)
       if (script !== null) {
-        for (const sub of lexSegments(script)) walk(sub.tokens, out)
+        for (const sub of lexSegments(script)) walk(sub.tokens, out, depth + 1, state)
         return
       }
     }
     if (base === "ssh") {
       const rest = consumeSshRemote(tokens, i + 1)
       if (rest.length > 0) {
-        for (const sub of lexSegments(rest.map((t) => t.value).join(" "))) walk(sub.tokens, out)
+        for (const sub of lexSegments(rest.map((t) => t.value).join(" ")))
+          walk(sub.tokens, out, depth + 1, state)
       }
       return
     }
     if (base === "busybox") {
-      if (i + 1 < tokens.length) walk(tokens.slice(i + 1), out)
+      if (i + 1 < tokens.length) walk(tokens.slice(i + 1), out, depth + 1, state)
       return
     }
     if (base === "chroot") {
@@ -366,7 +409,7 @@ function walk(tokens: ShellToken[], out: ShellToken[][]): void {
         }
         break
       }
-      if (j + 1 < tokens.length) walk(tokens.slice(j + 1), out)
+      if (j + 1 < tokens.length) walk(tokens.slice(j + 1), out, depth + 1, state)
       return
     }
     out.push(tokens.slice(i))

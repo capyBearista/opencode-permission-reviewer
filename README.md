@@ -457,7 +457,10 @@ transport **never changes the safety decision**.
    direct credential export before any model call. It is wrapper-aware
    (`sudo`, `doas`, `env`, `command`, `nice`, `nohup`, …), so `sudo rm -rf /`,
    `env VAR=x rm -rf /`, `/bin/rm -rf /`, `sh -c 'rm -rf /'`, `ssh host rm -rf /`,
-   and `busybox rm -rf /` are all caught.
+   and `busybox rm -rf /` are all caught. Wrapper nesting deeper than a fixed
+   budget (or command lists beyond a fixed size) is not resolved: the brake
+   stays quiet for what it cannot fully see, the capability analysis is marked
+   partial, and automatic approval is blocked, escalating to the user instead.
 3. The plugin builds bounded **evidence**: recent transcript, recovered user
    intent, and optional read-only enrichment for SSH commands, local
    interpreter scripts, and Git state. Intent attribution uses a single origin

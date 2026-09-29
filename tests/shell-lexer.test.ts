@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { effectiveCommands, lexSegments, shellBasename } from "../src/shell-lexer.ts"
+import {
+  analyzeEffectiveCommands,
+  effectiveCommands,
+  lexSegments,
+  shellBasename,
+} from "../src/shell-lexer.ts"
 
 function values(tokens: { value: string }[]): string[] {
   return tokens.map((t) => t.value)
@@ -103,4 +108,57 @@ describe("shell lexer", () => {
     expect(firstExecutables("grep -r foo .")).toEqual([["grep", "-r", "foo", "."]])
     expect(firstExecutables("echo hello")).toEqual([["echo", "hello"]])
   })
+
+  test("resolves command strings nested within the depth budget", () => {
+    // 24 levels of `env -S` chaining (each prefix is one re-entry) is far
+    // beyond any legitimate review shape and must still reach the payload.
+    const nested = `${"env -S ".repeat(24)}rm -rf /`
+    expect(firstExecutables(nested)).toEqual([["rm", "-rf", "/"]])
+  })
+
+  test("unbounded nesting is cut off instead of exhausting the stack", () => {
+    // Before the depth cap this input blew the JS stack inside the emergency
+    // brake path; now the descent just stops past the budget.
+    const nested = `${"env -S ".repeat(20_000)}rm -rf /`
+    const segments = lexSegments(nested)
+    expect(segments.length).toBeGreaterThan(0)
+    // No throw is the assertion: the result may legitimately be empty because
+    // the destructive tail sits beyond the re-entry budget.
+    for (const segment of segments) effectiveCommands(segment)
+    expect(true).toBe(true)
+  }, 30_000)
+
+  test("cut-off nesting is reported as truncated analysis", () => {
+    // A destructively-wrapped command just past the budget is invisible to the
+    // deterministic brake; the truncation flag is what downstream gates use to
+    // refuse auto-approval for it.
+    const overBudget = `${"env -S ".repeat(33)}rm -rf /`
+    const overSegments = lexSegments(overBudget)
+    const over = analyzeEffectiveCommands(overSegments[0]!)
+    expect(over.commands).toEqual([])
+    expect(over.truncated).toBe(true)
+
+    const withinBudget = `${"env -S ".repeat(32)}rm -rf /`
+    const within = analyzeEffectiveCommands(lexSegments(withinBudget)[0]!)
+    expect(within.commands).toEqual([
+      [
+        { raw: "rm", value: "rm" },
+        { raw: "-rf", value: "-rf" },
+        { raw: "/", value: "/" },
+      ],
+    ])
+    expect(within.truncated).toBe(false)
+  })
+
+  test("exponential command expansion is capped", () => {
+    // One sh -c body with more sub-commands than the expansion budget: the
+    // destructive tail beyond the budget is invisible to the brake, and the
+    // analysis is flagged truncated.
+    const body = `${"true; ".repeat(4096)}rm -rf /`
+    const script = `sh -c '${body}'`
+    const analysis = analyzeEffectiveCommands(lexSegments(script)[0]!)
+    expect(analysis.commands.length).toBe(4096)
+    expect(analysis.truncated).toBe(true)
+    expect(analysis.commands[0]!.map((t) => t.value)).toEqual(["true"])
+  }, 30_000)
 })
