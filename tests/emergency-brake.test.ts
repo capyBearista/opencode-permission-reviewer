@@ -274,6 +274,13 @@ describe("deterministic emergency brake", () => {
     expect(emergencyBrakeReason(request({ metadata: { command: "find /* -delete" } }))).toBe(
       "Emergency brake: command contains unmistakable broad system destruction.",
     )
+    // Parent traversal that still lands on the root keeps the glob live.
+    expect(emergencyBrakeReason(request({ metadata: { command: "rm -rf /../*" } }))).toBe(
+      "Emergency brake: command contains unmistakable broad system destruction.",
+    )
+    expect(emergencyBrakeReason(request({ metadata: { command: "rm -rf /tmp/../../*" } }))).toBe(
+      "Emergency brake: command contains unmistakable broad system destruction.",
+    )
     // Quoted or escaped stars name a literal file and stay with the reviewer.
     expect(emergencyBrakeReason(request({ metadata: { command: 'rm -rf "/*"' } }))).toBeUndefined()
     expect(
