@@ -192,4 +192,209 @@ describe("Git state evidence enrichment", () => {
     expect(result.text).toContain('"status": "unavailable"')
     expect(result.text).toContain("not a git repository")
   })
+
+  test("resolves the remote operand of a push to its configured URLs", async () => {
+    const directory = await repository()
+    const upstream = "https://example.invalid/upstream.git"
+    await git(directory, ["remote", "add", "origin", upstream])
+    const command = "git push origin staging"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"input": "origin"')
+    expect(result.text).toContain('"kind": "configured-remote"')
+    expect(result.text).toContain('"pushUrls": [')
+    expect(result.text).toContain(`"${upstream}"`)
+    expect(result.text).toContain(`"fetchUrl": "${upstream}"`)
+    expect(result.text).toContain('"configuredRemotes"')
+  }, 30_000)
+
+  test("reports every pushurl a push would contact", async () => {
+    const directory = await repository()
+    await git(directory, ["remote", "add", "origin", "https://example.invalid/one.git"])
+    await git(directory, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      "https://example.invalid/two.git",
+    ])
+    await git(directory, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "origin",
+      "https://example.invalid/three.git",
+    ])
+    const command = "git push origin staging"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain("https://example.invalid/two.git")
+    expect(result.text).toContain("https://example.invalid/three.git")
+  }, 30_000)
+
+  test("options with separate values do not mask the remote operand", async () => {
+    const directory = await repository()
+    const upstream = "https://example.invalid/upstream.git"
+    await git(directory, ["remote", "add", "origin", upstream])
+    for (const command of [
+      "git fetch --depth 1 origin",
+      "git push -o ci.skip origin main",
+      "git pull -s recursive origin main",
+      "git ls-remote --sort=committerdate origin",
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        24_000,
+      )
+      expect(result.text).toContain('"input": "origin"')
+      expect(result.text).toContain('"kind": "configured-remote"')
+    }
+  }, 30_000)
+
+  test("a --repo override is the push destination, not the named remote", async () => {
+    const directory = await repository()
+    await git(directory, ["remote", "add", "origin", "https://example.invalid/upstream.git"])
+    const command = "git push --repo https://override.example.invalid/x.git origin main"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"input": "https://override.example.invalid/x.git"')
+    expect(result.text).toContain('"kind": "literal"')
+    expect(result.text).not.toContain('"kind": "configured-remote"')
+  }, 30_000)
+
+  test("redacts credential userinfo embedded in literal remote URLs", async () => {
+    const directory = await repository()
+    const secret = "syn" + "thetic-cred"
+    const command = `git push https://user:${secret}@example.invalid/x.git main`
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"kind": "literal"')
+    expect(result.text).toContain('"url": "https://user:<redacted>@example.invalid/x.git"')
+    expect(result.text).not.toContain(secret)
+  }, 30_000)
+
+  test("reports an operand that matches no configured remote", async () => {
+    const directory = await repository()
+    const command = "git push HEAD:main"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"input": "HEAD:main"')
+    expect(result.text).toContain('"kind": "unmatched"')
+    expect(result.text).toContain("matches no configured remote")
+  }, 30_000)
+
+  test("resolves the default remote for an operand-less push", async () => {
+    const directory = await repository()
+    const upstream = "https://example.invalid/upstream.git"
+    await git(directory, ["remote", "add", "origin", upstream])
+    const plain = await enrichGitEvidence(
+      request({ patterns: ["git push"], metadata: { command: "git push" } }),
+      directory,
+      24_000,
+    )
+    expect(plain.text).toContain('"source": "origin fallback"')
+    expect(plain.text).toContain(`"${upstream}"`)
+
+    const mirror = "https://mirror.example.invalid/rea.git"
+    await git(directory, ["remote", "add", "mirror", mirror])
+    await git(directory, ["config", "remote.pushDefault", "mirror"])
+    const viaPushDefault = await enrichGitEvidence(
+      request({ patterns: ["git push"], metadata: { command: "git push" } }),
+      directory,
+      24_000,
+    )
+    expect(viaPushDefault.text).toContain('"source": "remote.pushDefault"')
+    expect(viaPushDefault.text).toContain(`"${mirror}"`)
+
+    // branch.*.remote may hold a URL instead of a remote name: reported as
+    // the destination itself, not resolved as a name.
+    await git(directory, [
+      "config",
+      "branch.staging.remote",
+      "https://direct.example.invalid/u.git",
+    ])
+    const viaBranchUrl = await enrichGitEvidence(
+      request({ patterns: ["git pull"], metadata: { command: "git pull" } }),
+      directory,
+      24_000,
+    )
+    expect(viaBranchUrl.text).toContain('"source": "branch remote"')
+    expect(viaBranchUrl.text).toContain("https://direct.example.invalid/u.git")
+    expect(viaBranchUrl.text).toContain("configured value is not a named remote")
+  }, 30_000)
+
+  test("fetch --all, pull --all and remote update report every configured remote", async () => {
+    const directory = await repository()
+    await git(directory, ["remote", "add", "origin", "https://example.invalid/up.git"])
+    for (const command of ["git fetch --all", "git pull --all", "git remote update"]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        24_000,
+      )
+      expect(result.text).toContain('"source": "all configured remotes"')
+      expect(result.text).toContain("origin")
+    }
+  }, 30_000)
+
+  test("operands beyond the resolution cap are counted as omitted", async () => {
+    const directory = await repository()
+    for (const name of ["a", "b", "c", "d", "e", "f", "g"]) {
+      await git(directory, ["remote", "add", name, `https://example.invalid/${name}.git`])
+    }
+    // One remote operand per network command: push's extra positionals are
+    // refspecs, not repositories.
+    const command =
+      "git fetch a && git fetch b && git fetch c && git fetch d && git fetch e && git fetch f && git fetch g"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"remoteTargetsOmitted": 2')
+  }, 30_000)
+
+  test("remote set-url surfaces the rewritten destination", async () => {
+    const directory = await repository()
+    await git(directory, ["remote", "add", "origin", "https://old.example.invalid/u.git"])
+    const command = "git remote set-url origin https://new.example.invalid/u.git"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain('"input": "origin"')
+    expect(result.text).toContain('"input": "https://new.example.invalid/u.git"')
+    expect(result.text).toContain('"kind": "literal"')
+  }, 30_000)
+
+  test("commands without network subcommands carry no remote evidence", async () => {
+    const directory = await repository()
+    const command = 'git add target.py && git commit -m "local only"'
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).not.toContain("remoteTargets")
+    expect(result.text).not.toContain("defaultRemotes")
+  }, 30_000)
 })

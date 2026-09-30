@@ -23,8 +23,103 @@ interface PlannedGitActions {
   discardTargets: string[]
   removeTargets: string[]
   commands: string[]
+  /** Remote operands as written (configured names, literal URLs) collected
+   *  from network subcommands. Resolution to URLs happens later, inside the
+   *  containment envelope. */
+  remoteCandidates: string[]
+  /** Network subcommands whose operand list had no explicit remote, so git
+   *  will contact the branch/default-configured remote instead. */
+  needsDefaultRemote: string[]
   executionDirectory?: string
   directoryReason?: string
+}
+
+/** Subcommands whose first positional names (or implies) a remote. */
+const GIT_REMOTE_COMMANDS = new Set(["push", "fetch", "pull", "ls-remote", "remote"])
+
+/** Verbs of `git remote` that operate on a named remote as their next
+ *  positional. `update` takes an optional group, not a remote name. */
+const REMOTE_VERBS_WITH_NAME = new Set([
+  "prune",
+  "show",
+  "get-url",
+  "set-url",
+  "set-head",
+  "rename",
+  "remove",
+  "rm",
+])
+
+/** Options of the network subcommands that consume a separate value token.
+ *  Without skipping the value, `git fetch --depth 1 origin` would report "1"
+ *  as the remote operand and hide the real destination. Options with an
+ *  OPTIONAL value (`--force-with-lease`, `--rebase`, `--signed`, …) are
+ *  deliberately absent: git requires `=` for those, and skipping the next
+ *  token would swallow the remote instead. */
+const NETWORK_VALUE_OPTIONS: Record<string, Set<string>> = {
+  push: new Set(["-o", "--push-option", "--receive-pack", "--exec", "--repo"]),
+  fetch: new Set([
+    "--depth",
+    "--deepen",
+    "--shallow-since",
+    "--shallow-exclude",
+    "-j",
+    "--jobs",
+    "--refmap",
+    "--upload-pack",
+    "-o",
+    "--server-option",
+    "--negotiation-tip",
+    "--filter",
+  ]),
+  pull: new Set([
+    "--depth",
+    "--deepen",
+    "--shallow-since",
+    "--shallow-exclude",
+    "-j",
+    "--jobs",
+    "--refmap",
+    "--upload-pack",
+    "-o",
+    "--server-option",
+    "--negotiation-tip",
+    "--filter",
+    "-s",
+    "--strategy",
+    "-X",
+    "--strategy-option",
+  ]),
+  "ls-remote": new Set(["--sort", "--upload-pack", "-o", "--server-option"]),
+  remote: new Set(),
+}
+
+/** First positional operand of a network subcommand, skipping options and
+ *  their separate values. Returns the operand plus any `--repo`-style
+ *  override value, which is itself a push destination. */
+function networkOperand(
+  tokens: string[],
+  index: number,
+  subcommand: string,
+): { operand?: string | undefined; repoOverride?: string | undefined } {
+  const valueOpts = NETWORK_VALUE_OPTIONS[subcommand] ?? new Set<string>()
+  let afterSeparator = false
+  for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
+    const token = tokens[cursor]!
+    if (token === "--") {
+      afterSeparator = true
+      continue
+    }
+    if (!afterSeparator && token.startsWith("-") && token.length > 1) {
+      if (token === "--repo" && cursor + 1 < tokens.length) {
+        return { repoOverride: tokens[cursor + 1] }
+      }
+      if (valueOpts.has(token)) cursor += 1
+      continue
+    }
+    return { operand: token }
+  }
+  return {}
 }
 
 function gitSubcommand(tokens: string[], gitIndex: number): { command?: string; index: number } {
@@ -91,6 +186,8 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     discardTargets: [],
     removeTargets: [],
     commands: [],
+    remoteCandidates: [],
+    needsDefaultRemote: [],
   }
   const executionDirectories = new Set<string>()
   const directoryReasons = new Set<string>()
@@ -100,7 +197,10 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     if (gitIndex < 0) continue
     const { command: subcommand, index } = gitSubcommand(segment.tokens, gitIndex)
     if (!subcommand) continue
-    if (!["add", "commit", "checkout", "restore", "rm"].includes(subcommand)) continue
+    if (
+      !["add", "commit", "checkout", "restore", "rm", ...GIT_REMOTE_COMMANDS].includes(subcommand)
+    )
+      continue
     const execution = gitExecutionDirectory(segment.tokens, gitIndex, index, segment.directory)
     if (execution.directory) executionDirectories.add(execution.directory)
     else
@@ -115,6 +215,46 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     if (subcommand === "checkout" || subcommand === "restore") {
       const separator = segment.tokens.indexOf("--", index + 1)
       if (separator >= 0) result.discardTargets.push(...segment.tokens.slice(separator + 1))
+    }
+    if (
+      subcommand === "push" ||
+      subcommand === "fetch" ||
+      subcommand === "pull" ||
+      subcommand === "ls-remote"
+    ) {
+      const { operand, repoOverride } = networkOperand(segment.tokens, index, subcommand)
+      const candidates: string[] = []
+      if (repoOverride !== undefined) candidates.push(repoOverride)
+      if (operand !== undefined) candidates.push(operand)
+      if (candidates.length > 0) {
+        for (const candidate of candidates) {
+          if (result.remoteCandidates.length < 8) result.remoteCandidates.push(candidate)
+        }
+      } else if (result.needsDefaultRemote.length < 4) {
+        // --all fetches every configured remote, not just the default.
+        const all =
+          (subcommand === "fetch" || subcommand === "pull") && segment.tokens.includes("--all")
+        result.needsDefaultRemote.push(all ? `${subcommand} --all` : subcommand)
+      }
+    }
+    if (subcommand === "remote") {
+      const verbs = positionalAfter(segment.tokens, index)
+      const [verb, name, url] = verbs
+      if (verb === "update") {
+        // `remote update` fetches every configured remote (or the group's
+        // members) when no group operand is given.
+        if (name === undefined && result.needsDefaultRemote.length < 4) {
+          result.needsDefaultRemote.push("remote update --all")
+        }
+      } else if (verb !== undefined && REMOTE_VERBS_WITH_NAME.has(verb)) {
+        if (name !== undefined && result.remoteCandidates.length < 8)
+          result.remoteCandidates.push(name)
+        // set-url rewrites where the remote points: the new URL is a
+        // destination fact, not just a name.
+        if (verb === "set-url" && url !== undefined && result.remoteCandidates.length < 8) {
+          result.remoteCandidates.push(url)
+        }
+      }
     }
   }
   if (executionDirectories.size === 1 && directoryReasons.size === 0) {
@@ -289,6 +429,215 @@ function gitInspectionEnv(): NodeJS.ProcessEnv {
     // Skip the system gitconfig too: it can define filters just like the
     // repository-local config can.
     GIT_CONFIG_NOSYSTEM: "1",
+  }
+}
+
+/** A remote operand can be a configured remote name, a literal URL, an
+ *  SCP-like `user@host:path` target, or a local path. Only syntactic
+ *  classification happens here; configured names are resolved to URLs later,
+ *  inside the containment envelope. */
+function remoteOperandKind(value: string): "literal" | "name" {
+  if (value.includes("://")) return "literal"
+  if (value.startsWith("/")) return "literal"
+  // SCP-like user@host:path: a colon before any slash with a user@host pair
+  // before it. A plain "branch:ref" refspec has no "@", so it stays a name
+  // and is later reported as unmatched by the configured-remote list.
+  const colon = value.indexOf(":")
+  if (colon > 0 && /^[^/@\s]+@[^/@\s]+$/.test(value.slice(0, colon))) return "literal"
+  return "name"
+}
+
+/** Remote URLs may embed credential userinfo. The password never belongs in
+ *  reviewer evidence or audit logs; the user part stays because `git@host`
+ *  and token-user URLs identify the destination. */
+function sanitizeRemoteUrl(url: string): string {
+  return url.slice(0, 500).replace(/(\w+:\/\/)([^@/\s:]+):([^@/\s]*)@/g, "$1$2:<redacted>@")
+}
+
+interface RemoteTargetRecord {
+  input: string
+  kind: "configured-remote" | "literal" | "unmatched"
+  url?: string | undefined
+  pushUrls?: string[] | undefined
+  fetchUrl?: string | undefined
+  note?: string | undefined
+}
+
+interface DefaultRemoteRecord {
+  source:
+    | "branch pushRemote"
+    | "remote.pushDefault"
+    | "branch remote"
+    | "origin fallback"
+    | "all configured remotes"
+    | "unresolved"
+  name?: string | undefined
+  pushUrls?: string[] | undefined
+  fetchUrl?: string | undefined
+  note?: string | undefined
+}
+
+/** Resolve the collected remote operands against the repository's configured
+ *  remotes, all through the neutralized, contained git runner. Every
+ *  resolution failure stays a visible fact, never an invention. */
+const MAX_RESOLVED_REMOTES = 5
+const MAX_PUSH_URLS = 5
+
+/** Push affects every configured pushurl (or every url when no pushurl
+ *  exists), so resolution uses `get-url --push --all`: reporting only the
+ *  first URL would hide a real destination. Fetch contacts only the first
+ *  URL. Failures and empty output become notes, not silent absence. */
+async function resolveConfiguredRemote(
+  directory: string,
+  name: string,
+  neutralization: string[],
+): Promise<{ pushUrls?: string[]; fetchUrl?: string | undefined; note?: string }> {
+  const push = await runGit(
+    directory,
+    ["remote", "get-url", "--push", "--all", name],
+    neutralization,
+  )
+  const fetch = await runGit(directory, ["remote", "get-url", name], neutralization)
+  const pushUrls = push.ok
+    ? push.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, MAX_PUSH_URLS)
+        .map(sanitizeRemoteUrl)
+    : undefined
+  const fetchUrl =
+    fetch.ok && fetch.stdout.trim() ? sanitizeRemoteUrl(fetch.stdout.trim()) : undefined
+  const note =
+    pushUrls === undefined && fetchUrl === undefined
+      ? "URL resolution failed for this remote"
+      : pushUrls === undefined
+        ? "push URL resolution failed"
+        : fetchUrl === undefined
+          ? "fetch URL resolution failed"
+          : undefined
+  return {
+    ...(pushUrls !== undefined ? { pushUrls } : {}),
+    ...(fetchUrl !== undefined ? { fetchUrl } : {}),
+    ...(note !== undefined ? { note } : {}),
+  }
+}
+
+async function resolveRemoteTargets(
+  directory: string,
+  planned: PlannedGitActions,
+  configuredNames: string[],
+  neutralization: string[],
+): Promise<{ targets: RemoteTargetRecord[]; omitted: number; defaults: DefaultRemoteRecord[] }> {
+  const targets: RemoteTargetRecord[] = []
+  const seen = new Set<string>()
+  // Resolution is memoized per remote: repeated operands and default-remote
+  // fallbacks reuse one lookup instead of re-running git.
+  const resolvedRemotes = new Map<string, Awaited<ReturnType<typeof resolveConfiguredRemote>>>()
+  const resolveRemote = async (name: string) => {
+    if (!resolvedRemotes.has(name)) {
+      resolvedRemotes.set(name, await resolveConfiguredRemote(directory, name, neutralization))
+    }
+    return resolvedRemotes.get(name)!
+  }
+  for (const input of planned.remoteCandidates) {
+    if (targets.length >= MAX_RESOLVED_REMOTES) break
+    if (seen.has(input)) continue
+    seen.add(input)
+    // Every recorded operand is bounded and redacted: names get the length
+    // cap, literals additionally lose credential userinfo.
+    const bounded = sanitizeRemoteUrl(input.slice(0, 200))
+    if (remoteOperandKind(input) === "literal") {
+      targets.push({ input: bounded, kind: "literal", url: bounded })
+      continue
+    }
+    if (configuredNames.includes(input)) {
+      const urls = await resolveRemote(input)
+      targets.push({ input: bounded, kind: "configured-remote", ...urls })
+      continue
+    }
+    targets.push({
+      input: bounded,
+      kind: "unmatched",
+      note: "matches no configured remote; git treats the operand as a direct repository URL or path (the command fails unless that target exists)",
+    })
+  }
+
+  const defaults: DefaultRemoteRecord[] = []
+  for (const annotation of planned.needsDefaultRemote) {
+    if (annotation.includes("--all")) {
+      defaults.push({
+        source: "all configured remotes",
+        note: `${annotation} contacts every configured remote: ${configuredNames.slice(0, 10).join(", ") || "(none configured)"}`,
+      })
+      continue
+    }
+    defaults.push(
+      await resolveDefaultRemote(
+        directory,
+        annotation,
+        configuredNames,
+        neutralization,
+        resolveRemote,
+      ),
+    )
+  }
+
+  return {
+    targets,
+    // Unique candidates beyond the resolution cap, including the one that
+    // tripped it: the earlier `seen`-based count missed exactly that one.
+    omitted: Math.max(0, new Set(planned.remoteCandidates).size - targets.length),
+    defaults,
+  }
+}
+
+/** Resolve which remote a no-operand network subcommand contacts, following
+ *  git's own precedence: push consults branch.<name>.pushRemote, then
+ *  remote.pushDefault, then branch.<name>.remote; fetch/pull consult
+ *  branch.<name>.remote; both fall back to origin when configured. The
+ *  configured value may itself be a URL rather than a remote name, so it is
+ *  bounded and redacted like any operand. */
+async function resolveDefaultRemote(
+  directory: string,
+  annotation: string,
+  configuredNames: string[],
+  neutralization: string[],
+  resolveRemote: (name: string) => Promise<Awaited<ReturnType<typeof resolveConfiguredRemote>>>,
+): Promise<DefaultRemoteRecord> {
+  const branch = await runGit(directory, ["rev-parse", "--abbrev-ref", "HEAD"], neutralization)
+  if (!branch.ok) {
+    return { source: "unresolved", note: "current branch could not be resolved" }
+  }
+  const branchName = branch.stdout.trim()
+  const configChain =
+    annotation === "push"
+      ? [
+          { key: `branch.${branchName}.pushRemote`, source: "branch pushRemote" as const },
+          { key: "remote.pushDefault", source: "remote.pushDefault" as const },
+          { key: `branch.${branchName}.remote`, source: "branch remote" as const },
+        ]
+      : [{ key: `branch.${branchName}.remote`, source: "branch remote" as const }]
+  for (const step of configChain) {
+    const value = await runGit(directory, ["config", "--get", step.key], neutralization)
+    if (!value.ok || !value.stdout.trim()) continue
+    const name = sanitizeRemoteUrl(value.stdout.trim().slice(0, 200))
+    if (!configuredNames.includes(name)) {
+      // branch.*.remote may legitimately hold a URL or path instead of a
+      // configured remote name: report it as the destination verbatim
+      // (bounded) instead of resolving it as a name.
+      return { source: step.source, name, note: "configured value is not a named remote" }
+    }
+    const urls = await resolveRemote(name)
+    return { source: step.source, name, ...urls }
+  }
+  if (configuredNames.includes("origin")) {
+    const urls = await resolveRemote("origin")
+    return { source: "origin fallback", name: "origin", ...urls }
+  }
+  return {
+    source: "unresolved",
+    note: `no branch.${branchName}.remote, no remote.pushDefault, and no origin remote is configured`,
   }
 }
 
@@ -483,6 +832,36 @@ export async function enrichGitEvidence(
   }
 
   const parsed = parseStatus(status.stdout)
+  // Remote operands only resolve inside the containment envelope, after the
+  // repository root has been verified: `git remote`/`get-url` are plain config
+  // reads, but running them anywhere would inspect an arbitrary repository.
+  // The listing is gated on actual demand so plain add/commit reviews spawn
+  // no extra git processes.
+  const needsRemoteEvidence =
+    planned.remoteCandidates.length > 0 || planned.needsDefaultRemote.length > 0
+  const remotes = needsRemoteEvidence
+    ? await runGit(gitDirectory, ["remote"], neutralization)
+    : undefined
+  const configuredNames = remotes?.ok
+    ? remotes.stdout
+        .split(/\s+/)
+        .filter((name) => name.length > 0)
+        .slice(0, 50)
+    : []
+  const remoteResolution = !needsRemoteEvidence
+    ? undefined
+    : remotes?.ok
+      ? await resolveRemoteTargets(gitDirectory, planned, configuredNames, neutralization)
+      : {
+          targets: [],
+          omitted: 0,
+          defaults: [
+            {
+              source: "unresolved",
+              note: `configured remote listing failed: ${(remotes && !remotes.ok ? remotes.reason : "unknown").slice(0, 200)}`,
+            } satisfies DefaultRemoteRecord,
+          ],
+        }
   const affectedTargets = [
     ...new Set([...planned.discardTargets, ...planned.removeTargets]),
   ].filter((value) => !/[$`*?{}<>]/.test(value))
@@ -507,6 +886,14 @@ export async function enrichGitEvidence(
     untracked: boundedList(parsed.untracked),
     discardTargets: boundedList(planned.discardTargets),
     removeTargets: boundedList(planned.removeTargets),
+    ...(remoteResolution === undefined
+      ? {}
+      : {
+          remoteTargets: remoteResolution.targets,
+          remoteTargetsOmitted: remoteResolution.omitted,
+          defaultRemotes: remoteResolution.defaults,
+          configuredRemotes: configuredNames,
+        }),
     unresolvedPlannedPaths: boundedList(
       unresolved([...planned.plannedAdd, ...planned.discardTargets, ...planned.removeTargets]),
     ),

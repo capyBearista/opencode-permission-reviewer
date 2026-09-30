@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Git remote evidence for network subcommands: `git push`, `fetch`, `pull`,
+  `ls-remote`, and `git remote` now report each remote operand as a configured
+  remote (with the push/fetch URLs it resolves to, credential userinfo
+  redacted), a literal URL, or unmatched, plus the default remote an
+  operand-less command would contact. The reviewer judges the destination
+  from this evidence instead of treating an unresolved alias as unknown.
+
+### Added
+
 - Recognize `deno` and `tsx` as local script interpreters, attaching the
   executed file as evidence for direct invocations (`deno <file>`,
   `tsx <file>`), `deno run/serve/watch`, and `tsx watch` file targets. Deno

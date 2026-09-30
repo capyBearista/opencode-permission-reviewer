@@ -56,11 +56,12 @@ export const DEFAULT_TENANT_POLICY = `
 ## Local scripts and Git state
 - When LOCAL_SCRIPT_ANALYSIS is present, judge the included script semantics rather than treating an interpreter invocation as opaque. Blocked, unavailable, or truncated content remains incomplete evidence.
 - GIT_STATE_ANALYSIS is a read-only snapshot taken before the pending shell command. Planned "git add" paths are not yet staged; distinguish them from preexisting staged files that a following commit could also include.
+- For git push/fetch/pull/ls-remote, GIT_STATE_ANALYSIS reports remoteTargets and defaultRemotes: each operand (credential userinfo redacted, bounded), whether it is a configured remote, a literal URL, or unmatched, and the push/fetch URLs the remote resolves to. Judge the network destination from that evidence: a remote whose URL matches the repository the session is working on is not an unknown destination, while a configured remote pointing anywhere else is still a destination to judge on its own. An unmatched operand, an unresolved default remote, or a failed resolution stays ambiguous and must not be assumed safe.
 - A verified branch, empty unrelated staging area, explicit planned paths, and matching user intent can make a local commit medium risk and approvable. Missing or contradictory Git state must not be assumed safe.
 - Commands that discard working-tree changes still require authorization for that loss even when the target diff is shown.
 `.trim()
 
-export const REVIEWER_PROMPT_VERSION = "2.3.0"
+export const REVIEWER_PROMPT_VERSION = "2.3.1"
 
 export const REVIEWER_SYSTEM_PROMPT = `
 You are an automatic approval reviewer for an AI coding agent. Judge exactly one pending action.
