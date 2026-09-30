@@ -108,7 +108,7 @@
     "test:stress": "bun test tests/stress.test.ts --timeout 30000",
     "test:package": "bun test tests/package-smoke.test.ts --timeout 120000",
     "test:coverage": "bun test --coverage --coverage-reporter lcov --coverage-dir ./coverage && bun scripts/check-coverage.ts",
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build"
+    "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run test"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "0.6.0",
