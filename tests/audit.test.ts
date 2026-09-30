@@ -173,7 +173,7 @@ describe("audit writer", () => {
     expect(logs.length).toBeGreaterThan(0)
   })
 
-  test("a pre-existing audit file keeps its permissions (restrictive mode only on create)", async () => {
+  test("a pre-existing group-readable audit file is tightened to 0600 on append", async () => {
     const auditPath = join(directory, "audit.jsonl")
     await writeFile(auditPath, "")
     await chmod(auditPath, 0o644)
@@ -182,9 +182,28 @@ describe("audit writer", () => {
     const handle = await open(auditPath, "r")
     try {
       const info = await handle.stat()
-      expect(info.mode & 0o777).toBe(0o644)
+      expect(info.mode & 0o777).toBe(0o600)
       const parsed = JSON.parse((await readFile(handle, "utf8")).trim()) as ReviewAuditRecord
       expect(parsed.requestID).toBe("per_keep")
+    } finally {
+      await handle.close()
+    }
+  })
+
+  test("mode 0600 is re-asserted when the file is loosened between appends", async () => {
+    const auditPath = join(directory, "audit-loosened.jsonl")
+    const writeAudit = createAuditWriter({ ...DEFAULT_CONFIG, audit: true, auditPath })!
+    await writeAudit(record({ requestID: "loose_1" }))
+    // An external process loosens the file mid-life.
+    await chmod(auditPath, 0o644)
+    await writeAudit(record({ requestID: "loose_2" }))
+    const handle = await open(auditPath, "r")
+    try {
+      const info = await handle.stat()
+      expect(info.mode & 0o777).toBe(0o600)
+      const lines = (await readFile(handle, "utf8")).trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect((JSON.parse(lines[1]!) as ReviewAuditRecord).requestID).toBe("loose_2")
     } finally {
       await handle.close()
     }

@@ -83,6 +83,36 @@ describe("shell lexer", () => {
     expect(firstExecutables("stdbuf -oL rm -rf /")).toEqual([["rm", "-rf", "/"]])
   })
 
+  test("peels clustered value-taking options without swallowing the command", () => {
+    // getopt clusters: the value sits in the rest of the cluster or, when the
+    // value-taking letter is last, in the next token.
+    expect(firstExecutables("sudo -nu root rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("sudo -Eu root rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    // -un: the value is embedded ("n"), so the executable follows directly.
+    expect(firstExecutables("sudo -un rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    // Pure clusters never consume the next token.
+    expect(firstExecutables("sudo -En rm -rf /")).toEqual([["rm", "-rf", "/"]])
+  })
+
+  test("peels systemd-run, strace, ltrace and script -c", () => {
+    expect(firstExecutables("systemd-run rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("systemd-run --wait --pipe bash -c 'rm -rf /'")).toEqual([
+      ["rm", "-rf", "/"],
+    ])
+    expect(firstExecutables("systemd-run -p CPUQuota=50% rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("systemd-run --unit cleanup.service rm -rf /")).toEqual([
+      ["rm", "-rf", "/"],
+    ])
+    expect(firstExecutables("strace rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("strace -o /tmp/trace.log rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("ltrace -s 128 rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("script -c 'rm -rf /' /dev/null")).toEqual([["rm", "-rf", "/"]])
+    // script without -c starts an interactive session: no command to peel.
+    expect(firstExecutables("script -q /dev/null typescript.log")).toEqual([
+      ["script", "-q", "/dev/null", "typescript.log"],
+    ])
+  })
+
   test("peels timeout, watch and xargs wrappers", () => {
     expect(firstExecutables("timeout 5 make")).toEqual([["make"]])
     expect(firstExecutables("timeout --signal=KILL 10s rm -rf /")).toEqual([["rm", "-rf", "/"]])

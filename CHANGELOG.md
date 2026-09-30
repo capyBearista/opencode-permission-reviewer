@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Include the executed file as local script evidence for `bun run <file>`
   commands; package manifest scripts (`bun run check`) and bun option values
   are not mistaken for the run target.
+- Emergency brake: peel `systemd-run`, `strace`, `ltrace`, and `script -c`
+  wrappers (including clustered value-taking options such as `sudo -nu root`
+  and `env -iS`), treat a live root glob (`rm -rf /*`) as root destruction,
+  and reject shell redirections onto real block devices (`> /dev/sda`,
+  glued `2>/dev/sda`, `tee /dev/sda`) in direct and command-string forms.
+- Audit records always land in a mode `0600` file: a pre-existing audit path
+  with looser permissions is tightened before receiving new records instead of
+  being extended as-is.
 
 ## [2.3.1] - 2026-09-28
 

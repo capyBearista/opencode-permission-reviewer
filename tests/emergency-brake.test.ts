@@ -220,4 +220,125 @@ describe("deterministic emergency brake", () => {
     ).toBe(true)
     expect(parseCommand(command).analysisTruncated).toBe(true)
   })
+
+  test("execution tracers and systemd-run are peeled as wrappers", () => {
+    for (const command of [
+      "systemd-run rm -rf /",
+      "systemd-run --wait --pipe bash -c 'rm -rf /'",
+      "systemd-run -p CPUQuota=50% rm -rf /",
+      "strace rm -rf /",
+      "strace -o /tmp/trace.log rm -rf /",
+      "ltrace -s 128 rm -rf /",
+    ]) {
+      expect(emergencyBrakeReason(request({ metadata: { command } }))).toBe(
+        "Emergency brake: command contains unmistakable broad system destruction.",
+      )
+    }
+    // Tracing without a wrapped command attaches to a PID: nothing to peel,
+    // nothing to trip on.
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "strace -p 1234" } })),
+    ).toBeUndefined()
+  })
+
+  test("script -c executes its command string", () => {
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: 'script -c "rm -rf /" /dev/null' } })),
+    ).toBe("Emergency brake: command contains unmistakable broad system destruction.")
+    expect(
+      emergencyBrakeReason(
+        request({ metadata: { command: "script -q /dev/null typescript.log" } }),
+      ),
+    ).toBeUndefined()
+  })
+
+  test("clustered value-taking wrapper options do not hide the command", () => {
+    for (const command of [
+      "sudo -nu root rm -rf /",
+      "sudo -Eu root rm -rf /",
+      "sudo -un rm -rf /",
+    ]) {
+      expect(emergencyBrakeReason(request({ metadata: { command } }))).toBe(
+        "Emergency brake: command contains unmistakable broad system destruction.",
+      )
+    }
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "sudo -u deploy ls" } })),
+    ).toBeUndefined()
+  })
+
+  test("a live root glob is root destruction, a quoted star is not", () => {
+    expect(emergencyBrakeReason(request({ metadata: { command: "rm -rf /*" } }))).toBe(
+      "Emergency brake: command contains unmistakable broad system destruction.",
+    )
+    expect(emergencyBrakeReason(request({ metadata: { command: "find /* -delete" } }))).toBe(
+      "Emergency brake: command contains unmistakable broad system destruction.",
+    )
+    // Quoted or escaped stars name a literal file and stay with the reviewer.
+    expect(emergencyBrakeReason(request({ metadata: { command: 'rm -rf "/*"' } }))).toBeUndefined()
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "rm -rf /bin/*" } })),
+    ).toBeUndefined()
+    // Relative globs clear one directory, not the system root.
+    for (const command of [
+      "rm -rf *",
+      "rm -rf ./*",
+      "rm -rf ../*",
+      "rm -rf a/../*",
+      "find * -delete",
+      'find ./* -name "*.tmp" -delete',
+      "rm -rf ./dist",
+    ]) {
+      expect(emergencyBrakeReason(request({ metadata: { command } }))).toBeUndefined()
+    }
+  })
+
+  test("shell redirection onto a real block device is destruction", () => {
+    for (const command of [
+      "echo x > /dev/sda",
+      "cat /dev/urandom > /dev/nvme0n1",
+      "echo x>>/dev/sdb",
+      "echo x> /dev/sda",
+      "echo x 2> /dev/sda",
+      "echo x 1>> /dev/sda",
+      "echo x >| /dev/sda",
+      "cp a.iso /dev/sdc 2>/dev/null; echo done>/dev/sdd",
+      "echo x | tee /dev/sda",
+      // Command-string destructuring must surface the inner redirect.
+      "sh -c 'echo x > /dev/sda'",
+      "sudo bash -c 'echo x > /dev/sda'",
+      "ssh host 'echo x > /dev/sda'",
+      "env -S 'echo x > /dev/sda'",
+      "script -c 'echo x > /dev/sda'",
+    ]) {
+      expect(emergencyBrakeReason(request({ metadata: { command } }))).toBe(
+        "Emergency brake: command contains unmistakable broad system destruction.",
+      )
+    }
+    // Quoted mentions are data, pseudo-devices stay whitelisted, and reading
+    // a device through a pipe is not writing to it.
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: 'echo "x > /dev/sda"' } })),
+    ).toBeUndefined()
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "tee /tmp/out.txt" } })),
+    ).toBeUndefined()
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "echo hi > /dev/null" } })),
+    ).toBeUndefined()
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "echo x | grep /dev/sda" } })),
+    ).toBeUndefined()
+    expect(
+      emergencyBrakeReason(request({ metadata: { command: "grep pattern>out.txt" } })),
+    ).toBeUndefined()
+  })
+
+  test("clustered env -S still exposes its command string", () => {
+    for (const command of ["env -S rm -rf /", "env -iS rm -rf /"]) {
+      expect(emergencyBrakeReason(request({ metadata: { command } }))).toBe(
+        "Emergency brake: command contains unmistakable broad system destruction.",
+      )
+    }
+  })
 })

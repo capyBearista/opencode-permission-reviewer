@@ -88,6 +88,30 @@ function resolvesToRoot(rawTarget: string): boolean {
   return stack.length === 0
 }
 
+/**
+ * A live glob that expands to every entry of the filesystem root (`/*`,
+ * `///*`): the shell expands it before rm runs, so `rm -rf /*` destroys the
+ * system exactly like `rm -rf /`. The star is only an operator when the token
+ * reached the lexer verbatim (raw equals value): quoted or escaped forms
+ * (`'/*'`, `/\*`) name a literal file and stay with the reviewer.
+ */
+function isLiveRootGlob(token: ShellToken): boolean {
+  if (token.raw !== token.value) return false
+  if (!token.value.startsWith("/")) return false
+  const components = token.value.split("/")
+  if (components[components.length - 1] !== "*") return false
+  const stack: string[] = []
+  for (const part of components.slice(0, -1)) {
+    if (part === "" || part === ".") continue
+    if (part === "..") {
+      stack.pop()
+      continue
+    }
+    stack.push(part)
+  }
+  return stack.length === 0
+}
+
 function isRmRootDestruction(command: string): boolean {
   for (const segment of lexSegments(command)) {
     for (const effective of effectiveCommands(segment)) {
@@ -103,7 +127,7 @@ function isRmRootDestruction(command: string): boolean {
           continue
         }
         if (!endOfFlags && value.startsWith("-") && value.length > 1) continue
-        if (resolvesToRoot(value)) return true
+        if (resolvesToRoot(value) || isLiveRootGlob(effective[i]!)) return true
       }
     }
   }
@@ -121,7 +145,7 @@ function isFindRootDestruction(command: string): boolean {
     for (const effective of effectiveCommands(segment)) {
       if (effective.length === 0) continue
       if (shellBasename(effective[0]!.value) !== "find") continue
-      let root: string | null = null
+      let root: ShellToken | null = null
       let hasDelete = false
       let hasExecRm = false
       for (let i = 1; i < effective.length; i += 1) {
@@ -133,7 +157,7 @@ function isFindRootDestruction(command: string): boolean {
         if (root === null) {
           if (value.startsWith("-") && value.length > 1) continue
           if (value === "--") continue
-          root = value
+          root = effective[i]!
           continue
         }
         if (value === "-delete") hasDelete = true
@@ -152,7 +176,12 @@ function isFindRootDestruction(command: string): boolean {
           }
         }
       }
-      if (root !== null && resolvesToRoot(root) && (hasDelete || hasExecRm)) return true
+      if (
+        root !== null &&
+        (resolvesToRoot(root.value) || isLiveRootGlob(root)) &&
+        (hasDelete || hasExecRm)
+      )
+        return true
     }
   }
   return false
@@ -181,6 +210,32 @@ function isBlockDeviceTarget(value: string): boolean {
   return BLOCK_DEVICE_RE.test(value)
 }
 
+/** Shell redirection onto a real block device: `> /dev/sda` (or `>>`, `>|`,
+ *  an fd-prefixed `2>/dev/sda`, a word-glued `x>/dev/sdc`, or the operator
+ *  ending its own token as in `echo x> /dev/sda`) overwrites a disk regardless
+ *  of which executable produced the bytes. In an unquoted token every `>` is
+ *  an operator in bash, so glued forms are scanned too; a quoted `>` stays
+ *  inside its string token (raw differs from value), so `echo "x > /dev/sda"`
+ *  is data, not an operator. */
+const REDIRECT_WITH_TARGET = /(>{1,2}\|?)\s*([^\s;|&()<>]+)/g
+const TRAILING_REDIRECT_OPERATOR = /(>{1,2}\|?)$/
+
+function redirectTargetsBlockDevice(tokens: ShellToken[]): boolean {
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i]!
+    if (token.raw !== token.value) continue
+    if (TRAILING_REDIRECT_OPERATOR.test(token.value)) {
+      const target = tokens[i + 1]
+      if (target !== undefined && isBlockDeviceTarget(target.value)) return true
+      continue
+    }
+    for (const match of token.value.matchAll(REDIRECT_WITH_TARGET)) {
+      if (isBlockDeviceTarget(match[2]!)) return true
+    }
+  }
+  return false
+}
+
 /** Whether a short-flag cluster (e.g. `-af`) contains a given flag letter. */
 function shortFlagClusterIncludes(value: string, letter: string): boolean {
   return (
@@ -189,12 +244,36 @@ function shortFlagClusterIncludes(value: string, letter: string): boolean {
 }
 
 function isDeviceDestruction(command: string): boolean {
-  for (const segment of lexSegments(command)) {
+  const segments = lexSegments(command)
+  for (let s = 0; s < segments.length; s += 1) {
+    const segment = segments[s]!
+    if (redirectTargetsBlockDevice(segment.tokens)) return true
+    // The clobber-override redirect `>|` loses its `|` to the lexer's
+    // separator handling: the operator survives as a trailing `>` with the
+    // target as the next segment's first token. A bare `>` at segment end is
+    // never valid bash otherwise, so the shape is unambiguous.
+    const trailing = segment.tokens.at(-1)
+    if (
+      trailing !== undefined &&
+      trailing.raw === trailing.value &&
+      (trailing.value === ">" || trailing.value === ">>")
+    ) {
+      const next = segments[s + 1]?.tokens[0]
+      if (next !== undefined && isBlockDeviceTarget(next.value)) return true
+    }
     for (const effective of effectiveCommands(segment)) {
       if (effective.length === 0) continue
+      // Command-string destructuring (`sh -c '… > /dev/sda'`, `script -c …`,
+      // ssh remote commands) only surfaces inside the resolved effective
+      // commands, so the redirect scan runs on them too.
+      if (redirectTargetsBlockDevice(effective)) return true
       const base = shellBasename(effective[0]!.value)
       const args = effective.slice(1)
       const targetsBlock = args.some((t) => isBlockDeviceTarget(t.value))
+
+      // tee copies its stdin into every file operand: a real block device
+      // operand is a raw overwrite, as unmistakable as shred.
+      if (base === "tee" && targetsBlock) return true
 
       // mkfs / mkfs.* / mke2fs / mkswap: any real block target is destruction,
       // unless a dry-run flag is present (`-n` for mke2fs/mkfs.ext4, `-V`/`-t`

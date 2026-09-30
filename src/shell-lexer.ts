@@ -79,6 +79,9 @@ const TRANSPARENT_WRAPPERS = new Set([
   "setpriv",
   "unshare",
   "run0",
+  "systemd-run",
+  "strace",
+  "ltrace",
   "watch",
   "xargs",
   "timeout",
@@ -91,7 +94,22 @@ const TRANSPARENT_WRAPPERS = new Set([
  * the real executable that follows them is not swallowed by mistake.
  */
 const VALUE_OPTIONS: Record<string, Set<string>> = {
-  sudo: new Set(["-u", "--user", "-g", "--group", "-C", "-p", "-R", "-T", "-U", "-D", "-r", "-t"]),
+  sudo: new Set([
+    "-u",
+    "--user",
+    "-g",
+    "--group",
+    "-C",
+    "-p",
+    "--prompt",
+    "-R",
+    "-T",
+    "-U",
+    "-D",
+    "--chdir",
+    "-r",
+    "-t",
+  ]),
   doas: new Set(["-u", "--user", "-a"]),
   pkexec: new Set(["--user", "--session"]),
   env: new Set(["-u", "--unset", "-S", "-C"]),
@@ -105,14 +123,47 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
     "--bounding-set",
     "--ambient-caps",
     "--clear-groups",
+    "--groups",
   ]),
   command: new Set(),
   nohup: new Set(),
-  stdbuf: new Set(),
+  // stdbuf's -i/-o/-e take the buffer TYPE either attached (`-oL`) or as the
+  // next token; both forms skip exactly one value.
+  stdbuf: new Set(["-i", "-o", "-e"]),
   fakeroot: new Set(),
   setsid: new Set(),
   unshare: new Set(),
   run0: new Set(["--unit", "--service", "--slice", "--setenv", "--chdir"]),
+  // systemd-run mostly uses = forms (self-contained tokens); the flags listed
+  // here also accept a separate value token that must not be mistaken for the
+  // wrapped command.
+  "systemd-run": new Set([
+    "-p",
+    "-E",
+    "--property",
+    "--unit",
+    "--description",
+    "--slice",
+    "--uid",
+    "--gid",
+    "--nice",
+    "--service-type",
+    "--working-directory",
+    "--setenv",
+    "--machine",
+    "--job-mode",
+    "--on-active",
+    "--on-boot",
+    "--on-calendar",
+    "--on-unit-active",
+    "--on-unit-inactive",
+    "--timer-property",
+  ]),
+  // strace/ltrace: -o/-e/-s take a separate value; their long forms are
+  // = only. Tracing without a command (`strace -p PID`) has nothing to peel
+  // after the PID is consumed.
+  strace: new Set(["-o", "-e", "-s", "-a", "-b", "-p", "-u"]),
+  ltrace: new Set(["-o", "-e", "-s", "-a", "-l", "-u"]),
   // watch takes only two value options (-n/--interval); its pure flags
   // (-d, -g, -t, -b, -c, -e, …) stay absent like the other wrappers above.
   watch: new Set(["-n", "--interval"]),
@@ -353,15 +404,17 @@ function walk(
     if (base === "env") {
       // `env -S 'command string'` (or unquoted: `env -S cmd args…`) carries a
       // parsed command line, and any operands after the string are appended to
-      // it. Recurse into the concatenation so `env -S rm -rf /` is caught.
-      const sIndex = findOptionIndex(tokens, i + 1, "-S")
-      if (sIndex !== -1 && sIndex + 1 < tokens.length) {
-        const script = tokens[sIndex + 1]!.value
+      // it. The option may be clustered (`env -iS 'rm -rf /'`), where getopt
+      // takes the string from the rest of the cluster or, when S ends the
+      // cluster, from the next token. Recurse into the concatenation so
+      // `env -S rm -rf /` and `env -iS rm -rf /` are both caught.
+      const s = findEnvSCommand(tokens, i + 1)
+      if (s !== null && s.script.length > 0) {
         const tail = tokens
-          .slice(sIndex + 2)
+          .slice(s.tailIndex)
           .map((t) => t.value)
           .join(" ")
-        for (const sub of lexSegments(tail ? `${script} ${tail}` : script))
+        for (const sub of lexSegments(tail ? `${s.script} ${tail}` : s.script))
           walk(sub.tokens, out, depth + 1, state)
         return
       }
@@ -381,8 +434,7 @@ function walk(
           break
         }
         if (opt.startsWith("-") && opt.length > 1) {
-          if (valueOpts.has(opt)) j += 2
-          else j += 1
+          j = skipWrapperOption(tokens, j, valueOpts)
           continue
         }
         break
@@ -406,13 +458,22 @@ function walk(
           continue
         }
         if (opt.startsWith("-") && opt.length > 1) {
-          if (valueOpts.has(opt)) i += 2
-          else i += 1
+          i = skipWrapperOption(tokens, i, valueOpts)
           continue
         }
         break
       }
       continue
+    }
+    if (base === "script") {
+      // `script -c/--command '…'` runs a command string through a shell;
+      // without it, script just starts an interactive session and there is
+      // nothing to peel.
+      const command = findCommandString(tokens, i + 1)
+      if (command !== null) {
+        for (const sub of lexSegments(command)) walk(sub.tokens, out, depth + 1, state)
+        return
+      }
     }
     if (SHELL_BINARIES.has(base) || SU_BINARIES.has(base)) {
       const script = findCommandString(tokens, i + 1)
@@ -457,6 +518,26 @@ function walk(
   }
 }
 
+/** Advance past one wrapper option token at `index`, returning the index of
+ *  the next token. Short-option clusters follow getopt semantics: the value
+ *  of a value-taking letter is either embedded as the rest of the cluster
+ *  (`-uroot`, `-un` where `u` takes the value `n`) or, when the letter is
+ *  last, is the next token (`-nu root`). Misreading a cluster would swallow
+ *  the wrapped command or mistake the value for the executable, so `sudo -nu
+ *  root rm …` must skip the cluster and `root` together. */
+function skipWrapperOption(tokens: ShellToken[], index: number, valueOpts: Set<string>): number {
+  const opt = tokens[index]!.value
+  if (valueOpts.has(opt)) return index + 2
+  if (opt.startsWith("--")) return index + 1
+  const letters = opt.slice(1)
+  for (let position = 0; position < letters.length; position += 1) {
+    if (valueOpts.has(`-${letters[position]!}`)) {
+      return position === letters.length - 1 ? index + 2 : index + 1
+    }
+  }
+  return index + 1
+}
+
 /** Find a `-c`/`--command` command-string argument and return its (unquoted) value. */
 function findCommandString(tokens: ShellToken[], start: number): string | null {
   let i = start
@@ -493,21 +574,29 @@ function findCommandString(tokens: ShellToken[], start: number): string | null {
   return null
 }
 
-/** Find the token index of a named short option (e.g. `env -S`), or -1. */
-function findOptionIndex(tokens: ShellToken[], start: number, name: string): number {
-  let i = start
-  let endOfFlags = false
-  while (i < tokens.length) {
-    const t = tokens[i]!.value
-    if (!endOfFlags && t === "--") {
-      endOfFlags = true
-      i += 1
-      continue
+/** Locate the command string carried by a (possibly clustered) `env -S`
+ *  option. The string is the next token when S ends the option token, or the
+ *  rest of the token when another letter follows S. Scanning stops at the
+ *  first operand: after it, the command has begun and there is no -S. */
+function findEnvSCommand(
+  tokens: ShellToken[],
+  start: number,
+): { script: string; tailIndex: number } | null {
+  for (let i = start; i < tokens.length; i += 1) {
+    const value = tokens[i]!.value
+    if (value === "--") return null
+    if (!value.startsWith("-") || value.length <= 1 || value.startsWith("--")) return null
+    const letters = value.slice(1)
+    const sPosition = letters.indexOf("S")
+    if (sPosition === -1) continue
+    if (sPosition === letters.length - 1) {
+      const script = tokens[i + 1]
+      if (script === undefined) return null
+      return { script: script.value, tailIndex: i + 2 }
     }
-    if (!endOfFlags && t === name) return i
-    i += 1
+    return { script: letters.slice(sPosition + 1), tailIndex: i + 1 }
   }
-  return -1
+  return null
 }
 
 /** Consume ssh options + host and return the remaining remote-command tokens. */

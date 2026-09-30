@@ -417,7 +417,9 @@ Optional fine-grained hardening under interactive mode (only their own cases):
 settings can only block more, never relax security.
 
 `audit` defaults to `true`. Each completed review appends one JSON object to
-the audit path with mode `0600` (`schemaVersion: 3`): outcome, decision source,
+the audit path, which is created with — and kept at — mode `0600`: a
+pre-existing audit file with looser permissions is tightened before it
+receives new records (`schemaVersion: 3`): outcome, decision source,
 rationale, risk, authorization, confidence, per-phase latency, reviewer model,
 optional `reviewerOutcome` / `escalationDisposition` (to distinguish an explicit
 deny from fail-closed escalate→deny), optional System One escalation origin,
@@ -455,9 +457,13 @@ transport **never changes the safety decision**.
    by the host or other plugins and reviews only requests that remain `ask`.
 2. A deterministic **emergency brake** rejects unmistakable root destruction and
    direct credential export before any model call. It is wrapper-aware
-   (`sudo`, `doas`, `env`, `command`, `nice`, `nohup`, …), so `sudo rm -rf /`,
+   (`sudo`, `doas`, `env`, `command`, `nice`, `nohup`, `systemd-run`, `strace`,
+   `ltrace`, `script -c`, …), including clustered value-taking options
+   (`sudo -nu root …`), so `sudo rm -rf /`,
    `env VAR=x rm -rf /`, `/bin/rm -rf /`, `sh -c 'rm -rf /'`, `ssh host rm -rf /`,
-   and `busybox rm -rf /` are all caught. Wrapper nesting deeper than a fixed
+   and `busybox rm -rf /` are all caught. A live root glob (`rm -rf /*`) and
+   redirections onto real block devices (`> /dev/sda`, `tee /dev/sda`) are
+   treated as root destruction. Wrapper nesting deeper than a fixed
    budget (or command lists beyond a fixed size) is not resolved: the brake
    stays quiet for what it cannot fully see, the capability analysis is marked
    partial, and automatic approval is blocked, escalating to the user instead.
