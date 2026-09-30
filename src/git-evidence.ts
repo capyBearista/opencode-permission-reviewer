@@ -1,9 +1,14 @@
 import { execFile } from "node:child_process"
+import { realpath } from "node:fs/promises"
 import { promisify } from "node:util"
 import { basename, resolve } from "node:path"
 import type { PermissionRequest } from "./types.ts"
 import { sourceCommand } from "./evidence/source-command.ts"
-import { shellCommandSegmentsWithDirectory } from "./ssh-evidence.ts"
+import {
+  approvedEvidenceRoots,
+  isWithinRoot,
+  shellCommandSegmentsWithDirectory,
+} from "./ssh-evidence.ts"
 
 const execFileAsync = promisify(execFile)
 
@@ -357,6 +362,7 @@ export async function enrichGitEvidence(
   request: PermissionRequest,
   directory: string,
   maxChars: number,
+  worktree?: string,
 ): Promise<GitEnrichmentResult> {
   if (request.permission !== "bash") return { text: "" }
   const command = sourceCommand(request)
@@ -375,7 +381,44 @@ export async function enrichGitEvidence(
       ).slice(0, maxChars)}`,
     }
   }
-  const gitDirectory = planned.executionDirectory
+
+  // The planned directory comes from the reviewed command itself (`cd`,
+  // `git -C`), so it can never mint an inspection root. Git runs subprocesses
+  // with that directory as cwd; without containment a `cd /other/repo &&`
+  // prefix would inspect an unrelated repository. Only the session directory,
+  // the worktree, and /tmp/opencode may be inspected, judged on real paths so
+  // symlinks cannot bridge out. An unresolvable planned directory is treated
+  // as outside: there is nothing to inspect that the review can vouch for.
+  const plannedDirectory = planned.executionDirectory
+  const realPlannedDirectory = await realpath(plannedDirectory).catch(() => undefined)
+  const gitDirectory = realPlannedDirectory
+  if (gitDirectory === undefined) {
+    return {
+      text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
+        {
+          status: "unavailable",
+          reason: "planned Git directory does not resolve to a real path",
+          planned,
+        },
+        null,
+        2,
+      ).slice(0, maxChars)}`,
+    }
+  }
+  const roots = await approvedEvidenceRoots(directory, worktree)
+  if (!roots.some((root) => isWithinRoot(gitDirectory, root))) {
+    return {
+      text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
+        {
+          status: "unavailable",
+          reason: "planned Git directory is outside approved enrichment roots",
+          planned,
+        },
+        null,
+        2,
+      ).slice(0, maxChars)}`,
+    }
+  }
   let neutralization: string[]
   try {
     neutralization = await filterNeutralizationArgs(gitDirectory)
@@ -392,19 +435,47 @@ export async function enrichGitEvidence(
     }
   }
 
-  const [root, status] = await Promise.all([
-    runGit(gitDirectory, ["rev-parse", "--show-toplevel"], neutralization),
-    runGit(
-      gitDirectory,
-      ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
-      neutralization,
-    ),
-  ])
-  if (!root.ok || !status.ok) {
-    const reason = !root.ok ? root.reason : !status.ok ? status.reason : "unknown git error"
+  // Resolve the repository root first and require it inside the approved
+  // roots: git discovers repositories upward, so a working directory inside
+  // an approved root can otherwise sit in a repository whose root, and whose
+  // whole status/diff state, lies outside them. The window between this
+  // realpath and the git subprocesses below cannot be eliminated (git takes
+  // a path as cwd, not an open descriptor), but the reviewed command has not
+  // run yet, so racing it requires a second concurrent process.
+  const root = await runGit(gitDirectory, ["rev-parse", "--show-toplevel"], neutralization)
+  if (!root.ok) {
     return {
       text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
-        { status: "unavailable", reason, planned },
+        { status: "unavailable", reason: root.reason, planned },
+        null,
+        2,
+      ).slice(0, maxChars)}`,
+    }
+  }
+  const repositoryRoot = await realpath(root.stdout.trim()).catch(() => undefined)
+  if (repositoryRoot === undefined || !roots.some((r) => isWithinRoot(repositoryRoot, r))) {
+    return {
+      text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
+        {
+          status: "unavailable",
+          reason: "repository root is outside approved enrichment roots",
+          planned,
+        },
+        null,
+        2,
+      ).slice(0, maxChars)}`,
+    }
+  }
+
+  const status = await runGit(
+    gitDirectory,
+    ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
+    neutralization,
+  )
+  if (!status.ok) {
+    return {
+      text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
+        { status: "unavailable", reason: status.reason, planned },
         null,
         2,
       ).slice(0, maxChars)}`,

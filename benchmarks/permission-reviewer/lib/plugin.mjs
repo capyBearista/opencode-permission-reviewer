@@ -17,9 +17,9 @@ export const PINNED_BLOBS = {
   "src/emergency-brake.ts": "6f1b65a6f2b125a9e07824922a9ac57ce39ef2fc",
   "src/redact.ts": "78394b5cf92d787e92037ed9e6c44df323b8ed48",
   "src/capability/command-parser.ts": "271c1404d96e792a322974fdafe5497e22ed3c4a",
-  "src/capability/bash-analyzer.ts": "509a574a2ad32d2f140f4c37b66d9adbd2a1fb99",
-  "src/shell-lexer.ts": "859575bb4e46198f240f6b886875a4fc52285159",
-  "src/capability/heredoc-extractor.ts": "81995fef64dde83f9a9b45c8aca2fa11518d64b6",
+  "src/capability/bash-analyzer.ts": "a68e1810eb22bed9b98acc496ee9185708402500",
+  "src/shell-lexer.ts": "9d79f55a34eb98162a0987564ac0df30e08524ee",
+  "src/capability/heredoc-extractor.ts": "263392516b07feb39a8a9b2b033b0af65d6f3a34",
   "src/system-one/review.ts": "5ab2c36e4dd19634b9de7a02ffeb9937414112e2",
 }
 const gitBlob = (bytes) =>

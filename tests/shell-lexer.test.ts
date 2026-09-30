@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   analyzeEffectiveCommands,
+  commandSegments,
   effectiveCommands,
   lexSegments,
   shellBasename,
@@ -19,6 +20,49 @@ function firstExecutables(command: string): string[][] {
 }
 
 describe("shell lexer", () => {
+  test("records the separator that ended each segment", () => {
+    expect(lexSegments("a; b").map((s) => s.endedBy)).toEqual([";", undefined])
+    expect(lexSegments("a && b || c").map((s) => s.endedBy)).toEqual(["&&", "||", undefined])
+    expect(lexSegments("a | b & c").map((s) => s.endedBy)).toEqual(["|", "&", undefined])
+    expect(lexSegments("a\nb").map((s) => s.endedBy)).toEqual([";", undefined])
+    expect(lexSegments("( a )").map((s) => s.endedBy)).toEqual([")"])
+    // A separator with no tokens between separators terminates nothing: the
+    // empty middle segment is dropped, not recorded.
+    expect(lexSegments("a | | b").map((s) => s.endedBy)).toEqual(["|", undefined])
+  })
+
+  test("commandSegments exposes tokens with the surrounding separators", () => {
+    expect(commandSegments("cd /x && git status || cd /y")).toEqual([
+      { tokens: ["cd", "/x"], endedBy: "&&" },
+      { tokens: ["git", "status"], preceding: "&&", endedBy: "||" },
+      { tokens: ["cd", "/y"], preceding: "||" },
+    ])
+    expect(commandSegments("a # trailing comment\nb")).toEqual([
+      { tokens: ["a"], endedBy: ";" },
+      { tokens: ["b"], preceding: ";" },
+    ])
+    expect(commandSegments("( cd /x && ls )")).toEqual([
+      { tokens: ["cd", "/x"], preceding: "(", endedBy: "&&" },
+      { tokens: ["ls"], preceding: "&&", endedBy: ")" },
+    ])
+  })
+
+  test("preceding survives separators whose empty segment was dropped", () => {
+    expect(commandSegments("( cat f ) | ssh host cmd")).toEqual([
+      { tokens: ["cat", "f"], preceding: "(", endedBy: ")" },
+      { tokens: ["ssh", "host", "cmd"], preceding: "|" },
+    ])
+    expect(commandSegments("cd /x && ( cd /y ) && git status")).toEqual([
+      { tokens: ["cd", "/x"], endedBy: "&&" },
+      { tokens: ["cd", "/y"], preceding: "(", endedBy: ")" },
+      { tokens: ["git", "status"], preceding: "&&" },
+    ])
+    expect(lexSegments("( a ) | b").map((s) => [s.precededBy, s.endedBy])).toEqual([
+      ["(", ")"],
+      ["|", undefined],
+    ])
+  })
+
   test("splits on logical separators but not inside quotes", () => {
     expect(firstExecutables("a; b & c | d")).toEqual([["a"], ["b"], ["c"], ["d"]])
     expect(firstExecutables('printf "a; sudo rm -rf /"')).toEqual([["printf", "a; sudo rm -rf /"]])

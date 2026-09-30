@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -14,9 +14,9 @@ async function git(directory: string, args: string[]): Promise<void> {
   await execFileAsync("git", args, { cwd: directory })
 }
 
-async function repository(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "approval-reviewer-git-"))
+async function repositoryAt(directory: string): Promise<string> {
   temporaryDirectories.push(directory)
+  await mkdir(directory, { recursive: true })
   await git(directory, ["init", "-b", "staging"])
   await git(directory, ["config", "user.email", "reviewer@example.invalid"])
   await git(directory, ["config", "user.name", "Reviewer Test"])
@@ -27,10 +27,16 @@ async function repository(): Promise<string> {
   return directory
 }
 
+async function repository(): Promise<string> {
+  return repositoryAt(await mkdtemp(join(tmpdir(), "approval-reviewer-git-")))
+}
+
 afterEach(async () => {
-  await Promise.all(
-    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
-  )
+  // Sequential and force: nested fixtures push overlapping paths, so parallel
+  // removals race and an already-deleted child would fail the suite.
+  for (const directory of temporaryDirectories.splice(0)) {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 describe("Git state evidence enrichment", () => {
@@ -68,10 +74,10 @@ describe("Git state evidence enrichment", () => {
     expect(result.text).toContain('"affectedTargetNumstat": "1\\t1\\ttarget.py')
   })
 
-  test("uses the repository selected by cd or git -C", async () => {
+  test("uses the repository selected by cd or git -C inside the approved roots", async () => {
     const outer = await mkdtemp(join(tmpdir(), "approval-reviewer-git-outer-"))
     temporaryDirectories.push(outer)
-    const directory = await repository()
+    const directory = await repositoryAt(join(outer, "workspace", "repo"))
     await writeFile(join(directory, "target.py"), "selected = true\n")
 
     for (const command of [
@@ -87,6 +93,79 @@ describe("Git state evidence enrichment", () => {
       expect(result.text).toContain('"branch": "staging"')
       expect(result.text).toContain('"affectedTargetNumstat": "1\\t1\\ttarget.py')
     }
+  })
+
+  test("blocks git inspection of a repository outside the approved roots", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "approval-reviewer-git-ws-"))
+    temporaryDirectories.push(workspace)
+    const elsewhere = await repository()
+    await writeFile(join(elsewhere, "target.py"), "escape = true\n")
+
+    for (const command of [
+      `cd ${elsewhere} && git checkout HEAD -- target.py`,
+      `git -C ${elsewhere} checkout HEAD -- target.py`,
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        workspace,
+        8_000,
+      )
+      expect(result.text).toContain('"status": "unavailable"')
+      expect(result.text).toContain("planned Git directory is outside approved enrichment roots")
+      expect(result.text).not.toContain(`"repositoryRoot": "${elsewhere}"`)
+      expect(result.text).not.toContain('"branch": "staging"')
+    }
+  })
+
+  test("blocks a symlinked planned Git directory that resolves outside the roots", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "approval-reviewer-git-link-"))
+    temporaryDirectories.push(workspace)
+    const elsewhere = await repository()
+    const link = join(workspace, "linked-repo")
+    await symlink(elsewhere, link)
+
+    const command = "git -C linked-repo checkout HEAD -- target.py"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      workspace,
+      8_000,
+    )
+    expect(result.text).toContain('"status": "unavailable"')
+    expect(result.text).toContain("planned Git directory is outside approved enrichment roots")
+  })
+
+  test("blocks a session directory inside a repository whose root is outside the roots", async () => {
+    const outer = await repositoryAt(await mkdtemp(join(tmpdir(), "approval-reviewer-git-anc-")))
+    const sessionDirectory = join(outer, "workspace")
+    await mkdir(sessionDirectory)
+    await writeFile(join(outer, "target.py"), "ancestor = true\n")
+
+    const command = "git checkout HEAD -- target.py"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      sessionDirectory,
+      8_000,
+    )
+    expect(result.text).toContain('"status": "unavailable"')
+    expect(result.text).toContain("repository root is outside approved enrichment roots")
+    expect(result.text).not.toContain('"branch": "staging"')
+  })
+
+  test("allows the repository selected through a parent worktree", async () => {
+    const outer = await repositoryAt(await mkdtemp(join(tmpdir(), "approval-reviewer-git-parent-")))
+    const sessionDirectory = join(outer, "workspace")
+    await mkdir(sessionDirectory)
+    await writeFile(join(outer, "target.py"), "parent = true\n")
+
+    const command = "git -C .. checkout HEAD -- target.py"
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      sessionDirectory,
+      24_000,
+      outer,
+    )
+    expect(result.text).toContain(`"repositoryRoot": "${outer}"`)
+    expect(result.text).toContain('"branch": "staging"')
   })
 
   test("marks shell-expanded planned paths as unresolved", async () => {

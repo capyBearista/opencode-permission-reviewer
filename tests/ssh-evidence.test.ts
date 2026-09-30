@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { enrichSshEvidence } from "../src/ssh-evidence.ts"
+import { enrichSshEvidence, shellCommandSegmentsWithDirectory } from "../src/ssh-evidence.ts"
 import { request } from "./helpers.ts"
 
 const temporaryDirectories: string[] = []
@@ -17,6 +17,24 @@ afterEach(async () => {
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })),
   )
+})
+
+describe("command segments with directory tracking", () => {
+  test("a subshell cd never changes the outer working directory", () => {
+    const segments = shellCommandSegmentsWithDirectory(
+      "cd /ws && ( cd /elsewhere ) && git status",
+      "/ws",
+    )
+    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/ws"])
+  })
+
+  test("a cd inside a subshell applies to commands inside the same subshell", () => {
+    const segments = shellCommandSegmentsWithDirectory(
+      "cd /ws && ( cd /inner && git status ) && git log",
+      "/ws",
+    )
+    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/inner", "/ws"])
+  })
 })
 
 describe("SSH evidence enrichment", () => {

@@ -31,6 +31,33 @@ export interface ShellToken {
 
 export interface ShellSegment {
   tokens: ShellToken[]
+  /** Separator that terminated this segment (`;`, `|`, `||`, `&`, `&&`, `(`,
+   *  `)`). Newlines and carriage returns are reported as `;`. Absent for the
+   *  final segment when the command does not end with a separator. */
+  endedBy?: string
+  /** The last separator seen before this segment's first token, counting
+   *  separators whose (empty) segment was dropped: in `( a ) | b`, segment
+   *  `b` ended up after a dropped empty segment, so its separator lineage is
+   *  `)` and then `|`, and `precededBy` reports `|`. Absent for the first
+   *  segment. */
+  precededBy?: string
+}
+
+/** Segments flattened to plain token values plus the separators around each
+ *  segment. This is the shared surface evidence consumers (SSH, Git, local
+ *  scripts) build on, so the brake's lexer stays the one tokenizer. */
+export interface CommandSegment {
+  tokens: string[]
+  preceding?: string
+  endedBy?: string
+}
+
+export function commandSegments(command: string): CommandSegment[] {
+  return lexSegments(command).map((segment) => ({
+    tokens: segment.tokens.map((token) => token.value),
+    ...(segment.precededBy === undefined ? {} : { preceding: segment.precededBy }),
+    ...(segment.endedBy === undefined ? {} : { endedBy: segment.endedBy }),
+  }))
 }
 
 const SEPARATORS = new Set([";", "|", "&", "\n", "\r", "(", ")"])
@@ -165,6 +192,7 @@ export function lexSegments(command: string): ShellSegment[] {
   let hasToken = false
   let inSingle = false
   let inDouble = false
+  let lastSeparator: string | undefined
 
   const flushToken = () => {
     if (hasToken) {
@@ -174,10 +202,14 @@ export function lexSegments(command: string): ShellSegment[] {
       hasToken = false
     }
   }
-  const flushSegment = () => {
+  const flushSegment = (endedBy?: string) => {
     flushToken()
     if (tokens.length > 0) {
-      segments.push({ tokens })
+      segments.push({
+        tokens,
+        ...(endedBy === undefined ? {} : { endedBy }),
+        ...(lastSeparator === undefined ? {} : { precededBy: lastSeparator }),
+      })
       tokens = []
     }
   }
@@ -228,7 +260,15 @@ export function lexSegments(command: string): ShellSegment[] {
       continue
     }
     if (SEPARATORS.has(c)) {
-      flushSegment()
+      // Capture the operator identity (including doubled `||`/`&&`) so
+      // evidence consumers can reason about how segments relate.
+      let endedBy = c === "\n" || c === "\r" ? ";" : c
+      if ((c === "|" || c === "&") && command[i + 1] === c) {
+        endedBy = `${c}${c}`
+        i += 1
+      }
+      flushSegment(endedBy)
+      lastSeparator = endedBy
       i += 1
       continue
     }

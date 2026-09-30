@@ -957,6 +957,13 @@ export function analyzeCapability(
   if (parsed.heredocs.length > 0 && parsed.heredocs.some((h) => h.dynamic)) {
     warnings.push("one or more heredoc bodies have unresolvable expansion")
   }
+  // An unterminated or over-bound heredoc body means the scan never saw the
+  // terminator: what follows cannot be proven to be commands rather than body
+  // text, so the analysis cannot claim completeness.
+  const heredocTruncated = parsed.heredocs.some((h) => h.truncated)
+  if (parsed.heredocs.length > 0 && heredocTruncated) {
+    warnings.push("one or more heredoc bodies were truncated or never terminated")
+  }
   if (parsed.analysisTruncated) {
     warnings.push("command structure exceeded the static analysis depth or expansion budget")
   }
@@ -965,7 +972,7 @@ export function analyzeCapability(
     ? hasCommandSubstitution(parsed.sanitizedCommand) || parsed.heredocs.some((h) => h.dynamic)
       ? "opaque"
       : "partial"
-    : parsed.analysisTruncated
+    : parsed.analysisTruncated || heredocTruncated
       ? "partial"
       : "complete-for-supported-form"
 

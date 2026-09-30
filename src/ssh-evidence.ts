@@ -3,16 +3,12 @@ import { constants as fsConstants } from "node:fs"
 import { open, realpath, readlink } from "node:fs/promises"
 import { basename, isAbsolute, resolve, sep } from "node:path"
 import type { PermissionRequest } from "./types.ts"
+import { commandSegments } from "./shell-lexer.ts"
 import { sourceCommand } from "./evidence/source-command.ts"
 
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
 const O_NOFOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0
 const O_NONBLOCK = typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0
-
-interface Token {
-  value: string
-  operator: boolean
-}
 
 export interface FileEvidence {
   source: "file"
@@ -73,88 +69,13 @@ function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex")
 }
 
-function shellTokens(command: string): Token[] {
-  const tokens: Token[] = []
-  let value = ""
-  let quote: "'" | '"' | undefined
-  let escaped = false
-
-  const flush = () => {
-    if (!value) return
-    tokens.push({ value, operator: false })
-    value = ""
-  }
-
-  for (let index = 0; index < command.length; index += 1) {
-    const char = command[index]!
-    if (escaped) {
-      value += char
-      escaped = false
-      continue
-    }
-    if (char === "\\" && quote !== "'") {
-      escaped = true
-      continue
-    }
-    if (quote) {
-      if (char === quote) quote = undefined
-      else value += char
-      continue
-    }
-    if (char === "'" || char === '"') {
-      quote = char
-      continue
-    }
-    if (/\s/.test(char)) {
-      flush()
-      if (char === "\n") tokens.push({ value: ";", operator: true })
-      continue
-    }
-    if (char === "|" || char === "&") {
-      flush()
-      const next = command[index + 1]
-      if (next === char) index += 1
-      tokens.push({ value: next === char ? `${char}${char}` : char, operator: true })
-      continue
-    }
-    if (char === ";") {
-      flush()
-      tokens.push({ value: ";", operator: true })
-      continue
-    }
-    value += char
-  }
-  if (escaped) value += "\\"
-  flush()
-  return tokens
-}
-
-function commandSegments(tokens: Token[]): Array<{ tokens: Token[]; preceding?: string }> {
-  const result: Array<{ tokens: Token[]; preceding?: string }> = []
-  let current: Token[] = []
-  let preceding: string | undefined
-  for (const token of tokens) {
-    if (!token.operator) {
-      current.push(token)
-      continue
-    }
-    if (current.length > 0) {
-      result.push({ tokens: current, ...(preceding === undefined ? {} : { preceding }) })
-      current = []
-    }
-    preceding = token.value
-  }
-  if (current.length > 0)
-    result.push({ tokens: current, ...(preceding === undefined ? {} : { preceding }) })
-  return result
-}
-
 export function shellCommandSegments(
   command: string,
-): Array<{ tokens: string[]; preceding?: string }> {
-  return commandSegments(shellTokens(command)).map((segment) => ({
-    tokens: segment.tokens.map((token) => token.value),
+): Array<{ tokens: string[]; preceding?: string; endedBy?: string }> {
+  return commandSegments(command).map((segment) => ({
+    tokens: segment.tokens,
     ...(segment.preceding === undefined ? {} : { preceding: segment.preceding }),
+    ...(segment.endedBy === undefined ? {} : { endedBy: segment.endedBy }),
   }))
 }
 
@@ -183,10 +104,20 @@ export function shellCommandSegmentsWithDirectory(
   let directory = resolve(initialDirectory)
   let directoryReason: string | undefined
   let pendingCd: { before: string; target?: string; reason?: string } | undefined
+  // Directories of open subshells. A `cd` inside `( ... )` only affects
+  // segments up to the matching `)`: the outer directory resumes after it,
+  // and a cd as the last subshell command never reaches the next command.
+  const subshellDirectories: string[] = []
 
   for (const segment of segments) {
+    if (segment.preceding === "(") subshellDirectories.push(directory)
     if (pendingCd) {
-      if (segment.preceding === "&&") {
+      // `&&` applies the cd to what follows. `(` inherits the same state: a
+      // subshell starts in the working directory its parent had after the cd
+      // (`cd /ws && ( ... )` runs the group in /ws). The rare `cd /x || ( ... )`
+      // cannot be distinguished here and is analyzed on the cd-success path,
+      // which containment keeps bounded.
+      if (segment.preceding === "&&" || segment.preceding === "(") {
         if (pendingCd.target) {
           directory = pendingCd.target
           directoryReason = undefined
@@ -214,6 +145,11 @@ export function shellCommandSegmentsWithDirectory(
         ...(target.directory === undefined ? {} : { target: target.directory }),
         ...(target.reason === undefined ? {} : { reason: target.reason }),
       }
+    }
+    if (segment.endedBy === ")" && subshellDirectories.length > 0) {
+      directory = subshellDirectories.pop()!
+      pendingCd = undefined
+      directoryReason = undefined
     }
   }
   return result
@@ -317,8 +253,25 @@ function catSource(tokens: ReadonlyArray<string>): string | undefined {
   return source
 }
 
-function within(path: string, root: string): boolean {
+/** Whether `path` equals `root` or lives somewhere below it. */
+export function isWithinRoot(path: string, root: string): boolean {
   return path === root || path.startsWith(`${root}${sep}`)
+}
+
+/** The only roots enrichment may read or inspect below: the session's
+ *  initial directory, the workspace worktree, and /tmp/opencode. Directories
+ *  tracked through a `cd` in the reviewed command are resolution bases, never
+ *  roots: a command cannot mint the right to enrich from somewhere else. */
+export async function approvedEvidenceRoots(
+  rootDirectory: string,
+  worktree?: string,
+): Promise<string[]> {
+  const [directoryRoot, worktreeRoot, temporaryRoot] = await Promise.all([
+    realpath(rootDirectory).catch(() => resolve(rootDirectory)),
+    worktree === undefined ? undefined : realpath(worktree).catch(() => resolve(worktree)),
+    realpath("/tmp/opencode").catch(() => "/tmp/opencode"),
+  ])
+  return [directoryRoot, ...(worktreeRoot === undefined ? [] : [worktreeRoot]), temporaryRoot]
 }
 
 /** Best-effort Linux-only resolution of an open descriptor back to its real
@@ -355,12 +308,8 @@ async function includeFileOnce(
     // Resolve the source independently so ENOENT can only mean that this
     // specific stdin file is missing, never that an auxiliary root vanished.
     const actual = await realpath(resolved)
-    const [directoryRoot, worktreeRoot, temporaryRoot] = await Promise.all([
-      realpath(rootDirectory).catch(() => resolve(rootDirectory)),
-      realpath(worktree).catch(() => resolve(worktree)),
-      realpath("/tmp/opencode").catch(() => "/tmp/opencode"),
-    ])
-    if (![directoryRoot, worktreeRoot, temporaryRoot].some((root) => within(actual, root))) {
+    const roots = await approvedEvidenceRoots(rootDirectory, worktree)
+    if (!roots.some((root) => isWithinRoot(actual, root))) {
       return {
         source: "file",
         path: resolved,
@@ -404,7 +353,7 @@ async function includeFileOnce(
       // the approved roots.
       const fdPath = await descriptorRealPath(handle.fd)
       if (fdPath !== undefined) {
-        if (![directoryRoot, worktreeRoot, temporaryRoot].some((root) => within(fdPath, root))) {
+        if (!roots.some((root) => isWithinRoot(fdPath, root))) {
           return {
             source: "file",
             path: resolved,
@@ -661,5 +610,3 @@ export async function enrichSshEvidence(
     ...(preflightDenials.length === 0 ? {} : { preflightDenial: preflightDenials.join(" ") }),
   }
 }
-
-export const _shellTokensForTest = shellTokens
