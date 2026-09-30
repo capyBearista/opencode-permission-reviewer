@@ -5,12 +5,13 @@ import { tmpdir } from "node:os"
 
 const CWD = import.meta.dir + "/.."
 
-// Build a real tarball once (npm pack runs `prepare`, which rebuilds dist) and
-// inspect it with tar. This avoids depending on npm's stdout formatting (which
-// emits non-JSON banners/notices in some environments) and validates what would
-// actually be published. Nothing is uploaded.
+// Build a real tarball once and inspect it with tar. The build is explicit:
+// installs run no lifecycle scripts (no `prepare`), so `npm pack` would pack a
+// stale or missing dist otherwise. This avoids depending on npm's stdout
+// formatting (which emits non-JSON banners/notices in some environments) and
+// validates what would actually be published. Nothing is uploaded.
 //
-// Pack lazily inside the tests rather than in beforeAll: npm pack + prepare can
+// Pack lazily inside the tests rather than in beforeAll: build + npm pack can
 // exceed the default hook timeout on slow runners, and not every supported Bun
 // release accepts a timeout option on beforeAll. Per-test timeouts (third arg)
 // are the portable path.
@@ -25,9 +26,16 @@ function packOnce(): string {
     expect(existsSync(tgzPath)).toBe(true)
     return tgzPath
   }
+  const build = Bun.spawnSync({
+    cmd: ["bun", "run", "build"],
+    cwd: CWD,
+    stdout: "ignore",
+    stderr: "pipe",
+  })
+  expect(build.exitCode).toBe(0)
   tmpDir = mkdtempSync(join(tmpdir(), "reviewer-pkg-"))
   const pack = Bun.spawnSync({
-    cmd: ["npm", "pack", "--pack-destination", tmpDir],
+    cmd: ["npm", "pack", "--ignore-scripts", "--pack-destination", tmpDir],
     cwd: CWD,
     stdout: "ignore",
     stderr: "pipe",
@@ -139,6 +147,99 @@ describe("npm pack ship set", () => {
     const exports = pkg.exports as Record<string, unknown>
     expect((exports?.["."] as Record<string, string> | undefined)?.import).toBe("./dist/index.js")
     expect(exports?.["./tui"]).toBe("./dist/tui/tui.tsx")
+  }, 120_000)
+})
+
+// Supply-chain surface. `@opentui/core` pulls optional platform-specific
+// native packages into the INSTALL tree (that is the host TUI pipeline's
+// runtime, documented in the README), but none of it may ship inside the
+// tarball, no new direct runtime dependency may appear unnoticed, and the
+// reviewer SDK's effect runtime must stay external to our bundles.
+describe("supply-chain surface", () => {
+  test("the tarball ships no native binaries or platform packages", async () => {
+    const files = await listTarball(packOnce())
+    // Native addons and prebuilt shared libraries, loose or in prebuilds/
+    // directories. OpenTUI's native payload is a .so/.dylib, not a .node
+    // addon, so those extensions are checked too.
+    expect(files.filter((f) => /\.(node|so|dylib|dll)$/.test(f))).toEqual([])
+    expect(files.filter((f) => f.split("/").includes("prebuilds"))).toEqual([])
+    // npm platform-package layout anywhere in the path: <name>-<os>-<cpu>
+    // [-musl] (e.g. `@opentui/core-linux-x64`), whether hoisted at the top,
+    // under node_modules/, or inside a bundled-dependency payload.
+    const platformPackage =
+      /(?:^|\/)(@[^/]+\/)?[^@/][^/]*-(linux|darwin|win32|android|freebsd|aix|sunos)-(x64|arm64|armv7l|ppc64|s390x|riscv64)(-musl)?(\/|$)/
+    expect(files.filter((f) => platformPackage.test(f))).toEqual([])
+  }, 120_000)
+
+  test("the packaged package.json installs without executing anything", async () => {
+    const pkg = JSON.parse(await readFromTarball(packOnce(), "package.json")) as Record<
+      string,
+      unknown
+    >
+    // No lifecycle script may (re)appear: installs from the registry, a Git
+    // URL, or a local path must execute nothing from this repository.
+    for (const script of [
+      "prepare",
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepack",
+      "postpack",
+      "prepublishOnly",
+      "prepublish",
+      "postpublish",
+    ]) {
+      expect((pkg.scripts as Record<string, string> | undefined)?.[script]).toBeUndefined()
+    }
+    // A bundled-dependency payload would smuggle files past the ship-set
+    // checks (npm packs them under node_modules/).
+    expect(pkg.bundleDependencies).toBeUndefined()
+    expect(pkg.bundledDependencies).toBeUndefined()
+  }, 120_000)
+
+  test("the runtime dependency set is exactly the reviewed allowlist", async () => {
+    const pkg = JSON.parse(await readFromTarball(packOnce(), "package.json")) as {
+      dependencies: Record<string, string>
+      peerDependencies: Record<string, string>
+    }
+    // A new direct dependency (native or not) must be a deliberate, reviewed
+    // change: update this frozen list in the same commit that adds it.
+    expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      "@opencode/client",
+      "@opentui/core",
+      "@opentui/solid",
+      "@typesafe-ai/sdk",
+      "jsonc-parser",
+      "semver",
+      "solid-js",
+      "zod",
+    ])
+    expect(Object.keys(pkg.peerDependencies).sort()).toEqual([
+      "@opencode-ai/plugin",
+      "@opencode/plugin",
+    ])
+    // The effect runtime reaches users through the host's plugin SDK, never
+    // through a direct dependency of ours.
+    expect(
+      [...Object.keys(pkg.dependencies), ...Object.keys(pkg.peerDependencies)].some((n) =>
+        n.includes("effect"),
+      ),
+    ).toBe(false)
+  }, 120_000)
+
+  test("the effect runtime stays external to every shipped bundle", async () => {
+    const files = await listTarball(packOnce())
+    const bundles = files.filter((f) => /^dist\/[^/]+\.js$/.test(f))
+    expect(bundles.length).toBeGreaterThan(0)
+    for (const member of bundles) {
+      const bundle = await readFromTarball(packOnce(), member)
+      // `effect` may appear as a literal (e.g. permission `"effect": "ask"`),
+      // but never as a module specifier: tsup externalizes it, so an
+      // accidental import stays visible here instead of being silently
+      // inlined. The runtime is resolved by the host from @opencode-ai/plugin's
+      // own dependency chain, never vendored by us.
+      expect(bundle).not.toMatch(/(?:from|import|require)\s*\(?\s*["']effect(?:\/|["'])/)
+    }
   }, 120_000)
 })
 

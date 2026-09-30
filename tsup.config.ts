@@ -30,5 +30,11 @@ export default defineConfig({
     /^@opentui\//,
     "solid-js",
     "solid-js/web",
+    // The effect runtime belongs to the host's plugin SDK chain. Keeping it
+    // external means an accidental import stays a visible module specifier
+    // (caught by the package smoke tests) instead of being silently inlined
+    // into our bundles.
+    "effect",
+    /^effect\//,
   ],
 })

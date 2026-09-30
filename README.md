@@ -630,6 +630,35 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 - UI status messages are versioned, request-scoped, bounded, and transported
   through OpenCode's own workspace TUI event channel.
 
+### Supply chain
+
+- **No code runs at install time.** The package declares no lifecycle
+  scripts, so installing it from npm executes nothing from this repository.
+  Installing from a Git URL or a local path executes nothing either, and is
+  not a supported install method: `dist/` is gitignored, so those installs
+  yield a package without bundles. Use the npm registry; building from source
+  is an explicit `bun install && bun run build`.
+- **The tarball ships no native code.** `@opentui/core` (the host TUI
+  pipeline's renderer) declares optional platform-specific native packages
+  (for example `@opentui/core-linux-x64` on Linux) that npm resolves into the
+  install tree on your machine. That is the documented behavior of OpenTUI and
+  of every OpenCode plugin carrying a TUI: the native code is only ever loaded
+  in the TUI process, never in the server or CLI bundles. The published
+  tarball itself contains only JavaScript, raw TSX sources, and documentation;
+  `tests/package-smoke.test.ts` rejects native addons and shared libraries,
+  `prebuilds/` directories, platform packages, and bundled-dependency payloads
+  in the ship set, and every release publishes a CycloneDX SBOM of the
+  published artifact plus npm provenance for it.
+- **The direct runtime dependency set is frozen and tested.** Adding a
+  dependency (native or not) is a reviewed change: the package smoke test
+  fails until its allowlist is updated in the same commit.
+- **The `effect` runtime stays external.** `@opencode-ai/plugin` resolves
+  `effect@4.0.0-beta.83` from the host's own dependency chain for OpenCode V1
+  hosts. It is externalized from our bundles, not shipped or vendored by this
+  package, and deliberately not pinned or overridden to a different version:
+  forcing another version could fork the runtime the V1 host shares with every
+  other plugin.
+
 ## Supported versions
 
 | Component             | Supported          | Notes                                                      |

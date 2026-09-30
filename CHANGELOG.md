@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrong file. Node-family value flags (`--test-reporter-destination` and
   siblings) are skipped for `node` and `tsx` for the same reason.
 
+### Changed
+
+- No lifecycle scripts ship with the package: the `prepare` build hook is
+  gone, so installs execute nothing from this repository. The npm registry is
+  the supported install source (Git/local installs yield a package without
+  `dist/`); build from source explicitly with `bun install && bun run build`.
+- Release hardening: the tag, ancestry (`origin/main`), and version guards in
+  the release workflow now run before any toolchain or dependency install, and
+  the shipped supply chain is documented and tested (no native artifacts or
+  bundled-dependency payloads in the tarball, frozen runtime dependency
+  allowlist, `effect` externalized from the bundles).
+
 ### Fixed
 
 - Include the executed file as local script evidence for `bun run <file>`

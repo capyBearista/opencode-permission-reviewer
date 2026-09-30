@@ -55,10 +55,12 @@ bun run check   # typecheck + tests — must pass before any push
   touch the TUI, keep the file list in `scripts/copy-tui.ts` in sync with the
   imports of `src/tui.tsx` and its copied modules (no server engine, no
   `node:` builtins).
-- `dist/` is gitignored and regenerated on install (`prepare` runs the build);
-  never commit build output. `tests/package-smoke.test.ts` verifies the packed
-  tarball ships exactly the expected set (including the raw TUI files and the
-  absence of a prebundled TUI).
+- `dist/` is gitignored and rebuilt explicitly with `bun run build`: installs
+  run no lifecycle scripts (the package declares none), so never rely on
+  `bun install` producing `dist/`; never commit build output.
+  `tests/package-smoke.test.ts` builds, packs, and verifies the tarball ships
+  exactly the expected set (including the raw TUI files and the absence of a
+  prebundled TUI).
 
 ## Live (end-to-end) testing
 
