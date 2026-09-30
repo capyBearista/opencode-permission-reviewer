@@ -31,7 +31,9 @@ import type { HeredocRecord } from "../types.ts"
 /** Maximum body bytes retained (bounded + redacted for prompt/audit safety). */
 const MAX_BODY_BYTES = 4096
 
-/** Characters that cannot appear unquoted inside a heredoc delimiter word. */
+/** Characters that cannot appear unquoted inside a heredoc delimiter word.
+ *  `$` and backticks are NOT stops: the delimiter word undergoes no
+ *  expansion, so they are literal terminator characters. */
 const BARE_WORD_STOP = new Set([
   " ",
   "\t",
@@ -44,8 +46,6 @@ const BARE_WORD_STOP = new Set([
   ">",
   "(",
   ")",
-  "$",
-  "`",
   "\\",
   "'",
   '"',
@@ -63,11 +63,20 @@ interface DelimiterWord {
   resolved: boolean
 }
 
-/** Parse the delimiter word after a `<<` operator. Bash applies quote removal
- *  to the word (`<<E"O"F`, `<<\E O F`, `<<'E O F'` are all legal), quoting any
- *  part disables body expansion, and unquoted `$`/backtick parts expand into
- *  an unknown terminator. Quoted parts may contain any character, including
- *  spaces and operators. */
+/** Parse the delimiter word after a `<<` operator. Bash applies ONLY quote
+ *  removal to the word: parameter expansion, command substitution, tilde
+ *  expansion, and arithmetic never affect the terminator, because the parser
+ *  must match the body's end while reading the script (verified against
+ *  bash 5.2: `<<$EOF` with EOF set still terminates at the literal `$EOF`
+ *  line). Supported word forms:
+ *    - bare characters, including `$`, backticks, `~`: literal
+ *    - `'...'`: literal, disables body expansion
+ *    - `"..."` and `$"..."`: quote removal (`\$ \` \" \\` drop the
+ *      backslash), disables body expansion
+ *    - `$'...'`: ANSI-C unescaping, disables body expansion
+ *    - `\x` outside quotes: literal `x`, disables body expansion
+ *  The word is `resolved: false` only when its quoting never terminates or
+ *  the word is empty: then no line can be proven to be the terminator. */
 function parseDelimiterWord(command: string, start: number): DelimiterWord {
   let index = start
   let delimiter = ""
@@ -89,6 +98,24 @@ function parseDelimiterWord(command: string, start: number): DelimiterWord {
       index = end + 1
       continue
     }
+    // ANSI-C ($'...') and locale ($"...") quoting both start with `$`
+    // followed by a quote; the body-expansion flag is set either way.
+    if (c === "$" && (command[index + 1] === "'" || command[index + 1] === '"')) {
+      quoted = true
+      sawAny = true
+      if (command[index + 1] === "'") {
+        const parsed = unescapeAnsiC(command, index + 2)
+        if (!parsed.closed) {
+          resolved = false
+          break
+        }
+        delimiter += parsed.text
+        index = parsed.end
+      } else {
+        index += 1
+      }
+      continue
+    }
     if (c === '"') {
       index += 1
       let closed = false
@@ -106,7 +133,6 @@ function parseDelimiterWord(command: string, start: number): DelimiterWord {
           index += 2
           continue
         }
-        if (d === "$" || d === "`") resolved = false
         delimiter += d
         index += 1
       }
@@ -125,12 +151,6 @@ function parseDelimiterWord(command: string, start: number): DelimiterWord {
       index += 2
       continue
     }
-    if (c === "$" || c === "`") {
-      sawAny = true
-      resolved = false
-      index += 1
-      continue
-    }
     if (BARE_WORD_STOP.has(c)) break
     delimiter += c
     sawAny = true
@@ -138,6 +158,64 @@ function parseDelimiterWord(command: string, start: number): DelimiterWord {
   }
   if (!sawAny) return { wordEnd: start, delimiter: "", quoted: false, resolved: false }
   return { wordEnd: index, delimiter, quoted, resolved }
+}
+
+/** Unescape an ANSI-C quoted region (`$'...'`), the subset bash defines for
+ *  here-document delimiter words: standard escapes, `\xHH` hex, and up to
+ *  three octal digits. Unknown escapes drop the backslash, like bash. A
+ *  delimiter containing a newline can never match a body line; it stays
+ *  resolved and the body scan reports the heredoc as unterminated. */
+function unescapeAnsiC(
+  command: string,
+  start: number,
+): { text: string; end: number; closed: boolean } {
+  let text = ""
+  let index = start
+  while (index < command.length) {
+    const c = command[index]!
+    if (c === "'") return { text, end: index + 1, closed: true }
+    if (c !== "\\") {
+      text += c
+      index += 1
+      continue
+    }
+    const escaped = command[index + 1]
+    if (escaped === undefined) break
+    if (escaped === "x") {
+      const hex = /^[0-9a-fA-F]{1,2}/.exec(command.slice(index + 2))
+      if (hex === null) {
+        text += "x"
+        index += 2
+        continue
+      }
+      text += String.fromCharCode(Number.parseInt(hex[0], 16))
+      index += 2 + hex[0].length
+      continue
+    }
+    if (/^[0-7]/.test(escaped)) {
+      const octal = /^[0-7]{1,3}/.exec(command.slice(index + 1))!
+      text += String.fromCharCode(Number.parseInt(octal[0], 8))
+      index += 1 + octal[0].length
+      continue
+    }
+    const simple: Record<string, string> = {
+      a: "\x07",
+      b: "\b",
+      e: "\x1b",
+      E: "\x1b",
+      f: "\f",
+      n: "\n",
+      r: "\r",
+      t: "\t",
+      v: "\v",
+      "\\": "\\",
+      "'": "'",
+      '"': '"',
+    }
+    text += simple[escaped] ?? escaped
+    index += 2
+  }
+  return { text, end: index, closed: false }
 }
 
 /** Result of extracting heredocs from a raw command. */
@@ -180,6 +258,7 @@ export function extractHeredocs(command: string): HeredocExtraction {
     quoted: boolean
     resolved: boolean
     opStart: number
+    wordEnd: number
     lineStart: number
   }
   const pending: PendingStart[] = []
@@ -193,8 +272,10 @@ export function extractHeredocs(command: string): HeredocExtraction {
   }
 
   /** Consume the body of every pending heredoc in operator order, emit the
-   *  sanitized start line, and return the index the scan continues from. */
-  const consumeBodies = (bodyStart: number): number => {
+   *  sanitized start line, and return the index the scan continues from.
+   *  `lineEnd` is the newline (or end of command) that closed the start
+   *  line, so redirections after the operator stay visible. */
+  const consumeBodies = (bodyStart: number, lineEnd: number): number => {
     let position = bodyStart
     const records: Array<{
       bounded: string
@@ -223,7 +304,12 @@ export function extractHeredocs(command: string): HeredocExtraction {
       const dynamic = start.resolved ? containsDynamic(body, start.quoted) : true
       const { bounded, wasTruncated } = boundBody(body, truncated)
       if (dynamic) hasDynamicConstructs = true
-      const outputTarget = findOutputTarget(command.slice(start.lineStart, start.opStart))
+      // The output target may sit before the operator (`cat > /tmp/x <<EOF`)
+      // or after the delimiter word (`cat <<EOF > /tmp/x`); both positions
+      // redirect the same command's output.
+      const outputTarget =
+        findOutputTarget(command.slice(start.lineStart, start.opStart)) ??
+        findOutputTarget(command.slice(start.wordEnd, lineEnd))
       records.push({
         bounded,
         sha256: sha256hex,
@@ -317,7 +403,7 @@ export function extractHeredocs(command: string): HeredocExtraction {
     if (c === "\n") {
       if (pending.length > 0) {
         appendText(command.slice(cursor, i))
-        const resume = consumeBodies(i + 1)
+        const resume = consumeBodies(i + 1, i)
         out += "\n"
         cursor = i = resume
         lineStart = resume
@@ -346,6 +432,7 @@ export function extractHeredocs(command: string): HeredocExtraction {
         quoted: word.quoted,
         resolved: word.resolved,
         opStart: i,
+        wordEnd: word.wordEnd,
         lineStart,
       })
       pieces.push({ pendingIndex: pending.length - 1 })
@@ -357,7 +444,7 @@ export function extractHeredocs(command: string): HeredocExtraction {
 
   if (pending.length > 0) {
     appendText(command.slice(cursor, command.length))
-    consumeBodies(command.length)
+    consumeBodies(command.length, command.length)
     cursor = command.length
   }
   out += command.slice(cursor)

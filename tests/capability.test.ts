@@ -115,17 +115,61 @@ describe("heredoc extractor", () => {
     }
   })
 
-  test("expanded delimiter fails closed: the remainder becomes a dynamic body", () => {
-    const cmd = "cat <<E$X\nsecret line\nrm -rf /\nnever runs as a token"
+  test("a delimiter with $ characters is literal: the next commands survive", () => {
+    // bash applies no expansion to the delimiter word: `cat <<E$X` ends at
+    // the literal `E$X` line, so the text after it is real command input the
+    // analyzer (and the brake) must see again.
+    const cmd = "cat <<E$X\nsecret line\nE$X\nprintf DESPUES"
     const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(cmd)
     expect(heredocs).toHaveLength(1)
     expect(heredocs[0]!.delimiter).toBe("E$X")
-    expect(heredocs[0]!.truncated).toBe(true)
-    expect(heredocs[0]!.dynamic).toBe(true)
-    expect(hasDynamicConstructs).toBe(true)
-    expect(sanitizedCommand).toContain("<unresolved>")
-    expect(sanitizedCommand).not.toContain("rm -rf /")
+    expect(heredocs[0]!.truncated).toBe(false)
+    expect(heredocs[0]!.dynamic).toBe(false)
+    expect(hasDynamicConstructs).toBe(false)
+    expect(sanitizedCommand).toContain("printf DESPUES")
     expect(sanitizedCommand).not.toContain("secret line")
+  })
+
+  test("quoted and ANSI-C delimiter forms are determinable terminators", () => {
+    // Verified against bash 5.2: none of these words expand; quote removal
+    // (and $'...' unescaping) alone decides the terminator line. Quoting any
+    // part disables BODY expansion; a bare $EOF keeps the body expandable
+    // while the terminator line stays the literal $EOF.
+    for (const [word, line, expansionDisabled] of [
+      ["$EOF", "$EOF", false],
+      ['"$EOF"', "$EOF", true],
+      ["$'EOF'", "EOF", true],
+      ['$"EOF"', "EOF", true],
+      ['E"$"F', "E$F", true],
+    ] as const) {
+      const cmd = `cat <<${word}\nbody\n${line}\nprintf DESPUES`
+      const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+      expect(heredocs).toHaveLength(1)
+      expect(heredocs[0]!.delimiter).toBe(line)
+      expect(heredocs[0]!.expansionDisabled).toBe(expansionDisabled)
+      expect(heredocs[0]!.truncated).toBe(false)
+      expect(sanitizedCommand).toContain("printf DESPUES")
+    }
+  })
+
+  test("an unterminated quote in the delimiter word stays unresolved", () => {
+    const cmd = "cat <<'EOF\nno closing quote anywhere"
+    const { sanitizedCommand, heredocs } = extractHeredocs(cmd)
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.truncated).toBe(true)
+    expect(sanitizedCommand).toContain("<unresolved>")
+  })
+
+  test("redirections after the operator still bind as the output target", () => {
+    for (const cmd of [
+      "cat <<EOF > /tmp/x\ncontenido\nEOF\nprintf DESPUES",
+      "cat <<EOF >/tmp/x\ncontenido\nEOF\nprintf DESPUES",
+    ]) {
+      const { heredocs, sanitizedCommand } = extractHeredocs(cmd)
+      expect(heredocs).toHaveLength(1)
+      expect(heredocs[0]!.outputTarget).toBe("/tmp/x")
+      expect(sanitizedCommand).toContain("printf DESPUES")
+    }
   })
 
   test("heredoc with a pipeline after the operator keeps the pipeline", () => {
