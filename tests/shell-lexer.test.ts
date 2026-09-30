@@ -5,6 +5,7 @@ import {
   effectiveCommands,
   lexSegments,
   shellBasename,
+  tokenCharIsQuoted,
 } from "../src/shell-lexer.ts"
 
 function values(tokens: { value: string }[]): string[] {
@@ -20,6 +21,35 @@ function firstExecutables(command: string): string[][] {
 }
 
 describe("shell lexer", () => {
+  test("backslash-newline outside quotes is a line continuation", () => {
+    // `r\<LF>m` is one token `rm`: the pair vanishes from the value.
+    const segments = lexSegments("r\\\nm -rf /")
+    expect(segments[0]!.tokens.map((t) => t.value)).toEqual(["rm", "-rf", "/"])
+  })
+
+  test("backslash before a non-special char inside double quotes stays literal", () => {
+    // bash keeps `\n` as backslash+n inside double quotes; only $ ` " \ and
+    // newline are escapable there. The evidence-selected file name must be
+    // the one bash would open.
+    const segments = lexSegments('python "a\\nb.py"')
+    expect(segments[0]!.tokens[1]!.value).toBe("a\\nb.py")
+    // A genuinely escapable char still unescapes.
+    expect(lexSegments('echo "a\\"b"')[0]!.tokens[1]!.value).toBe('a"b')
+  })
+
+  test("tokens carry quoting spans for operator liveness", () => {
+    const glued = lexSegments('printf x >"/dev/sda"')[0]!.tokens[2]!
+    expect(glued.value).toBe(">/dev/sda")
+    expect(tokenCharIsQuoted(glued, 0)).toBe(false)
+    expect(tokenCharIsQuoted(glued, 1)).toBe(true)
+    const mixed = lexSegments('rm -rf "/"*')[0]!.tokens[2]!
+    expect(mixed.value).toBe("/*")
+    expect(tokenCharIsQuoted(mixed, 0)).toBe(true)
+    expect(tokenCharIsQuoted(mixed, 1)).toBe(false)
+    const quoted = lexSegments("echo '>/dev/sda'")[0]!.tokens[1]!
+    expect(tokenCharIsQuoted(quoted, 0)).toBe(true)
+  })
+
   test("records the separator that ended each segment", () => {
     expect(lexSegments("a; b").map((s) => s.endedBy)).toEqual([";", undefined])
     expect(lexSegments("a && b || c").map((s) => s.endedBy)).toEqual(["&&", "||", undefined])
@@ -220,9 +250,9 @@ describe("shell lexer", () => {
     const within = analyzeEffectiveCommands(lexSegments(withinBudget)[0]!)
     expect(within.commands).toEqual([
       [
-        { raw: "rm", value: "rm" },
-        { raw: "-rf", value: "-rf" },
-        { raw: "/", value: "/" },
+        { raw: "rm", value: "rm", spans: [{ text: "rm", quoted: false }] },
+        { raw: "-rf", value: "-rf", spans: [{ text: "-rf", quoted: false }] },
+        { raw: "/", value: "/", spans: [{ text: "/", quoted: false }] },
       ],
     ])
     expect(within.truncated).toBe(false)

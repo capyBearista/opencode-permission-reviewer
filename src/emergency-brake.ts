@@ -1,5 +1,11 @@
 import type { PermissionRequest } from "./types.ts"
-import { effectiveCommands, lexSegments, type ShellToken, shellBasename } from "./shell-lexer.ts"
+import {
+  effectiveCommands,
+  lexSegments,
+  tokenCharIsQuoted,
+  type ShellToken,
+  shellBasename,
+} from "./shell-lexer.ts"
 
 /*
  * Deterministic emergency brake.
@@ -90,16 +96,20 @@ function resolvesToRoot(rawTarget: string): boolean {
 
 /**
  * A live glob that expands to every entry of the filesystem root (`/*`,
- * `///*`): the shell expands it before rm runs, so `rm -rf /*` destroys the
- * system exactly like `rm -rf /`. The star is only an operator when the token
- * reached the lexer verbatim (raw equals value): quoted or escaped forms
- * (`'/*'`, `/\*`) name a literal file and stay with the reviewer.
+ * `//**`): the shell expands it before rm runs, so `rm -rf /*` destroys the
+ * system exactly like `rm -rf /`. The star is only an operator while its
+ * characters sit in an UNQUOTED span: `"/"*` still globs (only the slash is
+ * quoted), while `'/*'` or `/\*` name a literal file and stay with the
+ * reviewer. Trailing `*` and `**` both count: without globstar, `**`
+ * behaves like `*` at the root level.
  */
 function isLiveRootGlob(token: ShellToken): boolean {
-  if (token.raw !== token.value) return false
   if (!token.value.startsWith("/")) return false
   const components = token.value.split("/")
-  if (components[components.length - 1] !== "*") return false
+  const last = components[components.length - 1]!
+  if (!/^\*+$/.test(last)) return false
+  const starStart = token.value.length - last.length
+  if (tokenCharIsQuoted(token, starStart)) return false
   const stack: string[] = []
   for (const part of components.slice(0, -1)) {
     if (part === "" || part === ".") continue
@@ -213,27 +223,40 @@ function isBlockDeviceTarget(value: string): boolean {
 /** Shell redirection onto a real block device: `> /dev/sda` (or `>>`, `>|`,
  *  an fd-prefixed `2>/dev/sda`, a word-glued `x>/dev/sdc`, or the operator
  *  ending its own token as in `echo x> /dev/sda`) overwrites a disk regardless
- *  of which executable produced the bytes. In an unquoted token every `>` is
- *  an operator in bash, so glued forms are scanned too; a quoted `>` stays
- *  inside its string token (raw differs from value), so `echo "x > /dev/sda"`
- *  is data, not an operator. */
-const REDIRECT_WITH_TARGET = /(>{1,2}\|?)\s*([^\s;|&()<>]+)/g
-const TRAILING_REDIRECT_OPERATOR = /(>{1,2}\|?)$/
-
+ *  of which executable produced the bytes. Only the `>` operator itself must
+ *  sit in an unquoted span: quoting part of the TARGET changes nothing about
+ *  which file it names (`>"/dev/sda"` and `>/dev/"sda"` redirect to the disk),
+ *  while a quoted operator (`echo 'x > /dev/sda'`) is data. */
 function redirectTargetsBlockDevice(tokens: ShellToken[]): boolean {
   for (let i = 0; i < tokens.length; i += 1) {
     const token = tokens[i]!
-    if (token.raw !== token.value) continue
-    if (TRAILING_REDIRECT_OPERATOR.test(token.value)) {
+    for (const operator of unquotedRedirectOperators(token)) {
+      const rest = token.value.slice(operator.start + operator.length)
+      if (rest.length > 0) {
+        if (isBlockDeviceTarget(rest)) return true
+        continue
+      }
       const target = tokens[i + 1]
       if (target !== undefined && isBlockDeviceTarget(target.value)) return true
-      continue
-    }
-    for (const match of token.value.matchAll(REDIRECT_WITH_TARGET)) {
-      if (isBlockDeviceTarget(match[2]!)) return true
     }
   }
   return false
+}
+
+/** Positions and lengths of `>` / `>>` redirect operators whose `>` characters
+ *  are all unquoted. `>|` is covered by the trailing-`>` shape: the lexer's
+ *  separator handling ends the token at `>`. */
+function unquotedRedirectOperators(token: ShellToken): Array<{ start: number; length: number }> {
+  const out: Array<{ start: number; length: number }> = []
+  const value = token.value
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== ">") continue
+    if (tokenCharIsQuoted(token, index)) continue
+    const doubled = value[index + 1] === ">" && !tokenCharIsQuoted(token, index + 1)
+    out.push({ start: index, length: doubled ? 2 : 1 })
+    index += doubled ? 1 : 0
+  }
+  return out
 }
 
 /** Whether a short-flag cluster (e.g. `-af`) contains a given flag letter. */
@@ -255,8 +278,8 @@ function isDeviceDestruction(command: string): boolean {
     const trailing = segment.tokens.at(-1)
     if (
       trailing !== undefined &&
-      trailing.raw === trailing.value &&
-      (trailing.value === ">" || trailing.value === ">>")
+      (trailing.value === ">" || trailing.value === ">>") &&
+      !tokenCharIsQuoted(trailing, 0)
     ) {
       const next = segments[s + 1]?.tokens[0]
       if (next !== undefined && isBlockDeviceTarget(next.value)) return true

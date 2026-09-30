@@ -27,6 +27,12 @@ export interface ShellToken {
   raw: string
   /** Unquoted/normalized value used for comparisons. */
   value: string
+  /** Value split into spans by quoting: every character of `value` appears
+   *  in exactly one span, marked `quoted` when it came from inside quotes
+   *  or from a backslash escape. An operator character (`>`, `*`, …) only
+   *  acts as an operator while it sits in an UNQUOTED span: a glued, partly
+   *  quoted `>"/dev/sda"` still redirects, while `'>/dev/sda'` is data. */
+  spans?: Array<{ text: string; quoted: boolean }>
 }
 
 export interface ShellSegment {
@@ -233,6 +239,20 @@ function basename(exe: string): string {
   return slash >= 0 ? exe.slice(slash + 1) : exe
 }
 
+/** Whether the character at `index` of `token.value` lies in a quoted or
+ *  escaped span, where it cannot act as a shell operator. Tokens without
+ *  span information fall back to whole-token conservatism. */
+export function tokenCharIsQuoted(token: ShellToken, index: number): boolean {
+  const spans = token.spans
+  if (spans === undefined) return token.raw !== token.value
+  let offset = 0
+  for (const span of spans) {
+    if (index < offset + span.text.length) return span.quoted
+    offset += span.text.length
+  }
+  return false
+}
+
 /**
  * Tokenize `command` into logical segments (one per sub-command separated by
  * `;`, `|`, `&`, or newline) with quote-aware, comment-aware grouping.
@@ -243,15 +263,25 @@ export function lexSegments(command: string): ShellSegment[] {
   let value = ""
   let raw = ""
   let hasToken = false
+  let spans: Array<{ text: string; quoted: boolean }> = []
   let inSingle = false
   let inDouble = false
   let lastSeparator: string | undefined
 
+  const appendValue = (text: string, quoted: boolean) => {
+    if (text.length === 0) return
+    const last = spans.at(-1)
+    if (last !== undefined && last.quoted === quoted) last.text += text
+    else spans.push({ text, quoted })
+    value += text
+  }
+
   const flushToken = () => {
     if (hasToken) {
-      tokens.push({ raw, value })
+      tokens.push({ raw, value, spans })
       value = ""
       raw = ""
+      spans = []
       hasToken = false
     }
   }
@@ -277,7 +307,7 @@ export function lexSegments(command: string): ShellSegment[] {
     if (inSingle) {
       raw += c
       if (c === "'") inSingle = false
-      else value += c
+      else appendValue(c, true)
       i += 1
       continue
     }
@@ -288,16 +318,23 @@ export function lexSegments(command: string): ShellSegment[] {
       } else if (c === "\\" && i + 1 < command.length) {
         const next = command[i + 1]!
         raw += next
-        if ('$`"\\n'.includes(next)) {
-          value += next === "n" ? "\n" : next
+        // Inside double quotes bash only unescapes $ ` " \ and the newline
+        // (a line continuation). A backslash before any other character,
+        // including `n`, stays a literal backslash in the value.
+        if (next === "\n" || next === "\r") {
           i += 2
           continue
         }
-        value += "\\"
+        if ('$`"\\'.includes(next)) {
+          appendValue(next, true)
+          i += 2
+          continue
+        }
+        appendValue("\\", true)
         i += 1
         continue
       } else {
-        value += c
+        appendValue(c, true)
       }
       i += 1
       continue
@@ -342,12 +379,16 @@ export function lexSegments(command: string): ShellSegment[] {
     if (c === "\\" && i + 1 < command.length) {
       const next = command[i + 1]!
       raw += "\\" + next
-      value += next
-      hasToken = true
+      // Backslash-newline is a line continuation outside quotes: both
+      // characters vanish, so `r\<newline>m` lexes as the token `rm`.
+      if (next !== "\n" && next !== "\r") {
+        appendValue(next, true)
+        hasToken = true
+      }
       i += 2
       continue
     }
-    value += c
+    appendValue(c, false)
     raw += c
     hasToken = true
     i += 1
@@ -565,15 +606,20 @@ function findCommandString(tokens: ShellToken[], start: number): string | null {
     if (!endOfFlags && t.startsWith("--command=")) {
       return t.slice("--command=".length)
     }
-    // Combined short flag containing `c` (e.g. `bash -ic '...'`); value is next token.
-    if (
-      !endOfFlags &&
-      t.startsWith("-") &&
-      !t.startsWith("--") &&
-      t.length > 1 &&
-      t.includes("c")
-    ) {
-      return i + 1 < tokens.length ? tokens[i + 1]!.value : null
+    // Short-flag cluster containing `c` (e.g. `bash -ic '...'`). getopt
+    // semantics: when `c` ends the cluster its value is the next token;
+    // when other letters follow (`script -c"rm -rf /"`, `-Sval`), the rest
+    // of the cluster IS the value.
+    if (!endOfFlags && t.startsWith("-") && !t.startsWith("--") && t.length > 1) {
+      const cPosition = t.indexOf("c")
+      if (cPosition === -1) {
+        i += 1
+        continue
+      }
+      if (cPosition === t.length - 1) {
+        return i + 1 < tokens.length ? tokens[i + 1]!.value : null
+      }
+      return t.slice(cPosition + 1)
     }
     i += 1
   }
@@ -581,9 +627,11 @@ function findCommandString(tokens: ShellToken[], start: number): string | null {
 }
 
 /** Locate the command string carried by a (possibly clustered) `env -S`
- *  option. The string is the next token when S ends the option token, or the
- *  rest of the token when another letter follows S. Scanning stops at the
- *  first operand: after it, the command has begun and there is no -S. */
+ *  option, honoring the other value-taking env options on the way (`-u
+ *  NAME`, `-C DIR`, long forms). The string is the next token when S ends
+ *  the option token, or the rest of the token when another letter follows
+ *  S. Scanning stops at the first operand: after it, the command has begun
+ *  and there is no -S. */
 function findEnvSCommand(
   tokens: ShellToken[],
   start: number,
@@ -591,16 +639,36 @@ function findEnvSCommand(
   for (let i = start; i < tokens.length; i += 1) {
     const value = tokens[i]!.value
     if (value === "--") return null
-    if (!value.startsWith("-") || value.length <= 1 || value.startsWith("--")) return null
-    const letters = value.slice(1)
-    const sPosition = letters.indexOf("S")
-    if (sPosition === -1) continue
-    if (sPosition === letters.length - 1) {
-      const script = tokens[i + 1]
-      if (script === undefined) return null
-      return { script: script.value, tailIndex: i + 2 }
+    if (value.startsWith("--")) {
+      if (value === "--split-string") {
+        const script = tokens[i + 1]
+        if (script === undefined) return null
+        return { script: script.value, tailIndex: i + 2 }
+      }
+      if (value.startsWith("--split-string=")) {
+        return { script: value.slice("--split-string=".length), tailIndex: i + 1 }
+      }
+      continue
     }
-    return { script: letters.slice(sPosition + 1), tailIndex: i + 1 }
+    if (!value.startsWith("-") || value.length <= 1) return null
+    const letters = value.slice(1)
+    for (let position = 0; position < letters.length; position += 1) {
+      const letter = letters[position]!
+      if (letter === "S") {
+        if (position === letters.length - 1) {
+          const script = tokens[i + 1]
+          if (script === undefined) return null
+          return { script: script.value, tailIndex: i + 2 }
+        }
+        return { script: letters.slice(position + 1), tailIndex: i + 1 }
+      }
+      // -u/-C/-P consume a value: the rest of the cluster, or the next
+      // token when the letter ends the cluster.
+      if (letter === "u" || letter === "C" || letter === "P") {
+        if (position === letters.length - 1) i += 1
+        break
+      }
+    }
   }
   return null
 }
