@@ -25,9 +25,9 @@ describe("shell lexer", () => {
     expect(lexSegments("a && b || c").map((s) => s.endedBy)).toEqual(["&&", "||", undefined])
     expect(lexSegments("a | b & c").map((s) => s.endedBy)).toEqual(["|", "&", undefined])
     expect(lexSegments("a\nb").map((s) => s.endedBy)).toEqual([";", undefined])
-    expect(lexSegments("( a )").map((s) => s.endedBy)).toEqual([")"])
-    // A separator with no tokens between separators terminates nothing: the
-    // empty middle segment is dropped, not recorded.
+    // Parens survive as empty marker segments so grouping events are never
+    // lost; `a | | b` keeps dropping its empty middle segment.
+    expect(lexSegments("( a )").map((s) => s.endedBy)).toEqual(["(", ")"])
     expect(lexSegments("a | | b").map((s) => s.endedBy)).toEqual(["|", undefined])
   })
 
@@ -42,6 +42,7 @@ describe("shell lexer", () => {
       { tokens: ["b"], preceding: ";" },
     ])
     expect(commandSegments("( cd /x && ls )")).toEqual([
+      { tokens: [], endedBy: "(" },
       { tokens: ["cd", "/x"], preceding: "(", endedBy: "&&" },
       { tokens: ["ls"], preceding: "&&", endedBy: ")" },
     ])
@@ -49,15 +50,18 @@ describe("shell lexer", () => {
 
   test("preceding survives separators whose empty segment was dropped", () => {
     expect(commandSegments("( cat f ) | ssh host cmd")).toEqual([
+      { tokens: [], endedBy: "(" },
       { tokens: ["cat", "f"], preceding: "(", endedBy: ")" },
       { tokens: ["ssh", "host", "cmd"], preceding: "|" },
     ])
     expect(commandSegments("cd /x && ( cd /y ) && git status")).toEqual([
       { tokens: ["cd", "/x"], endedBy: "&&" },
+      { tokens: [], preceding: "&&", endedBy: "(" },
       { tokens: ["cd", "/y"], preceding: "(", endedBy: ")" },
       { tokens: ["git", "status"], preceding: "&&" },
     ])
     expect(lexSegments("( a ) | b").map((s) => [s.precededBy, s.endedBy])).toEqual([
+      [undefined, "("],
       ["(", ")"],
       ["|", undefined],
     ])

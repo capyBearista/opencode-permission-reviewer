@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { enrichLocalScriptEvidence } from "../src/local-script-evidence.ts"
 import { enrichSshEvidence, shellCommandSegmentsWithDirectory } from "../src/ssh-evidence.ts"
 import { request } from "./helpers.ts"
 
@@ -25,7 +26,7 @@ describe("command segments with directory tracking", () => {
       "cd /ws && ( cd /elsewhere ) && git status",
       "/ws",
     )
-    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/ws"])
+    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/ws", "/ws"])
   })
 
   test("a cd inside a subshell applies to commands inside the same subshell", () => {
@@ -33,11 +34,81 @@ describe("command segments with directory tracking", () => {
       "cd /ws && ( cd /inner && git status ) && git log",
       "/ws",
     )
-    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/inner", "/ws"])
+    expect(segments.map((s) => s.directory)).toEqual(["/ws", "/ws", "/ws", "/inner", "/ws"])
+  })
+
+  test("the parent resumes in the post-cd directory after a subshell closes", () => {
+    const segments = shellCommandSegmentsWithDirectory(
+      "cd sub && ( true ) && python p.py",
+      "/workspace",
+    )
+    expect(segments.at(-1)!.directory).toBe("/workspace/sub")
+  })
+
+  test("a group after a failed cd runs in the unchanged directory", () => {
+    const segments = shellCommandSegmentsWithDirectory("cd sub || ( python p.py )", "/workspace")
+    const group = segments.filter((s) => s.tokens.length > 0).at(-1)!
+    expect(group.directory).toBe("/workspace")
+  })
+
+  test("a group after a sequentially separated cd is ambiguous, never guessed", () => {
+    const segments = shellCommandSegmentsWithDirectory("cd sub; ( python p.py )", "/workspace")
+    const group = segments.filter((s) => s.tokens.length > 0).at(-1)!
+    expect(group.directory).toBeUndefined()
+    expect(group.directoryReason).toContain("ambiguous")
+  })
+
+  test("nested groups restore every level", () => {
+    const segments = shellCommandSegmentsWithDirectory(
+      "( cd sub; ( python p.py ) ) && python q.py",
+      "/workspace",
+    )
+    const commands = segments.filter((s) => s.tokens.length > 0)
+    expect(commands.map((s) => s.tokens[0])).toEqual(["cd", "python", "python"])
+    expect(commands[1]!.directory).toBeUndefined()
+    expect(commands[1]!.directoryReason).toContain("ambiguous")
+    expect(commands[2]!.directory).toBe("/workspace")
   })
 })
 
 describe("SSH evidence enrichment", () => {
+  test("pipeline stdin attaches the file the producer actually reads", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "p.py"), "ROOT-SENTINEL\n")
+    await mkdir(join(directory, "sub"))
+    await writeFile(join(directory, "sub", "p.py"), "SUB-SENTINEL\n")
+    // The group's cd only affects the producer: ssh runs in the outer
+    // directory, but the stdin bytes come from sub/p.py.
+    const command = "(cd sub && cat p.py) | ssh host python -"
+    const result = await enrichSshEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      directory,
+      4000,
+    )
+    const record = JSON.parse(result.text.slice("SSH_ANALYSIS".length))[0] as {
+      stdin: { path: string; content?: string }
+    }
+    expect(record.stdin.path).toBe(join(directory, "sub", "p.py"))
+    expect(record.stdin.content).toBe("SUB-SENTINEL\n")
+  })
+
+  test("a command after a closed subshell resolves in the post-cd directory", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "p.py"), "ROOT-SENTINEL\n")
+    await mkdir(join(directory, "sub"))
+    await writeFile(join(directory, "sub", "p.py"), "SUB-SENTINEL\n")
+    const command = "cd sub && ( true ) && python p.py"
+    const result = await enrichLocalScriptEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      directory,
+      4000,
+    )
+    expect(result.text).toContain("SUB-SENTINEL")
+    expect(result.text).not.toContain("ROOT-SENTINEL")
+  })
+
   test("structures a fixed-host read-only SSH command", async () => {
     const directory = await fixture()
     const result = await enrichSshEvidence(

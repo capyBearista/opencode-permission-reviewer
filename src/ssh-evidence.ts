@@ -101,56 +101,92 @@ export function shellCommandSegmentsWithDirectory(
 ): ShellCommandSegmentWithDirectory[] {
   const segments = shellCommandSegments(command)
   const result: ShellCommandSegmentWithDirectory[] = []
-  let directory = resolve(initialDirectory)
+  let directory: string | undefined = resolve(initialDirectory)
   let directoryReason: string | undefined
   let pendingCd: { before: string; target?: string; reason?: string } | undefined
-  // Directories of open subshells. A `cd` inside `( ... )` only affects
-  // segments up to the matching `)`: the outer directory resumes after it,
-  // and a cd as the last subshell command never reaches the next command.
-  const subshellDirectories: string[] = []
+  // Parent states of open subshells, innermost last. A `cd` inside `( ... )`
+  // only affects segments up to the matching `)`: the outer state resumes
+  // after it, and a cd as the last subshell command never reaches the next
+  // command. States, not just directories: an ambiguous parent stays
+  // ambiguous after the group closes.
+  const subshellStates: Array<{ directory?: string; reason?: string }> = []
 
-  for (const segment of segments) {
-    if (segment.preceding === "(") subshellDirectories.push(directory)
-    if (pendingCd) {
-      // `&&` applies the cd to what follows. `(` inherits the same state: a
-      // subshell starts in the working directory its parent had after the cd
-      // (`cd /ws && ( ... )` runs the group in /ws). The rare `cd /x || ( ... )`
-      // cannot be distinguished here and is analyzed on the cd-success path,
-      // which containment keeps bounded.
-      if (segment.preceding === "&&" || segment.preceding === "(") {
-        if (pendingCd.target) {
-          directory = pendingCd.target
-          directoryReason = undefined
-        } else {
-          directoryReason = pendingCd.reason ?? "preceding cd target is unresolved"
-        }
-      } else if (segment.preceding === "||") {
-        directory = pendingCd.before
+  // Apply a pending `cd` according to the operator linking it to what
+  // follows. `&&` guarantees the cd succeeded (its target applies, or its
+  // unresolved reason); `||` means the next segment only runs after a
+  // FAILURE, so the directory is still the pre-cd one; any other separator
+  // (`;`, `|`, `&`, plain adjacency) leaves both outcomes live.
+  const applyPendingCd = (operator: string | undefined) => {
+    if (pendingCd === undefined) return
+    if (operator === "&&") {
+      if (pendingCd.target !== undefined) {
+        directory = pendingCd.target
         directoryReason = undefined
       } else {
-        directoryReason = "working directory after cd is conditional or ambiguous"
+        directory = undefined
+        directoryReason = pendingCd.reason ?? "preceding cd target is unresolved"
       }
+    } else if (operator === "||") {
+      directory = pendingCd.before
+      directoryReason = undefined
+    } else {
+      directory = undefined
+      directoryReason = "working directory after cd is conditional or ambiguous"
+    }
+    pendingCd = undefined
+  }
+
+  // A `(` opens a subshell that inherits the parent state at that moment.
+  // The pushed restore point is that same post-cd parent state, so
+  // `cd sub && ( … ) && cmd` resumes in sub, not in the pre-cd directory.
+  const openSubshell = () => {
+    if (pendingCd !== undefined) {
+      // The cd sits immediately before the `(` with no operator between:
+      // the group may start in either directory.
+      directory = undefined
+      directoryReason =
+        "subshell follows cd without a success or failure operator; its working directory is ambiguous"
       pendingCd = undefined
     }
+    subshellStates.push({
+      ...(directory === undefined ? {} : { directory }),
+      ...(directoryReason === undefined ? {} : { reason: directoryReason }),
+    })
+  }
 
+  const closeSubshell = () => {
+    const restore = subshellStates.pop()
+    if (restore !== undefined) {
+      directory = restore.directory
+      directoryReason = restore.reason
+    }
+    pendingCd = undefined
+  }
+
+  for (const segment of segments) {
+    applyPendingCd(segment.preceding)
     result.push({
       ...segment,
-      ...(directoryReason === undefined ? { directory } : { directoryReason }),
+      ...(directory === undefined
+        ? { directoryReason: directoryReason ?? "working directory is unresolved" }
+        : { directory }),
     })
-
-    if (segment.tokens.length > 0 && commandName(segment.tokens[0]!) === "cd") {
+    if (segment.tokens.length === 0) {
+      // Paren marker: a grouping event with no command of its own.
+      if (segment.endedBy === "(") openSubshell()
+      else if (segment.endedBy === ")") closeSubshell()
+      continue
+    }
+    if (commandName(segment.tokens[0]!) === "cd") {
       const target = cdTarget(segment.tokens, directory)
       pendingCd = {
-        before: directory,
+        before: directory ?? resolve(initialDirectory),
         ...(target.directory === undefined ? {} : { target: target.directory }),
         ...(target.reason === undefined ? {} : { reason: target.reason }),
       }
     }
-    if (segment.endedBy === ")" && subshellDirectories.length > 0) {
-      directory = subshellDirectories.pop()!
-      pendingCd = undefined
-      directoryReason = undefined
-    }
+    if (segment.endedBy === "(") openSubshell()
+    else if (segment.endedBy === ")") closeSubshell()
   }
   return result
 }
@@ -524,10 +560,10 @@ export async function enrichSshEvidence(
   const command = sourceCommand(request)
   if (!/(?:^|[\s;&|])ssh(?:\s|$)/.test(command)) return { text: "", audit: [] }
 
-  // Track the working directory across `cd` chains (same representation the
-  // local-script and git enrichments use) so a pipeline like
-  // `cd subdir && cat file | ssh …` resolves the stdin source where the shell
-  // would, not against the initial directory.
+  // Track the working directory across `cd` chains, subshell groups, and
+  // pipelines (same representation the local-script and git enrichments use)
+  // so a stdin source resolves where the producing command runs, not against
+  // the ssh segment's directory.
   const segments = shellCommandSegmentsWithDirectory(command, directory)
   const records: Array<Record<string, unknown>> = []
   const audit: SshAuditSummary[] = []
@@ -540,21 +576,29 @@ export async function enrichSshEvidence(
     const parsed = parseSsh(segment.tokens, sshIndex)
     if (!parsed) continue
 
-    const previous = segmentIndex > 0 ? segments[segmentIndex - 1] : undefined
-    const stdinPath = segment.preceding === "|" && previous ? catSource(previous.tokens) : undefined
+    // The pipeline producer runs where IT runs, not where ssh runs: a group
+    // like `(cd sub && cat p.py) | ssh …` reads the stdin file from sub even
+    // though ssh itself executes in the outer directory. Walk back over
+    // paren markers to the producing command.
+    let producerIndex = segmentIndex - 1
+    while (producerIndex >= 0 && segments[producerIndex]!.tokens.length === 0) producerIndex -= 1
+    const producer = producerIndex >= 0 ? segments[producerIndex]! : undefined
+    const stdinPath = segment.preceding === "|" && producer ? catSource(producer.tokens) : undefined
     const stdin =
       stdinPath === undefined
         ? undefined
-        : segment.directory === undefined && !isAbsolute(stdinPath)
+        : producer !== undefined && producer.directory === undefined && !isAbsolute(stdinPath)
           ? {
               source: "file" as const,
               path: stdinPath,
               status: "unavailable" as const,
-              reason: segment.directoryReason ?? "working directory before ssh is unresolved",
+              reason:
+                producer.directoryReason ??
+                "working directory of the pipeline producer is unresolved",
             }
           : await includeEvidenceFile(
               stdinPath,
-              segment.directory ?? directory,
+              producer?.directory ?? segment.directory ?? directory,
               directory,
               worktree,
               maxChars,

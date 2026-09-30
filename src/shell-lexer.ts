@@ -33,7 +33,9 @@ export interface ShellSegment {
   tokens: ShellToken[]
   /** Separator that terminated this segment (`;`, `|`, `||`, `&`, `&&`, `(`,
    *  `)`). Newlines and carriage returns are reported as `;`. Absent for the
-   *  final segment when the command does not end with a separator. */
+   *  final segment when the command does not end with a separator. A segment
+   *  with no tokens and `endedBy` `(` or `)` is a paren marker: it exists so
+   *  grouping events are never lost, and carries no command of its own. */
   endedBy?: string
   /** The last separator seen before this segment's first token, counting
    *  separators whose (empty) segment was dropped: in `( a ) | b`, segment
@@ -255,7 +257,11 @@ export function lexSegments(command: string): ShellSegment[] {
   }
   const flushSegment = (endedBy?: string) => {
     flushToken()
-    if (tokens.length > 0) {
+    // Paren separators survive as empty marker segments even without tokens:
+    // the directory tracker needs every open/close event, and dropping the
+    // empties left nested closes unbalanced (`( cd x; (a) ) b` restored the
+    // wrong state after the group). Other empty flushes stay dropped.
+    if (tokens.length > 0 || endedBy === "(" || endedBy === ")") {
       segments.push({
         tokens,
         ...(endedBy === undefined ? {} : { endedBy }),
