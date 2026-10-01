@@ -23,6 +23,7 @@ interface PlannedGitActions {
   discardTargets: string[]
   removeTargets: string[]
   commands: string[]
+  rewriteBases: string[]
   /** Remote operands as written (configured names, literal URLs) collected
    *  from network subcommands. Resolution to URLs happens later, inside the
    *  containment envelope. */
@@ -168,9 +169,28 @@ function gitExecutionDirectory(
   initialDirectory: string | undefined,
 ): { directory?: string; reason?: string } {
   if (!initialDirectory) return { reason: "working directory before Git is unresolved" }
+  if (
+    tokens
+      .slice(0, gitIndex)
+      .some((token) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|CONFIG[^=]*)=/.test(token))
+  )
+    return { reason: "Git repository or configuration environment overrides are unresolved" }
   let directory = initialDirectory
   for (let index = gitIndex + 1; index < subcommandIndex; index += 1) {
     const token = tokens[index]!
+    if (
+      token.startsWith("--git-dir") ||
+      token.startsWith("--work-tree") ||
+      token.startsWith("--config-env")
+    )
+      return { reason: "Git repository or configuration overrides are unresolved" }
+    const config =
+      token === "-c" ? tokens[index + 1] : token.startsWith("-c") ? token.slice(2) : undefined
+    if (
+      config &&
+      /^(?:remote\.|url\.|branch\..*\.(?:remote|pushRemote)=|core\.worktree=)/i.test(config)
+    )
+      return { reason: "Git destination or worktree configuration overrides are unresolved" }
     let target: string | undefined
     if (token === "-C") {
       target = tokens[index + 1]
@@ -193,6 +213,7 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     discardTargets: [],
     removeTargets: [],
     commands: [],
+    rewriteBases: [],
     remoteCandidates: [],
     needsDefaultRemote: [],
   }
@@ -205,7 +226,17 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     const { command: subcommand, index } = gitSubcommand(segment.tokens, gitIndex)
     if (!subcommand) continue
     if (
-      !["add", "commit", "checkout", "restore", "rm", ...GIT_REMOTE_COMMANDS].includes(subcommand)
+      ![
+        "add",
+        "commit",
+        "checkout",
+        "restore",
+        "rm",
+        "merge",
+        "rebase",
+        "stash",
+        ...GIT_REMOTE_COMMANDS,
+      ].includes(subcommand)
     )
       continue
     const execution = gitExecutionDirectory(segment.tokens, gitIndex, index, segment.directory)
@@ -216,6 +247,24 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
       )
     result.relevant = true
     result.commands.push(subcommand)
+    if (subcommand === "rebase") {
+      const args = segment.tokens.slice(index + 1)
+      const bases: string[] = []
+      for (let cursor = 0; cursor < args.length; cursor++) {
+        const arg = args[cursor]!
+        if (
+          ["--onto", "--exec", "-x", "--strategy", "-s", "--strategy-option", "-X"].includes(arg)
+        ) {
+          cursor++
+          continue
+        }
+        if (!arg.startsWith("-")) {
+          bases.push(arg)
+        }
+      }
+      if (!args.includes("--root") && bases.length === 1 && !/[$`*?{}<>]/.test(bases[0]!))
+        result.rewriteBases.push(bases[0]!)
+    }
     if (subcommand === "commit") result.commit = true
     if (subcommand === "add") result.plannedAdd.push(...positionalAfter(segment.tokens, index))
     if (subcommand === "rm") result.removeTargets.push(...positionalAfter(segment.tokens, index))
@@ -472,6 +521,38 @@ interface RemoteTargetRecord {
   pushUrls?: string[] | undefined
   fetchUrl?: string | undefined
   note?: string | undefined
+  configuredMatches?: Array<{ name: string; push: boolean; fetch: boolean }>
+}
+
+/** Equate only documented GitHub transports; other destinations require exact URLs. */
+function repositoryIdentity(value: string): string | undefined {
+  if (value.length >= 200 || /[%\\]|(?:^|\/)\.{1,2}(?:\/|$)/.test(value)) return
+  const scp = value.match(/^git@github\.com:([^\s?#]+)$/i)
+  let path = scp?.[1]
+  if (path === undefined) {
+    try {
+      const url = new URL(value)
+      if (url.hostname.toLowerCase() !== "github.com") return `exact:${value}`
+      if (url.search || url.hash) return
+      if (
+        !(url.protocol === "https:" && (url.port === "" || url.port === "443")) &&
+        !(
+          url.protocol === "ssh:" &&
+          url.username === "git" &&
+          (url.port === "" || url.port === "22")
+        )
+      )
+        return
+      path = url.pathname.replace(/^\//, "")
+    } catch {
+      return `exact:${value}`
+    }
+  }
+  const normalized = path
+    .replace(/\/$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase()
+  return /^[a-z0-9._-]+\/[a-z0-9._-]+$/.test(normalized) ? `github:${normalized}` : undefined
 }
 
 interface DefaultRemoteRecord {
@@ -534,6 +615,48 @@ async function resolveConfiguredRemote(
   }
 }
 
+async function literalUrlRewrites(directory: string, neutralization: string[]) {
+  const config = await runGit(directory, ["config", "--null", "--list"], neutralization)
+  if (!config.ok) return undefined
+  const rewrites: Array<{ base: string; prefix: string; push: boolean }> = []
+  for (const entry of config.stdout.split("\0")) {
+    const separator = entry.indexOf("\n")
+    const key = entry.slice(0, separator)
+    const match = key.match(/^url\.(.+)\.(pushinsteadof|insteadof)$/i)
+    if (match)
+      rewrites.push({
+        base: match[1]!,
+        prefix: entry.slice(separator + 1),
+        push: match[2]!.toLowerCase() === "pushinsteadof",
+      })
+  }
+  return rewrites
+}
+
+function expandLiteralUrl(
+  input: string,
+  rewrites: NonNullable<Awaited<ReturnType<typeof literalUrlRewrites>>>,
+  push: boolean,
+) {
+  const match = (pushOnly: boolean) => {
+    const matches = rewrites
+      .filter((rewrite) => rewrite.push === pushOnly && input.startsWith(rewrite.prefix))
+      .sort((a, b) => b.prefix.length - a.prefix.length)
+    if (
+      matches.some(
+        (candidate) =>
+          candidate.prefix.length === matches[0]?.prefix.length &&
+          candidate.base !== matches[0]?.base,
+      )
+    )
+      return "ambiguous" as const
+    return matches[0]
+  }
+  const rewrite = (push ? match(true) : undefined) ?? match(false)
+  if (rewrite === "ambiguous") return undefined
+  return rewrite ? rewrite.base + input.slice(rewrite.prefix.length) : input
+}
+
 async function resolveRemoteTargets(
   directory: string,
   planned: PlannedGitActions,
@@ -545,6 +668,9 @@ async function resolveRemoteTargets(
   // Resolution is memoized per remote: repeated operands and default-remote
   // fallbacks reuse one lookup instead of re-running git.
   const resolvedRemotes = new Map<string, Awaited<ReturnType<typeof resolveConfiguredRemote>>>()
+  const rewrites = planned.remoteCandidates.some((input) => remoteOperandKind(input) === "literal")
+    ? await literalUrlRewrites(directory, neutralization)
+    : undefined
   const resolveRemote = async (name: string) => {
     if (!resolvedRemotes.has(name)) {
       resolvedRemotes.set(name, await resolveConfiguredRemote(directory, name, neutralization))
@@ -559,7 +685,59 @@ async function resolveRemoteTargets(
     // cap, literals additionally lose credential userinfo.
     const bounded = sanitizeRemoteUrl(input).slice(0, 200)
     if (remoteOperandKind(input) === "literal") {
-      targets.push({ input: bounded, kind: "literal", url: bounded })
+      const identity = repositoryIdentity(input)
+      // Literal destinations have no configured pushurl. Apply the longest
+      // matching rewrite separately for fetch and push, without contacting it.
+      const pushUrl = rewrites === undefined ? undefined : expandLiteralUrl(input, rewrites, true)
+      const fetchUrl = rewrites === undefined ? undefined : expandLiteralUrl(input, rewrites, false)
+      const literal = {
+        ...(pushUrl === undefined ? {} : { pushUrls: [sanitizeRemoteUrl(pushUrl)] }),
+        ...(fetchUrl === undefined ? {} : { fetchUrl: sanitizeRemoteUrl(fetchUrl) }),
+        ...(pushUrl === undefined || fetchUrl === undefined
+          ? { note: "literal URL rewrite configuration is unavailable or ambiguous" }
+          : {}),
+      }
+      const pushIdentity =
+        identity !== undefined && literal.pushUrls?.length === 1
+          ? repositoryIdentity(literal.pushUrls[0]!)
+          : undefined
+      const fetchIdentity =
+        identity !== undefined && literal.fetchUrl !== undefined
+          ? repositoryIdentity(literal.fetchUrl)
+          : undefined
+      const matches =
+        pushIdentity === undefined && fetchIdentity === undefined
+          ? []
+          : (
+              await Promise.all(
+                configuredNames.slice(0, MAX_RESOLVED_REMOTES).map(async (name) => {
+                  const urls = await resolveRemote(name)
+                  return {
+                    name,
+                    push:
+                      pushIdentity !== undefined &&
+                      (urls.pushUrls?.some((url) => repositoryIdentity(url) === pushIdentity) ??
+                        false),
+                    fetch:
+                      fetchIdentity !== undefined &&
+                      urls.fetchUrl !== undefined &&
+                      repositoryIdentity(urls.fetchUrl) === fetchIdentity,
+                  }
+                }),
+              )
+            ).filter((match) => match.push || match.fetch)
+      targets.push({
+        input: bounded,
+        kind: "literal",
+        url: bounded,
+        ...literal,
+        ...(matches.length === 0
+          ? {}
+          : {
+              configuredMatches: matches,
+              note: `${literal.note ? `${literal.note}; ` : ""}repository identity matches configured URLs only for the marked push/fetch roles; this does not establish authorization or destination trust`,
+            }),
+      })
       continue
     }
     if (configuredNames.includes(input)) {
@@ -693,6 +871,7 @@ function parseStatus(stdout: string): {
   staged: string[]
   unstaged: string[]
   untracked: string[]
+  unmerged: string[]
 } {
   const lines = stdout.split(/\r?\n/).filter(Boolean)
   const branchLine = lines.find((line) => line.startsWith("## "))
@@ -700,6 +879,7 @@ function parseStatus(stdout: string): {
   const staged: string[] = []
   const unstaged: string[] = []
   const untracked: string[] = []
+  const unmerged: string[] = []
   for (const line of lines) {
     if (line.startsWith("## ")) continue
     const x = line[0] ?? " "
@@ -709,10 +889,60 @@ function parseStatus(stdout: string): {
       untracked.push(path)
       continue
     }
+    if (["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(x + y)) {
+      unmerged.push(path)
+      continue
+    }
     if (x !== " ") staged.push(path)
     if (y !== " ") unstaged.push(path)
   }
-  return { branch, staged, unstaged, untracked }
+  return { branch, staged, unstaged, untracked, unmerged }
+}
+
+async function rewriteEvidence(
+  directory: string,
+  planned: PlannedGitActions,
+  neutralization: string[],
+) {
+  if (!planned.commands.includes("rebase")) return undefined
+  const base = planned.rewriteBases[0]
+  if (base === undefined || planned.rewriteBases.length !== 1)
+    return { status: "unavailable", reason: "rebase range is not a single literal base" }
+  const resolved = await runGit(
+    directory,
+    ["rev-parse", "--verify", "--end-of-options", `${base}^{commit}`],
+    neutralization,
+  )
+  if (!resolved.ok) return { status: "unavailable", reason: "rebase base could not be resolved" }
+  const sha = resolved.stdout.trim()
+  if (!/^[a-f0-9]{40,64}$/.test(sha))
+    return { status: "unavailable", reason: "rebase base is not a commit" }
+  const range = `${sha}..HEAD`
+  const [total, local, refs, head, upstream] = await Promise.all([
+    runGit(directory, ["rev-list", "--count", range], neutralization),
+    runGit(directory, ["rev-list", "--count", range, "--not", "--remotes"], neutralization),
+    runGit(directory, ["for-each-ref", "--format=%(refname)", "refs/remotes"], neutralization),
+    runGit(directory, ["rev-parse", "HEAD"], neutralization),
+    runGit(directory, ["rev-parse", "--symbolic-full-name", "@{upstream}"], neutralization),
+  ])
+  if (!total.ok || !local.ok || !refs.ok || !head.ok)
+    return {
+      status: "unavailable",
+      reason: "rewrite range or remote-tracking state could not be inspected",
+    }
+  const totalCount = Number(total.stdout.trim())
+  const localCount = Number(local.stdout.trim())
+  return {
+    status: "available",
+    base: sha,
+    head: head.stdout.trim(),
+    commitsInRange: totalCount,
+    commitsAbsentFromRemoteTrackingRefs: localCount,
+    commitsPresentInRemoteTrackingRefs: totalCount - localCount,
+    remoteTrackingRefs: boundedList(refs.stdout.trim().split("\n").filter(Boolean), 20),
+    ...(upstream.ok ? { upstream: upstream.stdout.trim() } : {}),
+    note: "read-only local snapshot; remote-tracking refs may be stale and absence is not proof of unpublished history",
+  }
 }
 
 function unresolved(values: string[]): string[] {
@@ -854,6 +1084,12 @@ export async function enrichGitEvidence(
   }
 
   const parsed = parseStatus(status.stdout)
+  const [mergeHead, rewrite] = await Promise.all([
+    planned.commands.some((cmd) => ["add", "commit", "merge"].includes(cmd))
+      ? runGit(gitDirectory, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], neutralization)
+      : undefined,
+    rewriteEvidence(gitDirectory, planned, neutralization),
+  ])
   // Remote operands only resolve inside the containment envelope, after the
   // repository root has been verified: `git remote`/`get-url` are plain config
   // reads, but running them anywhere would inspect an arbitrary repository.
@@ -904,6 +1140,15 @@ export async function enrichGitEvidence(
     commitRequested: planned.commit,
     plannedAdd: boundedList(planned.plannedAdd),
     preexistingStaged: boundedList(parsed.staged),
+    ...(mergeHead?.ok
+      ? {
+          indexContext: "merge-result-index",
+          mergeHead: mergeHead.stdout.trim(),
+          note: "the current index includes the in-progress merge result; this does not establish ownership or approval of every staged change",
+        }
+      : {}),
+    ...(parsed.unmerged.length > 0 ? { unmerged: boundedList(parsed.unmerged) } : {}),
+    ...(rewrite === undefined ? {} : { rewrite }),
     unstaged: boundedList(parsed.unstaged),
     untracked: boundedList(parsed.untracked),
     discardTargets: boundedList(planned.discardTargets),
