@@ -19,6 +19,7 @@ import type { SshAuditSummary } from "../ssh-evidence.ts"
 import { SshEvidenceProvider } from "../evidence/ssh-provider.ts"
 import { LocalScriptEvidenceProvider } from "../evidence/local-script-provider.ts"
 import { GitEvidenceProvider } from "../evidence/git-provider.ts"
+import { PackageScriptEvidenceProvider } from "../evidence/package-script-provider.ts"
 import {
   collectVerifiedSshScript,
   configFingerprint,
@@ -201,5 +202,10 @@ export async function assembleEvidence(
 
 /** The default evidence bundle used when callers do not inject their own. */
 export function defaultEvidenceProviders(): EvidenceProvider[] {
-  return [new SshEvidenceProvider(), new LocalScriptEvidenceProvider(), new GitEvidenceProvider()]
+  return [
+    new SshEvidenceProvider(),
+    new LocalScriptEvidenceProvider(),
+    new PackageScriptEvidenceProvider(),
+    new GitEvidenceProvider(),
+  ]
 }

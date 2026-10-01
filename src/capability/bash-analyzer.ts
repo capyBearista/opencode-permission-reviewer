@@ -842,6 +842,7 @@ export function analyzeCapability(
   let externalWrite = false
   let deletion = false
   let networkObserved = false
+  let networkPossible = false
   let childProcesses = false
   let persistence = false
   let privilegeEscalation = false
@@ -994,7 +995,14 @@ export function analyzeCapability(
       if (subs === undefined || sub === undefined || subs.has(sub)) {
         invokesPackageLifecycle = true
         childProcesses = true
-        networkObserved = true
+        networkPossible = true
+        if (["run", "exec"].includes(sub ?? "")) {
+          executesCode = true
+          if (sub === "run") executesRepositoryCode = true
+        }
+        // A local manifest script or installed executable can use the network,
+        // but its invocation is not evidence of an actual network operation.
+        if (!["run", "exec"].includes(sub ?? "")) networkObserved = true
       }
     }
     if (NETWORK_CLIENTS.has(base)) {
@@ -1265,10 +1273,10 @@ export function analyzeCapability(
     },
     network: {
       observed: staticFact(networkObserved ? true : "unknown"),
-      possible: heuristicFact(networkObserved ? true : "unknown"),
+      possible: heuristicFact(networkObserved || networkPossible ? true : "unknown"),
       destinations,
       observedAccess: staticFact(networkObserved ? true : "unknown"),
-      possibleAccess: heuristicFact("unknown"),
+      possibleAccess: heuristicFact(networkObserved || networkPossible ? true : "unknown"),
     },
     process: {
       childProcesses: staticFact(childProcesses ? true : "unknown"),
