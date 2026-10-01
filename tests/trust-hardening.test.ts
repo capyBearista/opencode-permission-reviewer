@@ -221,14 +221,18 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
     }
   })
 
-  test("project context budgets can only raise, never lower, trusted values", () => {
+  test("project cannot set reviewer resource knobs in either direction", () => {
     const globalDir = tempDir("reviewer-global-")
     const projectDir = tempDir("reviewer-project-")
     try {
+      // A global baseline distinct from the defaults proves the project
+      // value is dropped, not merely clamped.
       const globalPath = join(globalDir, "permission-reviewer.jsonc")
       writeFileSync(
         globalPath,
         JSON.stringify({
+          timeoutMs: 20_000,
+          reviewBudgetMs: 15_000,
           maxContextChars: 64_000,
           transcriptMessages: 24,
           historyMessages: 400,
@@ -237,23 +241,27 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
       )
       setGlobalConfigPathForTests(globalPath)
       mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      // Raise, lower, null, and wrong-type attempts must all be ignored.
       writeFileSync(
         projectConfigPath(projectDir),
         JSON.stringify({
+          timeoutMs: 999_999,
+          reviewBudgetMs: 1,
           maxContextChars: 4_000,
+          maxEnrichmentChars: 500_000,
           transcriptMessages: 1,
           historyMessages: null,
-          maxSessionDepth: 1,
-          maxEnrichmentChars: 50_000,
+          maxSessionDepth: "many",
         }),
       )
       const loaded = loadResolvedConfig(undefined, projectDir)
+      expect(loaded.timeoutMs).toBe(20_000)
+      expect(loaded.reviewBudgetMs).toBe(15_000)
       expect(loaded.maxContextChars).toBe(64_000)
+      expect(loaded.maxEnrichmentChars).toBe(DEFAULT_CONFIG.maxEnrichmentChars)
       expect(loaded.transcriptMessages).toBe(24)
       expect(loaded.historyMessages).toBe(400)
       expect(loaded.maxSessionDepth).toBe(6)
-      // Raising a budget above the trusted floor is a legitimate tightening.
-      expect(loaded.maxEnrichmentChars).toBe(50_000)
     } finally {
       setGlobalConfigPathForTests(undefined)
       rmSync(globalDir, { recursive: true })
@@ -261,7 +269,20 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
     }
   })
 
-  test("a wrong-type trusted budget does not disable the context floor", () => {
+  test("trusted inline still selects reviewer resource knobs", () => {
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(projectConfigPath(projectDir), JSON.stringify({ timeoutMs: 555_000 }))
+      const loaded = loadResolvedConfig({ timeoutMs: 12_345, maxContextChars: 90_000 }, projectDir)
+      expect(loaded.timeoutMs).toBe(12_345)
+      expect(loaded.maxContextChars).toBe(90_000)
+    } finally {
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("a wrong-type trusted budget falls back to the builtin default", () => {
     const globalDir = tempDir("reviewer-global-")
     const projectDir = tempDir("reviewer-project-")
     try {
@@ -271,8 +292,8 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
       mkdirSync(join(projectDir, ".opencode"), { recursive: true })
       writeFileSync(projectConfigPath(projectDir), JSON.stringify({ maxContextChars: 4_000 }))
       const loaded = loadResolvedConfig(undefined, projectDir)
-      // The builtin default stays the floor even when the trusted layer's
-      // value is unusable.
+      // The unusable trusted value resolves to the builtin default; the
+      // project layer never gets a say either way.
       expect(loaded.maxContextChars).toBe(32_000)
     } finally {
       setGlobalConfigPathForTests(undefined)

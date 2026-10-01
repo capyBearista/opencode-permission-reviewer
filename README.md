@@ -363,14 +363,15 @@ reviewer enforces and reports), cannot redirect `auditPath`, flip
 `repositoryTrust: "trusted"`, downgrade a global `enforcementMode: "enforce"`,
 or relax a trusted `escalationMode: "deny"` / failure-mode deny knob /
 `confidenceThreshold` / `systemOneConfidenceThreshold` /
-`systemOneReasoningThreshold` / `riskPolicy`. Reviewer context budgets
-(`maxContextChars`, `maxEnrichmentChars`, `transcriptMessages`,
-`historyMessages`, `maxSessionDepth`, and siblings) may only be raised by the
-project layer, never lowered below a trusted value: starving the reviewer of
-context weakens the review. Timing budgets (`timeoutMs`, `reviewBudgetMs`)
-stay project-tunable: lowering them can only fail reviews closed into manual
-escalation, never approve anything. Project values of the wrong type
-(including `null`) are ignored, never normalized back to defaults.
+`systemOneReasoningThreshold` / `riskPolicy`. Reviewer resource knobs
+(`timeoutMs`, `reviewBudgetMs`, and the context budgets `maxContextChars`,
+`maxEnrichmentChars`, `transcriptMessages`, `historyMessages`,
+`maxSessionDepth`, and siblings) cannot be set by the project layer at all:
+they decide how long a review runs and how much conversation reaches the
+provider, which is not a monotonic security trade, so only global and
+trusted inline configuration may move them in either direction. Project
+values of the wrong type (including `null`) are ignored, never normalized
+back to defaults.
 
 A config file that exists but cannot be honored fails CLOSED on the trusted
 side: a malformed or unreadable **global** config, or trusted `policyRules`

@@ -142,7 +142,9 @@ export function projectConfigPath(directory: string): string {
  *  final: the project layer may only tighten them against the trusted
  *  baseline (which already includes inline), and a later inline value must not
  *  undo that tightening. For every other field the documented precedence
- *  applies and inline (trusted, most specific) wins over the project. */
+ *  applies and inline (trusted, most specific) wins over the project. The
+ *  reviewer resource knobs (timeouts, context budgets) are the strictest
+ *  case: the project cannot set them at all, in either direction. */
 const TRUST_BOUNDARY_KEYS = new Set([
   "confidenceThreshold",
   "systemOneConfidenceThreshold",
@@ -161,6 +163,8 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "variant",
   "outputFormat",
   "retainReviewSessions",
+  "timeoutMs",
+  "reviewBudgetMs",
   "maxContextChars",
   "maxPartChars",
   "maxEnrichmentChars",
@@ -173,10 +177,16 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "askDecisions",
 ])
 
-/** Reviewer context budgets the project layer may only raise: starving the
- *  reviewer of transcript, evidence, or session-chain context weakens the
- *  review, so a lower project value is clamped back to the trusted one. */
-const CONTEXT_FLOOR_KEYS = [
+/** Reviewer resource knobs: how long a review may run and how much context
+ *  (transcript, evidence, session chains) it may consume. These are NOT
+ *  monotonic security fields: raising them means more conversation sent to
+ *  the provider, more cost, and longer processing, so a repository may not
+ *  move them in either direction. Only trusted global/inline config sets
+ *  them; the project layer is restricted to genuinely monotonic hardening
+ *  (deny/manual rules, allowed thresholds, repositoryTrust). */
+const TRUSTED_ONLY_RESOURCE_KEYS = [
+  "timeoutMs",
+  "reviewBudgetMs",
   "maxContextChars",
   "maxPartChars",
   "maxEnrichmentChars",
@@ -374,15 +384,12 @@ function mergeWithTrustBoundary(
 
   // Numeric floors: project config can raise but not lower them; non-numeric
   // values (including null) are ignored so they cannot reset a trusted floor.
-  // Confidence floors guard the decision gate; context floors keep the
-  // reviewer from being starved of transcript, evidence, or session-chain
-  // context. A trusted layer with a wrong-type value must not silently
-  // disable the floor, so the fallback comparison uses the builtin default.
+  // Confidence floors guard the decision gate and are monotonic hardening:
+  // a stricter threshold is always safer, so the project may add one.
   for (const key of [
     "confidenceThreshold",
     "systemOneConfidenceThreshold",
     "systemOneReasoningThreshold",
-    ...CONTEXT_FLOOR_KEYS,
   ] as const) {
     if (hasKey(clamped, key)) {
       if (typeof clamped[key] !== "number" || !Number.isFinite(clamped[key])) {
@@ -395,6 +402,13 @@ function mergeWithTrustBoundary(
         if (clamped[key] < floor) clamped[key] = floor
       }
     }
+  }
+
+  // Reviewer resource knobs (timeouts and context budgets) are deleted
+  // outright: they are not monotonic, so neither raising nor lowering them
+  // from a repository is safe. Wrong-typed values are dropped with them.
+  for (const key of TRUSTED_ONLY_RESOURCE_KEYS) {
+    delete clamped[key]
   }
 
   // audit: project can enable but not disable.
