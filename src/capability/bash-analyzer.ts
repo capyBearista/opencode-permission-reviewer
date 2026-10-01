@@ -178,6 +178,94 @@ const FILE_WRITE_TOOLS = new Set(["tee", "dd", "install", "truncate", "shred"])
 
 const FILE_MUTATION_TOOLS = new Set(["cp", "mv", "rename", "ln", "link", "symlink", "rsync"])
 
+/** Options of the mutation tools that consume a separate value token, so the
+ *  value is never mistaken for a source or destination operand. The lists
+ *  cover the structural options (destination and suffix selection); an
+ *  unmodeled value-taking option can only shift a classification toward a
+ *  read (harmless) or, rarely, toward the last-operand destination
+ *  (conservative), never hide the real destination. */
+const MUTATION_VALUE_OPTIONS: Record<string, Set<string>> = {
+  cp: new Set(["-t", "--target-directory", "-S", "--suffix", "-Z", "--context", "--reflink"]),
+  mv: new Set(["-t", "--target-directory", "-S", "--suffix", "-Z", "--context"]),
+  ln: new Set(["-t", "--target-directory", "-S", "--suffix"]),
+  rsync: new Set([
+    "-b",
+    "--backup-dir",
+    "-e",
+    "--rsh",
+    "--rsync-path",
+    "--exclude-from",
+    "--include-from",
+    "--files-from",
+    "--suffix",
+    "--password-file",
+    "--log-file",
+    "--out-format",
+  ]),
+}
+
+/** A remote operand for rsync-style tools: a URL scheme, or an `host:path`
+ *  / `user@host:path` shape whose part before the colon is a bare host (no
+ *  slash), which is exactly how rsync decides local-with-colon vs remote. */
+function isRemoteMutationOperand(value: string): boolean {
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(value)) return true
+  const colon = value.indexOf(":")
+  return colon > 0 && !value.slice(0, colon).includes("/")
+}
+
+/** Split a cp/mv/ln/rsync invocation into read sources and write
+ *  destinations. The last positional operand is the destination (cp/mv/rsync
+ *  destination, ln link name); `--target-directory`/`-t` names an additional
+ *  destination directory everything lands under. Paths after `--` are
+ *  operands like any other. */
+function mutationOperands(
+  base: string,
+  cmd: ReadonlyArray<{ value: string }>,
+): { sources: string[]; destinations: string[]; sawOperand: boolean } {
+  const valueOpts = MUTATION_VALUE_OPTIONS[base] ?? new Set<string>()
+  const operands: string[] = []
+  let targetDirectory: string | undefined
+  let endOfOptions = false
+  for (let i = 1; i < cmd.length; i += 1) {
+    const v = cmd[i]!.value
+    if (!endOfOptions && v === "--") {
+      endOfOptions = true
+      continue
+    }
+    if (!endOfOptions && v.startsWith("--")) {
+      if (v.startsWith("--target-directory="))
+        targetDirectory = v.slice("--target-directory=".length)
+      continue
+    }
+    if (!endOfOptions && v.startsWith("-") && v.length > 1) {
+      if (v === "-t" || v === "--target-directory") {
+        targetDirectory = cmd[i + 1]?.value
+        i += 1
+        continue
+      }
+      if (/^-t.+/.test(v)) {
+        targetDirectory = v.slice(2)
+        continue
+      }
+      if (valueOpts.has(v)) {
+        i += 1
+        continue
+      }
+      continue
+    }
+    operands.push(v)
+  }
+  if (targetDirectory !== undefined) {
+    // `-t DIR` redirects every SOURCE argument into DIR: with it, no operand
+    // is itself a destination.
+    return { sources: operands, destinations: [targetDirectory], sawOperand: operands.length > 0 }
+  }
+  const destinations: string[] = []
+  if (operands.length > 0) destinations.push(operands[operands.length - 1]!)
+  const sources = operands.length > 1 ? operands.slice(0, -1) : []
+  return { sources, destinations, sawOperand: operands.length > 0 }
+}
+
 /** Executables with no observable side effects on the local filesystem when
  *  invoked with plain arguments. An executable NOT in this set (and in none of
  *  the effect families above) is classified "unknown", not read-only: the
@@ -790,21 +878,26 @@ export function analyzeCapability(
       }
     }
     if (FILE_MUTATION_TOOLS.has(base)) {
-      // cp/mv/ln/rsync move or link content: classify every operand so an
-      // external destination (`mv file /etc/config`) is reported as an
-      // external write instead of a blanket workspace write.
-      let anyOperand = false
-      for (let i = 1; i < cmd.length; i += 1) {
-        const v = cmd[i]!.value
-        if (v.startsWith("-")) continue
-        if (/^[a-z][a-z0-9+.-]*:\/\//.test(v)) continue
-        anyOperand = true
-        const cls = classifyPath(v, directory, worktree)
+      // cp/mv/ln/rsync: only the DESTINATIONS are writes. Sources of cp and
+      // ln are plain reads (`cp /etc/hosts ./hosts` must not report an
+      // external write for its source); mv also changes where each source
+      // lives, so mv sources count as mutations of their origin location.
+      // Remote destinations (`user@host:/srv/app`, rsync://…) are external
+      // writes on another machine, whatever a relative-looking local
+      // classification would say.
+      const { sources, destinations, sawOperand } = mutationOperands(base, cmd)
+      const writeOperands = base === "mv" ? [...destinations, ...sources] : destinations
+      for (const operand of writeOperands) {
+        if (isRemoteMutationOperand(operand)) {
+          externalWrite = true
+          continue
+        }
+        const cls = classifyPath(operand, directory, worktree)
         if (cls.temporary) temporaryWrite = true
         if (cls.workspace) workspaceWrite = true
         if (cls.external) externalWrite = true
       }
-      if (!anyOperand) workspaceWrite = true
+      if (!sawOperand) workspaceWrite = true
     }
     if (DELETION_TOOLS.has(base)) {
       deletion = true

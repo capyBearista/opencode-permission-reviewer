@@ -256,6 +256,41 @@ describe("capability analyzer — classification matrix", () => {
     expect(a.actionClass.value).toBe("git-mutation")
   })
 
+  test("mutation tools write to destinations only, sources are reads", () => {
+    // cp's source is only read: no external write for /etc/hosts.
+    const copy = assess("cp /etc/hosts ./hosts")
+    expect(copy.writeEffects.workspaceWrite.value).toBe(true)
+    expect(copy.writeEffects.externalWrite.value).not.toBe(true)
+    // --target-directory (attached, separate, and clustered) classifies the
+    // destination directory, and its sources stay reads.
+    for (const command of [
+      "cp --target-directory=/etc ./a ./b",
+      "cp -t /etc ./a ./b",
+      "cp -t/etc ./a",
+    ]) {
+      const a = assess(command)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.writeEffects.workspaceWrite.value).not.toBe(true)
+    }
+    // Remote rsync destinations are external writes on another machine, not
+    // relative workspace paths; a local /tmp destination is temporary.
+    const remote = assess("rsync ./dist/ user@host:/srv/app")
+    expect(remote.writeEffects.externalWrite.value).toBe(true)
+    expect(remote.writeEffects.workspaceWrite.value).not.toBe(true)
+    const schemeRemote = assess("rsync ./dist/ rsync://host/mod/x")
+    expect(schemeRemote.writeEffects.externalWrite.value).toBe(true)
+    const localTemp = assess("rsync ./dist/ /tmp/x")
+    expect(localTemp.writeEffects.temporaryWrite.value).toBe(true)
+    // mv also changes where the source lives: origin counts as a mutation.
+    const move = assess("mv /etc/hosts ./hosts")
+    expect(move.writeEffects.externalWrite.value).toBe(true)
+    expect(move.writeEffects.workspaceWrite.value).toBe(true)
+    // Operands after -- still split sources from destination.
+    const dashed = assess("cp -- ./a /etc/b")
+    expect(dashed.writeEffects.externalWrite.value).toBe(true)
+    expect(dashed.writeEffects.workspaceWrite.value).not.toBe(true)
+  })
+
   test("git status → read-only git, no mutation", () => {
     const a = assess("git status")
     expect(a.git.observed.value).toBe(true)
