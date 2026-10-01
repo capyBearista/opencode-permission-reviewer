@@ -167,6 +167,7 @@ try {
       delete: sdk.session.delete.bind(sdk.session),
     },
     tool: { ids: sdk.tool.ids.bind(sdk.tool) },
+    mcp: { status: sdk.mcp.status.bind(sdk.mcp) },
   } as OpenCodeClientLike
   const replies: unknown[] = []
   const config = resolveConfig({ model: "synthetic/reviewer", timeoutMs: 30000, audit: false })
@@ -231,9 +232,9 @@ try {
     { headers: hostHeaders },
   ).then((r) => r.json())) as Record<string, { status: string }>
   assert.equal(
-    mcp.synthetic?.status,
-    "connected",
-    "MCP must be available before reviewer tool filtering",
+    mcp.synthetic,
+    undefined,
+    "the reviewer isolation location must exclude configured MCP servers",
   )
 
   const textResult = await run({ outputFormat: "text" })
@@ -302,7 +303,7 @@ try {
       ok: true,
       providerRequests: captured.length,
       structuredTools: ["StructuredOutput"],
-      mcpConnected: true,
+      mcpExcludedFromIsolation: true,
       isolationFailuresBlocked: true,
       incompleteActionBlocked: true,
       verifiedScriptReusedWithoutRepeatingContent: true,

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevent OpenCode V1 permission reviews from starting additional configured
+  MCP processes for each review. The V1 isolated reviewer directory now carries
+  a local config that excludes MCP servers, and the reviewer fails closed if the
+  host still reports any for that location.
+
 ## [2.3.1] - 2026-09-28
 
 ### Fixed

@@ -41,6 +41,7 @@ coverage/
 
 # test scratch directories
 tests/.tmp-reviewer-isolated/
+tests/.tmp-reviewer-isolated-v1/
 __pycache__/
 .pytest_cache/
 /plan_*.md

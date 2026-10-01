@@ -1,4 +1,5 @@
 import type { ReviewEnvelope, ReviewExecutionResult, ReviewerConfig } from "../../types.ts"
+import { join } from "node:path"
 import type { RuntimeContext, ClientResponse } from "../types.ts"
 import type { ReviewAttempt } from "../../core/review-attempt.ts"
 import { buildEvidenceResult } from "../../context.ts"
@@ -32,6 +33,7 @@ export class V1ReviewerBackend {
   private readonly reviewerSessions = new Set<string>()
   private readonly jobs = new Set<Promise<ReviewExecutionResult>>()
   private isolatedReviewerDirectory: string | undefined
+  private isolatedReviewerDirectoryPromise: Promise<string | undefined> | undefined
   private readonly metadataCallTimeoutMs: number
   constructor(
     private readonly ctx: RuntimeContext,
@@ -60,11 +62,37 @@ export class V1ReviewerBackend {
    * Resolve (and create once) the scratch directory reviewer sessions run in.
    * The directory has no AGENTS.md/CLAUDE.md and no project config, so the
    * host only loads the user's trusted global instructions for the reviewer
-   * session. Returns undefined when the directory cannot be created so the
-   * caller fails into the configured reviewer-error disposition.
+   * session. A local config plus bootstrap plugin exclude the user's global
+   * MCP servers from this location: without them the host boots a second
+   * in-process Instance that spawns every enabled server under the parent PID
+   * for the life of the session, even though the reviewer denies all tools.
+   * Returns undefined when the directory cannot be created so the caller fails
+   * into the configured reviewer-error disposition.
    */
   private async reviewerSessionDirectory(): Promise<string | undefined> {
     if (this.isolatedReviewerDirectory !== undefined) return this.isolatedReviewerDirectory
+    // Concurrent first reviews must share one setup: otherwise each writes the
+    // config pair, and the loser's re-assert can O_TRUNC a file the host has
+    // already read and cached in that process. Memoize the in-flight promise and
+    // clear it on failure so a later review retries and still fails closed.
+    this.isolatedReviewerDirectoryPromise ??= this.setupReviewerSessionDirectory().then(
+      (directory) => {
+        if (directory === undefined) this.isolatedReviewerDirectoryPromise = undefined
+        else this.isolatedReviewerDirectory = directory
+        return directory
+      },
+      (error) => {
+        this.isolatedReviewerDirectoryPromise = undefined
+        throw error
+      },
+    )
+    return this.isolatedReviewerDirectoryPromise
+  }
+
+  /** Create the isolation directory and its config pair once. Any failure logs
+   *  and resolves undefined so the caller escalates rather than running outside
+   *  the isolated location. */
+  private async setupReviewerSessionDirectory(): Promise<string | undefined> {
     try {
       const { mkdir } = await import("node:fs/promises")
       const { expandHome } = await import("../../audit.ts")
@@ -72,7 +100,22 @@ export class V1ReviewerBackend {
         this.ctx.reviewerDirectoryBase ?? "~/.local/share/opencode/permission-reviewer-isolated"
       const directory = expandHome(base)
       await mkdir(directory, { recursive: true, mode: 0o700 })
-      this.isolatedReviewerDirectory = directory
+      // The location is shared across host restarts, so an exclusive create
+      // would fail closed forever after the first run. Create exclusively when
+      // absent and otherwise re-assert the config: a stale or tampered file
+      // must not survive. `assertNoMcpServers` below is the authoritative guard
+      // either way; this only keeps the on-disk config correct.
+      await this.writeIsolatedFile(
+        join(directory, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          plugin: ["./reviewer-isolation.js"],
+        }),
+      )
+      await this.writeIsolatedFile(
+        join(directory, "reviewer-isolation.js"),
+        "export default async () => ({ config: async (cfg) => { cfg.mcp = {} } })",
+      )
       return directory
     } catch (error) {
       this.log("could not create the isolated reviewer directory", {
@@ -80,6 +123,68 @@ export class V1ReviewerBackend {
       })
       return undefined
     }
+  }
+
+  /** Create a config file at mode 0o600, re-asserting it if it already exists.
+   *  Both opens refuse to follow a symlink: the directory is plugin-owned, so a
+   *  link there is tampering, not a legitimate target. */
+  private async writeIsolatedFile(path: string, content: string): Promise<void> {
+    const { open, constants } = await import("node:fs/promises")
+    const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW
+    let handle
+    try {
+      handle = await open(path, flags | constants.O_EXCL, 0o600)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error
+      handle = await open(path, flags | constants.O_TRUNC, 0o600)
+    }
+    try {
+      await handle.writeFile(content)
+      // Overwriting an existing file leaves its mode untouched, so tighten it
+      // explicitly: the bootstrap is host-executed code and must stay owner-only.
+      await handle.chmod(0o600)
+    } finally {
+      await handle.close()
+    }
+  }
+
+  /**
+   * Fail closed unless the host reports no MCP servers for the isolation
+   * location. The V1 client exposes `mcp.status` (a map keyed by server name,
+   * `{}` when none); a missing surface, a transport error, or any reported
+   * server aborts the review before a session is created. The host check, not
+   * the on-disk config, is the guarantee that the reviewer location has no MCP.
+   *
+   * Known limitation: asking the host about a location is what boots its
+   * Instance, so a bootstrap the host ignores would have its servers already
+   * started by the time this throws. The guard then fails closed (no reviewer
+   * session runs) but cannot unspawn them; only the on-disk config prevents
+   * that, and it is verified against the host rather than assumed.
+   */
+  private async assertNoMcpServers(
+    directory: string | undefined,
+    attempt: ReviewAttempt,
+  ): Promise<void> {
+    if (directory === undefined) throw new Error("reviewer isolation unavailable")
+    const mcp = this.ctx.client.mcp
+    if (mcp === undefined || typeof mcp.status !== "function")
+      throw new Error("reviewer isolation MCP check unavailable")
+    let inventory: Record<string, unknown>
+    try {
+      inventory = responseData(
+        await attempt.wait(
+          withTimeout(
+            mcp.status({ query: { directory }, signal: attempt.signal }),
+            this.metadataCallTimeoutMs,
+          ),
+        ),
+        "mcp.status",
+      )
+    } catch (error) {
+      throw new Error("reviewer isolation MCP check failed", { cause: error })
+    }
+    if (Object.keys(inventory).length > 0)
+      throw new Error("Reviewer isolation location contains MCP servers")
   }
 
   /** Create an instruction-isolated session or fail into the configured error route. */
@@ -127,6 +232,11 @@ export class V1ReviewerBackend {
     try {
       // Never review inside the project if instruction isolation fails.
       const isolated = await this.reviewerSessionDirectory()
+      // The isolated location excludes MCP via its local config, but the guard
+      // trusts the host report, not the file: a stale or tampered config, a host
+      // that ignores it, or a user-level addition must all escalate rather than
+      // spawn duplicate MCP processes under this session.
+      await this.assertNoMcpServers(isolated, attempt)
       const created = await this.createReviewerSession(envelope, isolated, attempt.signal)
       sessionDirectory = created.directory
       reviewSessionID = created.id

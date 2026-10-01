@@ -579,6 +579,7 @@ describe("event boundary", () => {
       client: {
         session: client.session,
         tool: client.tool,
+        mcp: client.mcp,
         _client: {
           post: async (options: unknown) => {
             rawPosts.push(options)
