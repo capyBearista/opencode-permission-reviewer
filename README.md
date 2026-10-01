@@ -652,7 +652,29 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   published artifact plus npm provenance for it.
 - **The direct runtime dependency set is frozen and tested.** Adding a
   dependency (native or not) is a reviewed change: the package smoke test
-  fails until its allowlist is updated in the same commit.
+  fails until its allowlist is updated in the same commit. The same suite
+  installs the published tarball in an isolated tree and freezes what a
+  consumer actually gets: the platform-specific packages under `@opentui`
+  (rendering only), the exact `@babel/core` version documented below, and an
+  `npm audit` gate that fails on any high or critical advisory. Root
+  `overrides` in this repository protect the development tree only; npm never
+  applies a dependency's overrides to the installing application, which is
+  why consumer-side guarantees live in tests against the installed tree
+  itself.
+- **Known residual exposure, documented, not fixed.** `@opentui/solid` pins
+  `@babel/core@7.28.0` exactly (every published 0.5.x does), and
+  GHSA-4x5r-pxfx-6jf8 (arbitrary file read via a crafted `sourceMappingURL`
+  comment, low severity) affects `@babel/core <= 7.29.0`. In this package
+  that copy of babel only compiles the TUI sources we ship in the tarball,
+  never repository- or attacker-influenced input, so the advisory's
+  conditions are not met by our usage; it is still reachable in the consumer
+  tree and therefore tracked: the consumer surveillance test pins the
+  installed version, and moving off 7.28.0 is a conscious bump (an
+  `@opentui/solid` release with a fixed pin, or dropping the exact-pin
+  constraint) together with this note. Separately, `esbuild` (a build-time
+  dependency here, never shipped) is root-overridden past
+  GHSA-g7r4-m6w7-qqqr; that override intentionally does not reach consumers
+  because consumers never install `esbuild` from this package at all.
 - **The `effect` runtime stays external.** `@opencode-ai/plugin` resolves
   `effect@4.0.0-beta.83` from the host's own dependency chain for OpenCode V1
   hosts. It is externalized from our bundles, not shipped or vendored by this

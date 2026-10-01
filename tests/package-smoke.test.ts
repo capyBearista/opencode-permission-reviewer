@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -333,5 +333,106 @@ describe("npm install dedupe shape", () => {
     )
     expect(fromEntry.startsWith(solidDirs[0]!)).toBe(true)
     expect(fromOpentui.startsWith(solidDirs[0]!)).toBe(true)
+  }, 240_000)
+
+  test("consumer tree dependency and native surveillance", async () => {
+    // Surveillance of what a CONSUMER actually installs from the tarball:
+    // the documented advisory exposure, the absence of build-tree-only
+    // tools, and the reachable native/platform set. Overrides in this
+    // repository's package.json do not follow the tarball, so only what is
+    // asserted here (or in npm audit) guards the consumer tree.
+    installDir ??= mkdtempSync(join(tmpdir(), "reviewer-install-"))
+    if (!existsSync(join(installDir, "node_modules", "opencode-permission-reviewer"))) {
+      const install = Bun.spawnSync({
+        cmd: [
+          "npm",
+          "install",
+          "--prefix",
+          installDir,
+          "--ignore-scripts",
+          "--no-audit",
+          "--no-fund",
+          packOnce(),
+        ],
+        cwd: installDir,
+        stdout: "ignore",
+        stderr: "pipe",
+      })
+      expect(install.exitCode).toBe(0)
+    }
+
+    // @babel/core reaches the consumer tree through @opentui/solid, which
+    // pins it EXACTLY (7.28.0 at every published 0.5.x). GHSA-4x5r-pxfx-6jf8
+    // (arbitrary file read via a crafted sourceMappingURL comment) affects
+    // <= 7.29.0. The exposure is residual and DOCUMENTED, not fixed: in this
+    // package babel only compiles the TUI sources we ship, never
+    // attacker-influenced input. When @opentui/solid publishes a fixed pin,
+    // this assertion forces the conscious version bump and doc update.
+    const babelDir = existsSync(join(installDir, "node_modules", "@babel", "core"))
+      ? join(installDir, "node_modules", "@babel", "core")
+      : join(installDir, "node_modules", "@opentui", "solid", "node_modules", "@babel", "core")
+    const babelPkg = JSON.parse(readFileSync(join(babelDir, "package.json"), "utf8")) as {
+      version: string
+    }
+    expect(babelPkg.version).toBe("7.28.0")
+
+    // The build toolchain must not follow the tarball: esbuild (and the
+    // advisory it carries) is dev-only by design.
+    expect(existsSync(join(installDir, "node_modules", "esbuild"))).toBe(false)
+    for (const entry of readdirSync(join(installDir, "node_modules"), { withFileTypes: true })) {
+      if (entry.name.startsWith("@esbuild")) {
+        throw new Error(`@esbuild scope leaked into the consumer tree: ${entry.name}`)
+      }
+    }
+
+    // Native/platform surveillance: every platform-specific package name in
+    // the consumer tree. The set is frozen; adding one is a supply-chain
+    // review, not an accident.
+    const platformPattern =
+      /(?:-|--)(?:linux|darwin|win32|android|freebsd|netbsd|openbsd|sunos|aix|arm|arm64|x64|x86|ia32|ppc64|riscv64|s390x|musl|glibc|android-arm(?:64)?|fuchsia)(?:$|[/-])/
+    const natives: string[] = []
+    const walkNatives = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name === ".bin" || entry.name === ".package-lock.json")
+          continue
+        const full = join(dir, entry.name)
+        if (dir.endsWith("node_modules") && platformPattern.test(entry.name)) {
+          natives.push(entry.name)
+          continue
+        }
+        walkNatives(full)
+      }
+    }
+    walkNatives(join(installDir, "node_modules"))
+    // Only the @opentui rendering stack may carry platform-tagged packages;
+    // anything else appearing here is a supply-chain change to review.
+    const unexpected = natives.filter((name) => !name.startsWith("@opentui/"))
+    if (unexpected.length > 0) console.log("consumer native set:", natives)
+    expect(unexpected).toEqual([])
+
+    // npm audit over the CONSUMER tree (registry reachability required; the
+    // repository's own overrides never apply here). No high or critical
+    // advisories; low ones are the documented residuals above.
+    const audit = Bun.spawnSync({
+      cmd: ["npm", "audit", "--prefix", installDir, "--audit-level=high", "--json"],
+      cwd: installDir,
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const auditText = audit.stdout.toString()
+    let vulnerabilities: Record<string, number> | undefined
+    try {
+      const parsed = JSON.parse(auditText) as {
+        metadata?: { vulnerabilities?: Record<string, number> }
+      }
+      vulnerabilities = parsed.metadata?.vulnerabilities
+    } catch {
+      // Registry unreachable: surveillance degrades to the structural
+      // checks above rather than failing the suite offline.
+    }
+    if (vulnerabilities !== undefined) {
+      expect(vulnerabilities.high ?? 0).toBe(0)
+      expect(vulnerabilities.critical ?? 0).toBe(0)
+    }
   }, 240_000)
 })
