@@ -9,12 +9,15 @@ import {
   type ShellToken,
   shellBasename,
 } from "./shell-lexer.ts"
+import { extractHeredocs } from "./capability/heredoc-extractor.ts"
+import type { Redirection } from "./types.ts"
 
 /** One segment with its resolved effective commands, computed once per
  *  request and shared by every detector. */
 interface AnalyzedSegment {
   segment: ShellSegment
   effective: ShellToken[][]
+  redirections: Redirection[][]
 }
 
 /*
@@ -184,6 +187,10 @@ function isFindRootDestruction(analyzed: AnalyzedSegment[]): boolean {
         // are not modelled here, so `find -maxdepth 1 / …` is a false negative
         // (rare and safe) — we never falsely trip.
         if (root === null) {
+          if (value === "-D") {
+            i += 1
+            continue
+          }
           if (value.startsWith("-") && value.length > 1) continue
           if (value === "--") continue
           root = tokens[i]!
@@ -259,8 +266,8 @@ function redirectTargetsBlockDevice(tokens: ShellToken[]): boolean {
 }
 
 /** Positions and lengths of `>` / `>>` redirect operators whose `>` characters
- *  are all unquoted. `>|` is covered by the trailing-`>` shape: the lexer's
- *  separator handling ends the token at `>`. */
+ *  are all unquoted. The normalized redirection pass handles compound forms
+ *  such as `>|` and `&>` separately. */
 function unquotedRedirectOperators(token: ShellToken): Array<{ start: number; length: number }> {
   const out: Array<{ start: number; length: number }> = []
   const value = token.value
@@ -281,29 +288,82 @@ function shortFlagClusterIncludes(value: string, letter: string): boolean {
   )
 }
 
-function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
-  for (let s = 0; s < analyzed.length; s += 1) {
-    const { segment, effective } = analyzed[s]!
-    if (redirectTargetsBlockDevice(segment.tokens)) return true
-    // The clobber-override redirect `>|` loses its `|` to the lexer's
-    // separator handling: the operator survives as a trailing `>` with the
-    // target as the next segment's first token. A bare `>` at segment end is
-    // never valid bash otherwise, so the shape is unambiguous.
-    const trailing = segment.tokens.at(-1)
-    if (
-      trailing !== undefined &&
-      (trailing.value === ">" || trailing.value === ">>") &&
-      !tokenCharIsQuoted(trailing, 0)
-    ) {
-      const next = analyzed[s + 1]?.segment.tokens[0]
-      if (next !== undefined && isBlockDeviceTarget(next.value)) return true
+/** `cp SOURCE DEVICE` and `install SOURCE DEVICE` open the final operand for
+ *  writing just like an output redirection. Parse their value-taking options
+ *  so an option argument that merely resembles a device is never mistaken for
+ *  the destination. Target-directory forms point at a directory and cannot
+ *  directly overwrite a block device. */
+function copyOverwritesBlockDevice(tokens: ShellToken[], base: string): boolean {
+  const valueOptions =
+    base === "cp"
+      ? new Set(["-S", "-t", "--suffix", "--target-directory", "--context"])
+      : new Set([
+          "-g",
+          "-m",
+          "-o",
+          "-S",
+          "-t",
+          "--group",
+          "--mode",
+          "--owner",
+          "--suffix",
+          "--target-directory",
+          "--context",
+          "--strip-program",
+        ])
+  const operands: string[] = []
+  let endOfOptions = false
+  let targetDirectory = false
+  for (let index = 1; index < tokens.length; index += 1) {
+    const value = tokens[index]!.value
+    if (!endOfOptions && value === "--") {
+      endOfOptions = true
+      continue
     }
-    for (const tokens of effective) {
+    if (!endOfOptions && value.startsWith("--")) {
+      const option = value.split("=", 1)[0]!
+      if (option === "--target-directory") targetDirectory = true
+      if (valueOptions.has(option) && !value.includes("=")) index += 1
+      continue
+    }
+    if (!endOfOptions && value.startsWith("-") && value.length > 1) {
+      for (let position = 1; position < value.length; position += 1) {
+        const option = `-${value[position]!}`
+        if (!valueOptions.has(option)) continue
+        if (option === "-t") targetDirectory = true
+        if (position === value.length - 1) index += 1
+        break
+      }
+      continue
+    }
+    operands.push(value)
+  }
+  return !targetDirectory && operands.length >= 2 && isBlockDeviceTarget(operands.at(-1)!)
+}
+
+function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
+  for (const { segment, effective, redirections } of analyzed) {
+    if (redirectTargetsBlockDevice(segment.tokens)) return true
+    for (let commandIndex = 0; commandIndex < effective.length; commandIndex += 1) {
+      const tokens = effective[commandIndex]!
       if (tokens.length === 0) continue
       // Command-string destructuring (`sh -c '… > /dev/sda'`, `script -c …`,
       // ssh remote commands) only surfaces inside the resolved effective
       // commands, so the redirect scan runs on them too.
       if (redirectTargetsBlockDevice(tokens)) return true
+      if (
+        (redirections[commandIndex] ?? []).some((redirection) => {
+          const operator = redirection.operator.replace(/^\d+/, "")
+          const writes =
+            [">", ">>", ">|", "&>", "&>>", "<>"].includes(operator) ||
+            (operator === ">&" &&
+              !/^\d/.test(redirection.operator) &&
+              redirection.target !== "-" &&
+              !/^\d+$/.test(redirection.target))
+          return writes && isBlockDeviceTarget(redirection.target)
+        })
+      )
+        return true
       const base = shellBasename(tokens[0]!.value)
       const args = tokens.slice(1)
       const targetsBlock = args.some((t) => isBlockDeviceTarget(t.value))
@@ -311,6 +371,8 @@ function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
       // tee copies its stdin into every file operand: a real block device
       // operand is a raw overwrite, as unmistakable as shred.
       if (base === "tee" && targetsBlock) return true
+      if ((base === "cp" || base === "install") && copyOverwritesBlockDevice(tokens, base))
+        return true
 
       // mkfs / mkfs.* / mke2fs / mkswap: any real block target is destruction,
       // unless a dry-run flag is present (`-n` for mke2fs/mkfs.ext4, `-V`/`-t`
@@ -396,14 +458,17 @@ function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
  * (`sh -c`, `ssh host …`, `sudo …`) still reaches the real executable.
  */
 function isObviousSecretExport(analyzed: AnalyzedSegment[]): boolean {
-  for (const { effective } of analyzed) {
-    for (const tokens of effective) {
+  for (const { effective, redirections } of analyzed) {
+    for (let commandIndex = 0; commandIndex < effective.length; commandIndex += 1) {
+      const tokens = effective[commandIndex]!
       if (tokens.length === 0) continue
       if (!SECRET_EXPORT_UTILITIES.has(shellBasename(tokens[0]!.value))) continue
-      const args = tokens
-        .slice(1)
-        .map((token) => token.value)
-        .join(" ")
+      const args = [
+        ...tokens.slice(1).map((token) => token.value),
+        ...(redirections[commandIndex] ?? [])
+          .filter((redirection) => redirection.operator.includes("<"))
+          .map((redirection) => redirection.target),
+      ].join(" ")
       if (SECRET_EXPORT_TARGETS.some((pattern) => pattern.test(args))) return true
     }
   }
@@ -423,20 +488,28 @@ export function emergencyBrakeReason(request: PermissionRequest): string | undef
   // command is lexed and resolved exactly once here; detectors share the
   // result instead of re-analyzing the same text once per detector.
   if (command.length > MAX_ANALYSIS_INPUT_CHARS) return ANALYSIS_LIMIT_REASON
-  const lex = lexSegmentsBounded(command)
+  // Heredoc bodies are shell input data, not command segments. Analyze the
+  // body-free form so quoted payloads cannot trigger false destructive-command
+  // matches; dynamic expansions remain visible to the reviewer evidence.
+  const { sanitizedCommand } = extractHeredocs(command)
+  const lex = lexSegmentsBounded(sanitizedCommand)
   if (lex.truncated) return ANALYSIS_LIMIT_REASON
   const budget = newAnalysisBudget()
   const analyzed: AnalyzedSegment[] = []
   for (const segment of lex.segments) {
     const analysis = analyzeEffectiveCommands(segment, budget)
     if (analysis.truncated) return ANALYSIS_LIMIT_REASON
-    analyzed.push({ segment, effective: analysis.commands })
+    analyzed.push({
+      segment,
+      effective: analysis.commands,
+      redirections: analysis.redirections,
+    })
   }
 
   if (isRmRootDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
   if (isFindRootDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
   if (isDeviceDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
-  if (ROOT_DESTRUCTION_REGEX.some((pattern) => pattern.test(command)))
+  if (ROOT_DESTRUCTION_REGEX.some((pattern) => pattern.test(sanitizedCommand)))
     return ROOT_DESTRUCTION_REASON
   if (isObviousSecretExport(analyzed)) return SECRET_EXPORT_REASON
 }

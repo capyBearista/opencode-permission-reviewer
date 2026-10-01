@@ -338,7 +338,7 @@ console.log((await enrichGitEvidence(${JSON.stringify(input)}, process.cwd(), 80
       24_000,
     )
     expect(result.text).toContain('"kind": "literal"')
-    expect(result.text).toContain('"url": "https://user:<redacted>@example.invalid/x.git"')
+    expect(result.text).toContain('"url": "https://<redacted>@example.invalid/x.git"')
     expect(result.text).not.toContain(secret)
   }, 30_000)
 
@@ -354,7 +354,7 @@ console.log((await enrichGitEvidence(${JSON.stringify(input)}, process.cwd(), 80
         directory,
         24_000,
       )
-      expect(result.text).toContain("https://user:<redacted>@example.invalid/x.git")
+      expect(result.text).toContain("https://<redacted>@example.invalid/x.git")
       expect(result.text).not.toContain("synthetic-password-")
     }
     for (const command of [
@@ -368,9 +368,22 @@ console.log((await enrichGitEvidence(${JSON.stringify(input)}, process.cwd(), 80
         24_000,
       )
       expect(result.text).toContain('"status": "unavailable"')
-      expect(result.text).toContain("https://user:<redacted>@example.invalid/x.git")
+      expect(result.text).toContain("https://<redacted>@example.invalid/x.git")
       expect(result.text).not.toContain("synthetic-password-")
     }
+  }, 30_000)
+
+  test("redacts a credential carried only in URL username", async () => {
+    const directory = await repository()
+    const credential = "synthetic-private-value-123456"
+    const command = `git push https://${credential}@example.invalid/x.git main`
+    const result = await enrichGitEvidence(
+      request({ patterns: [command], metadata: { command } }),
+      directory,
+      24_000,
+    )
+    expect(result.text).toContain("https://<redacted>@example.invalid/x.git")
+    expect(result.text).not.toContain(credential)
   }, 30_000)
 
   test("reports an operand that matches no configured remote", async () => {

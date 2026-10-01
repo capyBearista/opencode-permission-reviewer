@@ -454,13 +454,15 @@ function remoteOperandKind(value: string): "literal" | "name" {
   return "name"
 }
 
-/** Remote URLs may embed credential userinfo. The password never belongs in
- *  reviewer evidence or audit logs; the user part stays because `git@host`
- *  and token-user URLs identify the destination. */
+/** Remote URLs may embed credential userinfo, including a token in the username
+ *  slot with no password. None of it belongs in reviewer evidence. SCP-style
+ *  `git@host:path` values have no scheme and stay untouched. */
 function sanitizeRemoteUrl(url: string): string {
   // Redact before bounding: truncating first can remove the closing @ and
   // leave a credential prefix that no longer matches the userinfo pattern.
-  return url.replace(/(\w+:\/\/)([^@/\s:]+):([^@/\s]*)@/g, "$1$2:<redacted>@").slice(0, 500)
+  return url
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^\s/@]+)(?::[^\s/@]*)?@/gi, "$1<redacted>@")
+    .slice(0, 500)
 }
 
 interface RemoteTargetRecord {

@@ -591,8 +591,7 @@ export interface HeredocRecord {
 }
 
 /** A command parsed into a reusable structure. Wraps the existing lexer output
- *  plus pre-extracted redirections and heredocs; the emergency brake keeps using
- *  the raw lexer functions unchanged. */
+ *  plus pre-extracted redirections and heredocs. */
 export interface ParsedCommand {
   /** The command after heredoc bodies were replaced with placeholders. */
   sanitizedCommand: string

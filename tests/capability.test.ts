@@ -334,6 +334,47 @@ describe("capability analyzer — classification matrix", () => {
     expect(a.actionClass.value).toBe("read-only")
   })
 
+  test("Git mutations and network forms are not classified as read-only", () => {
+    for (const command of [
+      "git add .",
+      "git remote set-url origin https://example.invalid/repo.git",
+      "git fetch origin",
+      "git branch -D stale",
+      "git tag release-candidate",
+    ]) {
+      const a = assess(command)
+      expect(a.git.possible.value).toBe(true)
+      expect(a.actionClass.value).toBe("git-mutation")
+      expect(a.writeEffects.workspaceWrite.value).toBe(true)
+    }
+    expect(assess("git ls-remote origin").actionClass.value).toBe("network")
+    for (const command of ["git branch", "git tag --list", "git remote -v", "git config --list"]) {
+      expect(assess(command).actionClass.value).toBe("read-only")
+    }
+  })
+
+  test("glued redirects and assignment-style outputs preserve write targets", () => {
+    for (const command of [
+      "printf x>/etc/reviewer-output",
+      "sort -o/etc/reviewer-output input.txt",
+      "dd if=./image of=/etc/reviewer-output",
+    ]) {
+      const a = assess(command)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.actionClass.value).toBe("external-write")
+    }
+    expect(assess("cat</absolute/path/to/.ssh/id_rsa").credentialRead.value).toBe(true)
+  })
+
+  test("a workspace under a temporary root remains a workspace", () => {
+    const root = "/tmp/synthetic-reviewer-worktree"
+    const a = analyzeCapability(parseCommand("printf x > output.txt"), root, root)
+    expect(a.writeEffects.temporaryWrite.value).toBe(true)
+    expect(a.writeEffects.workspaceWrite.value).toBe(true)
+    expect(a.writeEffects.externalWrite.value).toBe("unknown")
+    expect(a.actionClass.value).toBe("workspace-write")
+  })
+
   test("curl http://example.com/data → network observed + destination captured", () => {
     const a = assess("curl http://example.com/data")
     expect(a.network.observed.value).toBe(true)

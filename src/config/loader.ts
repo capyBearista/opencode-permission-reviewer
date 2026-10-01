@@ -175,6 +175,7 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "maxSessionDepth",
   "maxParentSessions",
   "askDecisions",
+  "debug",
 ])
 
 /** Reviewer resource knobs: how long a review may run and how much context
@@ -281,7 +282,8 @@ export function loadResolvedConfig(
     }
   }
 
-  const invalidInlineRules = countInvalidPolicyRules(inlineOptions?.policyRules)
+  const invalidInlineRules =
+    inlineTrust === "trusted" ? countInvalidPolicyRules(inlineOptions?.policyRules) : 0
   if (invalidInlineRules > 0) {
     degraded.push(
       `${invalidInlineRules} policy rule(s) from inline config were dropped by validation`,
@@ -438,6 +440,7 @@ function mergeWithTrustBoundary(
   delete clamped.variant
   delete clamped.outputFormat
   delete clamped.retainReviewSessions
+  delete clamped.debug
 
   // repositoryTrust: the project layer may only declare its own repository
   // untrusted; it cannot grant "trusted" or reset a trusted "untrusted".

@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs"
 import { open, lstat, realpath, readlink } from "node:fs/promises"
 import { basename, isAbsolute, resolve, sep } from "node:path"
 import type { PermissionRequest } from "./types.ts"
-import { commandSegments } from "./shell-lexer.ts"
+import { commandSegments, sshValueOption } from "./shell-lexer.ts"
 import { sourceCommand } from "./evidence/source-command.ts"
 
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
@@ -36,34 +36,10 @@ export interface SshEnrichmentResult {
   preflightDenial?: string
 }
 
-const OPTION_WITH_VALUE = new Set([
-  "-B",
-  "-b",
-  "-c",
-  "-D",
-  "-E",
-  "-e",
-  "-F",
-  "-I",
-  "-i",
-  "-J",
-  "-L",
-  "-l",
-  "-m",
-  "-O",
-  "-o",
-  "-p",
-  "-Q",
-  "-R",
-  "-S",
-  "-W",
-  "-w",
-])
-
 const SENSITIVE_PATH =
-  /(?:^|\/)(?:\.env(?:\.|$)|\.ssh(?:\/|$)|\.aws(?:\/|$)|\.config\/gcloud(?:\/|$)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|credentials(?:\.json)?$|authorized_keys$|known_hosts$|\.npmrc$|\.pypirc$|\.netrc$)/i
+  /(?:^|\/)(?:\.env(?:\.|$)|\.ssh(?:\/|$)|\.aws(?:\/|$)|\.config\/(?:gh|gcloud)(?:\/|$)|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?$|credentials(?:\.json)?$|authorized_keys$|known_hosts$|\.npmrc$|\.pypirc$|\.netrc$)/i
 const SENSITIVE_CONTENT =
-  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:sk|ghp|github_pat|nvapi)-[A-Za-z0-9_-]{16,}|\b(?:api[_-]?key|access[_-]?token|password)\s*[:=]\s*["'][^"'\n]{8,}["']/i
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:sk|nvapi)-[A-Za-z0-9_-]{16,}|\b(?:ghp|gho|ghs|ghr|ghu)_[A-Za-z0-9_-]{16,}|\bgithub_pat_[A-Za-z0-9_-]{16,}|\b(?:api[_-]?key|access[_-]?token|password)\s*[:=]\s*["'][^"'\n]{8,}["']/i
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex")
@@ -208,12 +184,6 @@ function findSshIndex(tokens: ReadonlyArray<string>): number {
   return tokens.findIndex((token) => commandName(token) === "ssh")
 }
 
-function optionValue(token: string, option: string): string | undefined {
-  if (token === option) return
-  if (token.startsWith(option) && token.length > option.length) return token.slice(option.length)
-  return
-}
-
 function parseSsh(
   tokens: ReadonlyArray<string>,
   sshIndex: number,
@@ -248,25 +218,16 @@ function parseSsh(
       break
     }
 
-    const identityInline = optionValue(token, "-i")
-    const portInline = optionValue(token, "-p")
-    const optionInline = optionValue(token, "-o")
-    if (identityInline !== undefined) identityFile = identityInline
-    else if (portInline !== undefined) port = portInline
-    else if (optionInline !== undefined) {
-      const match = /^StrictHostKeyChecking=(.+)$/i.exec(optionInline)
-      if (match) strictHostKeyChecking = match[1]
-    }
-
-    if (OPTION_WITH_VALUE.has(token)) {
-      const following = tokens[index + 1]
-      if (token === "-i") identityFile = following
-      if (token === "-p") port = following
-      if (token === "-o" && following) {
-        const match = /^StrictHostKeyChecking=(.+)$/i.exec(following)
+    const valued = sshValueOption(token)
+    if (valued !== undefined) {
+      const value = valued.attached ?? tokens[index + 1]
+      if (valued.option === "-i") identityFile = value
+      if (valued.option === "-p") port = value
+      if (valued.option === "-o" && value) {
+        const match = /^StrictHostKeyChecking=(.+)$/i.exec(value)
         if (match) strictHostKeyChecking = match[1]
       }
-      index += 2
+      index += valued.attached === undefined ? 2 : 1
     } else {
       index += 1
     }
@@ -596,7 +557,6 @@ export async function enrichSshEvidence(
 ): Promise<SshEnrichmentResult> {
   if (request.permission !== "bash") return { text: "", audit: [] }
   const command = sourceCommand(request)
-  if (!/(?:^|[\s;&|])ssh(?:\s|$)/.test(command)) return { text: "", audit: [] }
 
   // Track the working directory across `cd` chains, subshell groups, and
   // pipelines (same representation the local-script and git enrichments use)

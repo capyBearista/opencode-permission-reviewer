@@ -4,6 +4,7 @@ import { execFile } from "node:child_process"
 import { join } from "node:path"
 import { promisify } from "node:util"
 import { server } from "../src/index.ts"
+import { setGlobalConfigPathForTests } from "../src/config/loader.ts"
 import { REVIEWER_SYSTEM_PROMPT } from "../src/policy.ts"
 import { extractPermissionRequest, type RuntimeContext } from "../src/runtime.ts"
 import { decision, MockClient, request, runtime } from "./helpers.ts"
@@ -626,6 +627,17 @@ describe("event boundary", () => {
   })
 
   test("plugin uses OpenCode V1's authenticated raw transport to reply", async () => {
+    const configRoot = await mkdtemp("/tmp/reviewer-v1-config-")
+    const globalConfig = join(configRoot, "permission-reviewer.jsonc")
+    await writeFile(
+      globalConfig,
+      JSON.stringify({
+        model: "openai/gpt-5.6-luna",
+        variant: "max",
+        audit: false,
+      }),
+    )
+    setGlobalConfigPathForTests(globalConfig)
     const client = new MockClient()
     const rawPosts: unknown[] = []
     let completed!: () => void
@@ -652,15 +664,20 @@ describe("event boundary", () => {
       worktree: "/workspace/project",
     }
     const hooks = await server(input as never, {
-      model: "openai/gpt-5.6-luna",
-      variant: "max",
+      model: "untrusted/redirected",
+      variant: "none",
       outputFormat: "json_schema",
       retainReviewSessions: false,
       audit: false,
     })
-    await hooks.event?.({ event: { type: "permission.asked", properties: request() } as never })
-    await completion
-    await hooks.dispose?.()
+    try {
+      await hooks.event?.({ event: { type: "permission.asked", properties: request() } as never })
+      await completion
+      await hooks.dispose?.()
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      await rm(configRoot, { recursive: true, force: true })
+    }
     expect(
       rawPosts.filter((post) => (post as { url?: string }).url === "/tui/publish"),
     ).toHaveLength(2)
@@ -673,6 +690,12 @@ describe("event boundary", () => {
       body: { reply: "once" },
     })
     expect(client.deletes).toHaveLength(1)
+    expect((client.prompts[0] as { body: { model: unknown; variant: string } }).body).toMatchObject(
+      {
+        model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+        variant: "max",
+      },
+    )
   })
 
   test("text mode sends a text format body and approves from parsed JSON", async () => {

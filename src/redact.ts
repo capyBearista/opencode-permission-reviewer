@@ -67,9 +67,11 @@ const RULES: ReadonlyArray<{ re: RegExp; replace: (match: string, groups: string
     re: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
     replace: () => REDACT("jwt"),
   },
-  // Credentials embedded in a URL userinfo component: scheme://user:pass@host
+  // Credentials embedded in a URL userinfo component. A password is optional:
+  // token-as-username URLs are credentials too, while SCP-style git@host paths
+  // have no URL scheme and stay untouched.
   {
-    re: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@[\]]+):([^\s/@[\]]+)@/gi,
+    re: /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/@[\]]+)(?::[^\s/@[\]]*)?@/gi,
     replace: (_m, g) => `${g[0] ?? ""}${REDACT("userinfo")}@`,
   },
   // Auth-scheme prefixes (Bearer / Basic / Token) followed by a token.

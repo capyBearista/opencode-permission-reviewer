@@ -12,9 +12,9 @@ import { extractHeredocs } from "./heredoc-extractor.ts"
  *
  * Wraps the existing quote-aware lexer and the heredoc pre-extractor into a
  * single `ParsedCommand` structure consumed by the capability analyzer (and
- * available to evidence providers). The emergency brake keeps calling the raw
- * `lexSegments` / `effectiveCommands` functions unchanged — this module never
- * alters the token stream the brake sees.
+ * available to evidence providers). The emergency brake uses the same bounded
+ * lexer and heredoc sanitization directly, so both paths share command and
+ * redirection semantics.
  *
  * Dynamic constructs (variables, globs, command substitution, dynamic heredoc
  * bodies) are flagged so the analyzer can mark `parserCompleteness` honestly.
@@ -38,9 +38,10 @@ export function parseCommand(rawCommand: string): ParsedCommand {
   for (const segment of segments) {
     const analysis = analyzeEffectiveCommands(segment, budget)
     analysisTruncated = analysisTruncated || analysis.truncated
-    for (const cmd of analysis.commands) {
+    for (let index = 0; index < analysis.commands.length; index += 1) {
+      const cmd = analysis.commands[index]!
       effective.push(cmd)
-      redirections.push(extractRedirections(cmd))
+      redirections.push(analysis.redirections[index] ?? extractRedirections(cmd))
     }
   }
   const dyn = looksDynamic(sanitizedCommand)

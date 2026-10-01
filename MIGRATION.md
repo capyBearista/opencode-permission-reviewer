@@ -28,9 +28,10 @@ uses the selected `--binary`; absence or contradictory config stops the write.
 preserved, and changed files receive exclusive backups. Other permission rules
 are not converted or reordered.
 
-For V2, place model, variant, policy, and retention settings in the trusted
-global `permission-reviewer.jsonc`. Repository config and unknown-origin inline
-options cannot redirect the reviewer model or weaken trusted restrictions.
+For both host generations, place model, variant, policy, and retention settings
+in the trusted global `permission-reviewer.jsonc`. Repository config and
+unknown-origin inline options cannot redirect the reviewer model or weaken
+trusted restrictions.
 The reviewer model must be configured globally in OpenCode so its isolated
 location can resolve it without loading project providers or instructions.
 

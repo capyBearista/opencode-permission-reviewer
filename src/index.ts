@@ -10,7 +10,11 @@ import { setup } from "./opencode/v2/server.ts"
 import { withTimeout } from "./opencode/transport.ts"
 
 export const server: Plugin = async (input, options) => {
-  const config = loadResolvedConfig(options, input.directory)
+  // V1 does not report whether plugin options came from global or project
+  // config. Treat that unknown provenance like V2: inline values may tighten
+  // policy, but only the dedicated global file may select the reviewer or
+  // relax trusted restrictions.
+  const config = loadResolvedConfig(options, input.directory, "unknown")
   const debugLogger = (message: string, details?: unknown) => {
     console.error(`[opencode-permission-reviewer] ${message}`, details ?? "")
   }

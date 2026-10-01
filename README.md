@@ -350,16 +350,16 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `policyRules`                  | `[]`                                                      | array                               | Declarative rules (most-restrictive wins); project rules combine with trusted ones            |
 | `askDecisions`                 | `true`                                                    | boolean                             | Show the reviewer what the user answered in agent ask dialogs (scoped authorization evidence) |
 
-Config is layered: built-in defaults ← global
-`~/.config/opencode/permission-reviewer.jsonc` ← project
-`.opencode/permission-reviewer.jsonc` ← inline plugin options (later wins).
+Config is layered: built-in defaults ← trusted global
+`~/.config/opencode/permission-reviewer.jsonc` ← untrusted project
+`.opencode/permission-reviewer.jsonc` ← unknown-origin inline plugin options.
 The project layer crosses a trust boundary: it can only **tighten**
 security-sensitive fields, and its hardening survives even when a trusted layer
 set the same field. The project layer cannot choose the reviewer `model`,
 `escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
 (these decide where code/context travels and how the
 reviewer enforces and reports), cannot redirect `auditPath`, flip
-`retainReviewSessions` or `askDecisions`, grant `actorProfiles`, set
+`retainReviewSessions`, `askDecisions`, or `debug`, grant `actorProfiles`, set
 `repositoryTrust: "trusted"`, downgrade a global `enforcementMode: "enforce"`,
 or relax a trusted `escalationMode: "deny"` / failure-mode deny knob /
 `confidenceThreshold` / `systemOneConfidenceThreshold` /
@@ -368,8 +368,8 @@ or relax a trusted `escalationMode: "deny"` / failure-mode deny knob /
 `maxEnrichmentChars`, `transcriptMessages`, `historyMessages`,
 `maxSessionDepth`, and siblings) cannot be set by the project layer at all:
 they decide how long a review runs and how much conversation reaches the
-provider, which is not a monotonic security trade, so only global and
-trusted inline configuration may move them in either direction. Project
+provider, which is not a monotonic security trade, so only global
+configuration may move them in either direction. Project and inline
 values of the wrong type (including `null`) are ignored, never normalized
 back to defaults.
 
@@ -673,8 +673,9 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   tree and therefore tracked: the consumer surveillance test pins the
   installed version, and moving off 7.28.0 is a conscious bump (an
   `@opentui/solid` release with a fixed pin, or dropping the exact-pin
-  constraint) together with this note. Separately, `esbuild` (a build-time
-  dependency here, never shipped) is root-overridden past
+  constraint) together with this note. The development tree overrides Babel to
+  7.29.7, but that override cannot reach an npm consumer. Separately, `esbuild`
+  (a build-time dependency here, never shipped) is root-overridden past
   GHSA-g7r4-m6w7-qqqr; that override intentionally does not reach consumers
   because consumers never install `esbuild` from this package at all.
 - **The `effect` runtime stays external.** `@opencode-ai/plugin` resolves
@@ -727,7 +728,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 
 | Symptom                                       | Likely cause                                                                      | Fix                                                                                                                                                                         |
 | --------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc` (or any V1 inline override)                                                                                    |
+| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                |
 | Plugin does nothing                           | No `ask` rule in the host permission policy                                       | Set a V1 `"bash": "ask"` rule or a V2 shell permission with `effect: "ask"`                                                                                                 |
 | TUI overlay never appears                     | Wrong TUI config; stale process; or host without Solid/OpenTUI pipeline           | Check V1 `tui.json` or V2 global `cli.json`. The overlay is raw TSX (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
 | Startup error: "authenticated SDK transport…" | OpenCode V1 outside `>=1.18.29 <2`, or an SDK change that hides the raw transport | Upgrade OpenCode and `@opencode-ai/plugin` into the supported range; report the version in an issue                                                                         |

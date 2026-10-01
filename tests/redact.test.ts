@@ -96,6 +96,11 @@ describe("redactSecrets — credential formats", () => {
     expect(out).not.toContain("s3cretpw")
     expect(out).toContain("[REDACTED:userinfo]")
     expect(out).toContain("db.example.com")
+    const usernameToken = "synthetic-private-value-123456"
+    const usernameOnly = redactSecrets(`https://${usernameToken}@example.invalid/repo.git`)
+    expect(usernameOnly).not.toContain(usernameToken)
+    expect(usernameOnly).toContain("https://[REDACTED:userinfo]@example.invalid")
+    expect(redactSecrets("git@github.com:org/repo.git")).toBe("git@github.com:org/repo.git")
   })
 
   test("redacts Bearer / Basic / Token prefixes", () => {

@@ -51,6 +51,12 @@ export interface ShellSegment {
   precededBy?: string
 }
 
+export interface ShellRedirection {
+  operator: string
+  target: string
+  quoted: boolean
+}
+
 /** Segments flattened to plain token values plus the separators around each
  *  segment. This is the shared surface evidence consumers (SSH, Git, local
  *  scripts) build on, so the brake's lexer stays the one tokenizer. */
@@ -61,11 +67,14 @@ export interface CommandSegment {
 }
 
 export function commandSegments(command: string): CommandSegment[] {
-  return lexSegments(command).map((segment) => ({
-    tokens: segment.tokens.map((token) => token.value),
-    ...(segment.precededBy === undefined ? {} : { preceding: segment.precededBy }),
-    ...(segment.endedBy === undefined ? {} : { endedBy: segment.endedBy }),
-  }))
+  return lexSegments(command).map((segment) => {
+    const normalized = normalizeShellRedirections(segment.tokens)
+    return {
+      tokens: normalized.tokens.map((token) => token.value),
+      ...(segment.precededBy === undefined ? {} : { preceding: segment.precededBy }),
+      ...(segment.endedBy === undefined ? {} : { endedBy: segment.endedBy }),
+    }
+  })
 }
 
 const SEPARATORS = new Set([";", "|", "&", "\n", "\r", "(", ")"])
@@ -93,6 +102,7 @@ const TRANSPARENT_WRAPPERS = new Set([
   "watch",
   "xargs",
   "timeout",
+  "exec",
 ])
 
 /**
@@ -125,22 +135,42 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
   time: new Set(["-o", "--output", "-f"]),
   ionice: new Set(["-c", "-n"]),
   setpriv: new Set([
+    "--ruid",
+    "--euid",
+    "--rgid",
+    "--egid",
     "--reuid",
     "--regid",
     "--inh-caps",
     "--bounding-set",
     "--ambient-caps",
-    "--clear-groups",
     "--groups",
+    "--securebits",
+    "--pdeathsig",
+    "--selinux-label",
+    "--apparmor-profile",
   ]),
   command: new Set(),
   nohup: new Set(),
   // stdbuf's -i/-o/-e take the buffer TYPE either attached (`-oL`) or as the
   // next token; both forms skip exactly one value.
-  stdbuf: new Set(["-i", "-o", "-e"]),
+  stdbuf: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
   fakeroot: new Set(),
   setsid: new Set(),
-  unshare: new Set(),
+  unshare: new Set([
+    "--propagation",
+    "--setgroups",
+    "-R",
+    "--root",
+    "-w",
+    "--wd",
+    "-S",
+    "--setuid",
+    "-G",
+    "--setgid",
+    "--monotonic",
+    "--boottime",
+  ]),
   run0: new Set(["--unit", "--service", "--slice", "--setenv", "--chdir"]),
   // systemd-run mostly uses = forms (self-contained tokens); the flags listed
   // here also accept a separate value token that must not be mistaken for the
@@ -148,13 +178,18 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
   "systemd-run": new Set([
     "-p",
     "-E",
+    "-H",
+    "--host",
+    "-M",
     "--property",
+    "-u",
     "--unit",
     "--description",
     "--slice",
     "--uid",
     "--gid",
     "--nice",
+    "--expand-environment",
     "--service-type",
     "--working-directory",
     "--setenv",
@@ -162,39 +197,48 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
     "--job-mode",
     "--on-active",
     "--on-boot",
+    "--on-startup",
     "--on-calendar",
     "--on-unit-active",
     "--on-unit-inactive",
     "--timer-property",
+    "--path-property",
+    "--socket-property",
   ]),
   // strace/ltrace: -o/-e/-s take a separate value; their long forms are
   // = only. Tracing without a command (`strace -p PID`) has nothing to peel
   // after the PID is consumed.
   strace: new Set(["-o", "-e", "-s", "-a", "-b", "-p", "-u"]),
   ltrace: new Set(["-o", "-e", "-s", "-a", "-l", "-u"]),
-  // watch takes only two value options (-n/--interval); its pure flags
+  // watch's interval and equexit flags consume separate values; its pure flags
   // (-d, -g, -t, -b, -c, -e, …) stay absent like the other wrappers above.
-  watch: new Set(["-n", "--interval"]),
+  watch: new Set(["-n", "--interval", "-q", "--equexit"]),
   // xargs value-taking options with a separate argument: without these the
   // generic peel would mistake the option's argument for the command. Pure
   // flags (-0, -r, -t, …) stay absent, as do options with optional arguments
-  // (-E, -l, --replace), where skipping a following token could swallow the
+  // (-e, -l, --replace), where skipping a following token could swallow the
   // real executable instead.
   xargs: new Set([
     "-I",
+    "-a",
+    "-d",
+    "-E",
     "-n",
     "-P",
     "-s",
     "-L",
     "--arg-file",
+    "--delimiter",
     "--max-args",
     "--max-chars",
     "--max-procs",
     "--max-lines",
+    "--process-slot-var",
   ]),
   // timeout value options; the DURATION operand itself is skipped by dedicated
   // handling in walk(), not by the generic loop.
   timeout: new Set(["-k", "-s", "--kill-after", "--signal"]),
+  exec: new Set(["-a"]),
 }
 
 const SHELL_BINARIES = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "mksh", "fish"])
@@ -256,6 +300,19 @@ const SSH_VALUE_OPTIONS = new Set([
   "-O",
   "-E",
 ])
+
+/** First value-taking option in an OpenSSH short-option cluster. The value is
+ * either attached to the cluster or supplied by the following token. */
+export function sshValueOption(token: string): { option: string; attached?: string } | undefined {
+  if (!token.startsWith("-") || token.startsWith("--") || token.length <= 1) return
+  for (let position = 1; position < token.length; position += 1) {
+    const option = `-${token[position]!}`
+    if (!SSH_VALUE_OPTIONS.has(option)) continue
+    const attached = token.slice(position + 1)
+    return attached ? { option, attached } : { option }
+  }
+  return
+}
 const SHELL_KEYWORDS = new Set(["{", "}", "(", ")", "then", "else", "do", "elif", "!"])
 
 function basename(exe: string): string {
@@ -386,6 +443,24 @@ export function lexSegments(command: string, state?: { tokensRemaining: number }
       i += 1
       continue
     }
+    // Redirection operators may contain characters that are command
+    // separators elsewhere. Keep `&>`, `2>&1`, and `>|file` inside the token
+    // so the redirection normalizer below can interpret them as one shell
+    // construct instead of inventing extra commands.
+    if (
+      (c === "&" &&
+        (command[i + 1] === ">" ||
+          (value.endsWith(">") && !tokenCharIsQuoted({ raw, value, spans }, value.length - 1)))) ||
+      (c === "|" &&
+        value.endsWith(">") &&
+        !tokenCharIsQuoted({ raw, value, spans }, value.length - 1))
+    ) {
+      appendValue(c, false)
+      raw += c
+      hasToken = true
+      i += 1
+      continue
+    }
     if (SEPARATORS.has(c)) {
       // Capture the operator identity (including doubled `||`/`&&`) so
       // evidence consumers can reason about how segments relate.
@@ -460,6 +535,8 @@ export function effectiveCommands(segment: ShellSegment): ShellToken[][] {
  *  prefix of the real structure: parts of the command were never analyzed. */
 export interface EffectiveCommandsAnalysis {
   commands: ShellToken[][]
+  /** Redirections removed from each effective command, in matching order. */
+  redirections: ShellRedirection[][]
   truncated: boolean
 }
 
@@ -471,15 +548,18 @@ export function analyzeEffectiveCommands(
   budget?: AnalysisBudget,
 ): EffectiveCommandsAnalysis {
   const out: ShellToken[][] = []
+  const redirections: ShellRedirection[][] = []
   const state = { truncated: false }
   const b = budget ?? newAnalysisBudget()
-  walk(segment.tokens, out, 0, state, b)
-  return { commands: out, truncated: state.truncated }
+  walk(segment.tokens, out, redirections, [], 0, state, b)
+  return { commands: out, redirections, truncated: state.truncated }
 }
 
 function walk(
   tokens: ShellToken[],
   out: ShellToken[][],
+  redirectionOut: ShellRedirection[][],
+  inheritedRedirections: ShellRedirection[],
   depth: number,
   state: { truncated: boolean },
   budget: AnalysisBudget,
@@ -496,6 +576,9 @@ function walk(
     state.truncated = true
     return
   }
+  const normalized = normalizeShellRedirections(tokens)
+  tokens = normalized.tokens
+  const commandRedirections = [...inheritedRedirections, ...normalized.redirections]
   let i = 0
   while (i < tokens.length && SHELL_KEYWORDS.has(tokens[i]!.value)) i += 1
 
@@ -527,7 +610,8 @@ function walk(
           state.truncated = true
           return
         }
-        for (const sub of lexSegments(reanalyzed)) walk(sub.tokens, out, depth + 1, state, budget)
+        for (const sub of lexSegments(reanalyzed))
+          walk(sub.tokens, out, redirectionOut, commandRedirections, depth + 1, state, budget)
         return
       }
     }
@@ -552,7 +636,8 @@ function walk(
         break
       }
       if (j < tokens.length) j += 1
-      if (j < tokens.length) walk(tokens.slice(j), out, depth + 1, state, budget)
+      if (j < tokens.length)
+        walk(tokens.slice(j), out, redirectionOut, commandRedirections, depth + 1, state, budget)
       return
     }
     if (TRANSPARENT_WRAPPERS.has(base)) {
@@ -588,7 +673,8 @@ function walk(
           state.truncated = true
           return
         }
-        for (const sub of lexSegments(command)) walk(sub.tokens, out, depth + 1, state, budget)
+        for (const sub of lexSegments(command))
+          walk(sub.tokens, out, redirectionOut, commandRedirections, depth + 1, state, budget)
         return
       }
     }
@@ -600,7 +686,8 @@ function walk(
           state.truncated = true
           return
         }
-        for (const sub of lexSegments(script)) walk(sub.tokens, out, depth + 1, state, budget)
+        for (const sub of lexSegments(script))
+          walk(sub.tokens, out, redirectionOut, commandRedirections, depth + 1, state, budget)
         return
       }
     }
@@ -613,12 +700,22 @@ function walk(
           state.truncated = true
           return
         }
-        for (const sub of lexSegments(remote)) walk(sub.tokens, out, depth + 1, state, budget)
+        for (const sub of lexSegments(remote))
+          walk(sub.tokens, out, redirectionOut, commandRedirections, depth + 1, state, budget)
       }
       return
     }
     if (base === "busybox") {
-      if (i + 1 < tokens.length) walk(tokens.slice(i + 1), out, depth + 1, state, budget)
+      if (i + 1 < tokens.length)
+        walk(
+          tokens.slice(i + 1),
+          out,
+          redirectionOut,
+          commandRedirections,
+          depth + 1,
+          state,
+          budget,
+        )
       return
     }
     if (base === "chroot") {
@@ -637,13 +734,139 @@ function walk(
         }
         break
       }
-      if (j + 1 < tokens.length) walk(tokens.slice(j + 1), out, depth + 1, state, budget)
+      if (j + 1 < tokens.length)
+        walk(
+          tokens.slice(j + 1),
+          out,
+          redirectionOut,
+          commandRedirections,
+          depth + 1,
+          state,
+          budget,
+        )
       return
     }
     out.push(tokens.slice(i))
+    redirectionOut.push(commandRedirections)
     budget.remainingCommands -= 1
     return
   }
+}
+
+/** Return a token slice while preserving quote provenance for each character. */
+function sliceToken(token: ShellToken, start: number, end = token.value.length): ShellToken {
+  const value = token.value.slice(start, end)
+  const spans: Array<{ text: string; quoted: boolean }> = []
+  let offset = 0
+  for (const span of token.spans ?? [{ text: token.value, quoted: token.raw !== token.value }]) {
+    const spanStart = offset
+    const spanEnd = offset + span.text.length
+    const from = Math.max(start, spanStart)
+    const to = Math.min(end, spanEnd)
+    if (from < to) {
+      const text = span.text.slice(from - spanStart, to - spanStart)
+      const previous = spans.at(-1)
+      if (previous?.quoted === span.quoted) previous.text += text
+      else spans.push({ text, quoted: span.quoted })
+    }
+    offset = spanEnd
+  }
+  return { raw: value, value, spans }
+}
+
+function redirectionOperatorAt(token: ShellToken, index: number): string | undefined {
+  const value = token.value
+  const live = (offset: number) =>
+    offset < value.length && !tokenCharIsQuoted(token, offset) ? value[offset] : undefined
+  const first = live(index)
+  const tail = `${first ?? ""}${live(index + 1) ?? ""}${live(index + 2) ?? ""}`
+  if (tail.startsWith("&>>")) return "&>>"
+  if (tail.startsWith("<<<")) return "<<<"
+  if (tail.startsWith("<<-")) return "<<-"
+  for (const operator of ["&>", ">>", ">|", ">&", "<<", "<&", "<>"] as const) {
+    if (tail.startsWith(operator)) return operator
+  }
+  if (first === ">" || first === "<") return first
+  return undefined
+}
+
+function nextRedirection(
+  token: ShellToken,
+  start: number,
+): { index: number; operator: string } | undefined {
+  for (let index = start; index < token.value.length; index += 1) {
+    const operator = redirectionOperatorAt(token, index)
+    if (operator !== undefined) return { index, operator }
+  }
+  return undefined
+}
+
+/**
+ * Split shell redirections away from command words. Shell accepts them before,
+ * after, or glued to the executable and its arguments (`2>log cmd`,
+ * `cmd>log`, `echo x>out`). Leaving those forms inside word tokens can hide the
+ * real executable or make a redirection target look like an ordinary operand.
+ */
+export function normalizeShellRedirections(tokens: ShellToken[]): {
+  tokens: ShellToken[]
+  redirections: ShellRedirection[]
+} {
+  const words: ShellToken[] = []
+  const redirections: ShellRedirection[] = []
+  for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
+    const token = tokens[tokenIndex]!
+    // The heredoc extractor inserts this inert marker after removing the body.
+    // It is evidence metadata, not another input redirection.
+    if (/^<HEREDOC:sha256:[a-f0-9]+>$/.test(token.value)) {
+      words.push(token)
+      continue
+    }
+    let cursor = 0
+    let found = nextRedirection(token, cursor)
+    if (found === undefined) {
+      words.push(token)
+      continue
+    }
+    while (found !== undefined) {
+      let wordEnd = found.index
+      let operator = found.operator
+      const prefix = token.value.slice(cursor, found.index)
+      // An all-digit prefix immediately before the operator is an IO number,
+      // not a command word (`2>`, `10>>`).
+      if (cursor === 0 && /^[0-9]+$/.test(prefix)) {
+        operator = `${prefix}${operator}`
+        wordEnd = cursor
+      }
+      if (wordEnd > cursor) words.push(sliceToken(token, cursor, wordEnd))
+
+      const targetStart = found.index + found.operator.length
+      const following = nextRedirection(token, targetStart)
+      let targetToken: ShellToken | undefined
+      if (targetStart < (following?.index ?? token.value.length)) {
+        targetToken = sliceToken(token, targetStart, following?.index)
+      } else if (following === undefined) {
+        const candidate = tokens[tokenIndex + 1]
+        if (candidate !== undefined && nextRedirection(candidate, 0)?.index !== 0) {
+          tokenIndex += 1
+          targetToken = candidate
+        }
+      }
+      if (targetToken !== undefined) {
+        redirections.push({
+          operator,
+          target: targetToken.value,
+          quoted:
+            targetToken.value.length > 0 &&
+            Array.from({ length: targetToken.value.length }, (_, index) => index).some((index) =>
+              tokenCharIsQuoted(targetToken!, index),
+            ),
+        })
+      }
+      cursor = following?.index ?? token.value.length
+      found = following
+    }
+  }
+  return { tokens: words, redirections }
 }
 
 /** Advance past one wrapper option token at `index`, returning the index of
@@ -670,14 +893,23 @@ function skipWrapperOption(tokens: ShellToken[], index: number, valueOpts: Set<s
 function findCommandString(tokens: ShellToken[], start: number, shellFlags = false): string | null {
   let i = start
   let endOfFlags = false
+  let shellCommandPending = false
   while (i < tokens.length) {
     const t = tokens[i]!.value
     if (!endOfFlags && t === "--") {
+      if (shellFlags && shellCommandPending) {
+        return i + 1 < tokens.length ? tokens[i + 1]!.value : null
+      }
       endOfFlags = true
       i += 1
       continue
     }
     if (!endOfFlags && t === "-c") {
+      if (shellFlags) {
+        shellCommandPending = true
+        i += 1
+        continue
+      }
       return i + 1 < tokens.length ? tokens[i + 1]!.value : null
     }
     // Long form: `--command` (next token) or `--command=VALUE`.
@@ -686,6 +918,17 @@ function findCommandString(tokens: ShellToken[], start: number, shellFlags = fal
     }
     if (!endOfFlags && t.startsWith("--command=")) {
       return t.slice("--command=".length)
+    }
+    if (shellFlags && shellCommandPending) {
+      if (!endOfFlags && (t === "-o" || t === "-O")) {
+        i += 2
+        continue
+      }
+      if (!endOfFlags && (t.startsWith("-") || t.startsWith("+")) && t.length > 1) {
+        i += 1
+        continue
+      }
+      return t
     }
     // Short-flag cluster containing `c` (e.g. `bash -ic '...'`). getopt
     // semantics: when `c` ends the cluster its value is the next token;
@@ -698,8 +941,15 @@ function findCommandString(tokens: ShellToken[], start: number, shellFlags = fal
         continue
       }
       // Shells treat every letter in -ce/-xec as a flag: the script is
-      // always the next token. su and script use getopt value semantics.
-      if (shellFlags || cPosition === t.length - 1) {
+      // the first non-option that follows. More shell options may still sit
+      // between that cluster and the script (`sh -c -x -- '...'`). su and
+      // script use getopt value semantics instead.
+      if (shellFlags) {
+        shellCommandPending = true
+        i += 1
+        continue
+      }
+      if (cPosition === t.length - 1) {
         return i + 1 < tokens.length ? tokens[i + 1]!.value : null
       }
       return t.slice(cPosition + 1)
@@ -768,8 +1018,8 @@ function consumeSshRemote(tokens: ShellToken[], start: number): ShellToken[] {
       break
     }
     if (t.startsWith("-") && t.length > 1) {
-      if (SSH_VALUE_OPTIONS.has(t)) i += 2
-      else i += 1
+      const valued = sshValueOption(t)
+      i += valued !== undefined && valued.attached === undefined ? 2 : 1
       continue
     }
     if (!hostSeen) {

@@ -33,6 +33,9 @@ describe("shell lexer", () => {
     }
     expect(firstExecutables('script -c"rm -rf /" /dev/null')).toEqual([["rm", "-rf", "/"]])
     expect(firstExecutables('su -c"rm -rf /"')).toEqual([["rm", "-rf", "/"]])
+    for (const flags of ["-c --", "-c -x", "-c -o errexit", "-ce -x --"]) {
+      expect(firstExecutables(`bash ${flags} 'rm -rf /'`)).toEqual([["rm", "-rf", "/"]])
+    }
   })
 
   test("env split-string honors preceding long options with separate values", () => {
@@ -68,6 +71,20 @@ describe("shell lexer", () => {
     expect(tokenCharIsQuoted(mixed, 1)).toBe(false)
     const quoted = lexSegments("echo '>/dev/sda'")[0]!.tokens[1]!
     expect(tokenCharIsQuoted(quoted, 0)).toBe(true)
+  })
+
+  test("redirections cannot hide the executable or create extra commands", () => {
+    for (const command of [
+      "printf>/tmp/out x",
+      ">/tmp/out printf x",
+      "printf x 2>&1",
+      "printf x &>/tmp/out",
+      "printf x >|/tmp/out",
+    ]) {
+      expect(firstExecutables(command)).toEqual([["printf", "x"]])
+    }
+    expect(firstExecutables("printf 'x>quoted'")).toEqual([["printf", "x>quoted"]])
+    expect(commandSegments("git>/tmp/log add .")[0]!.tokens).toEqual(["git", "add", "."])
   })
 
   test("records the separator that ended each segment", () => {
@@ -179,6 +196,7 @@ describe("shell lexer", () => {
       ["curl", "https://example.invalid"],
     ])
     expect(firstExecutables("watch --interval=5 ls")).toEqual([["ls"]])
+    expect(firstExecutables("watch --equexit 2 rm -rf /")).toEqual([["rm", "-rf", "/"]])
     expect(firstExecutables("echo hi | xargs curl https://example.invalid")).toEqual([
       ["echo", "hi"],
       ["curl", "https://example.invalid"],
@@ -189,6 +207,7 @@ describe("shell lexer", () => {
     expect(firstExecutables("xargs -I{} curl https://example.invalid")).toEqual([
       ["curl", "https://example.invalid"],
     ])
+    expect(firstExecutables("xargs -a input.txt -E STOP rm -rf /")).toEqual([["rm", "-rf", "/"]])
   })
 
   test("wrapper peeling without a command yields no effective command", () => {
@@ -198,6 +217,8 @@ describe("shell lexer", () => {
   })
   test("peels nested wrappers and env-style assignments together", () => {
     expect(firstExecutables("sudo env VAR=1 rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("exec rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("exec -a cleanup rm -rf /")).toEqual([["rm", "-rf", "/"]])
   })
 
   test("resolves absolute binary paths via basename", () => {
@@ -218,6 +239,7 @@ describe("shell lexer", () => {
   test("destructures ssh, busybox and chroot", () => {
     expect(firstExecutables("ssh host rm -rf /")).toEqual([["rm", "-rf", "/"]])
     expect(firstExecutables("ssh -i /key user@host rm -rf /")).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables("ssh -vp 2222 user@host rm -rf /")).toEqual([["rm", "-rf", "/"]])
     expect(firstExecutables("busybox rm -rf /")).toEqual([["rm", "-rf", "/"]])
     expect(firstExecutables("chroot /rootdir rm -rf /")).toEqual([["rm", "-rf", "/"]])
   })

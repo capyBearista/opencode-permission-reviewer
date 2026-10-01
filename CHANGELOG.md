@@ -40,9 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Recognize shell `-c` flag clusters such as `bash -ce` and `env -S` after
-  long options with separate values, so they cannot hide destructive commands
-  from the emergency brake.
+- Normalize shell redirections before resolving executables, including glued,
+  leading, file-descriptor, clobber, and command-string forms. Redirections can
+  no longer hide root destruction, credential reads, network clients, or
+  external write targets; heredoc payload text is no longer treated as an
+  executed command.
+- Classify `git add`, remote/config/ref mutations, fetch/pull, `dd of=...`,
+  attached `sort -o...`, and writes inside worktrees under temporary roots with
+  their actual mutation, network, and path effects.
+- Treat V1 inline plugin options as unknown-origin input, matching V2, and keep
+  reviewer selection, policy, resource limits, and debug logging under trusted
+  global configuration.
+- Redact URL userinfo even when a credential occupies only the username slot,
+  and block GitHub config and token-shaped content from file enrichment.
+- Refuse symlinked config files in `init`; backups and updates now hold a
+  no-follow regular-file descriptor through their operation.
+- Recognize shell `-c` flag clusters, options after `-c`, `exec`, clustered SSH
+  flags, and value-taking wrapper options so they cannot hide destructive
+  commands from the emergency brake. Direct `cp` and `install` overwrites of
+  block devices are also rejected.
 - Preserve file mutation effects for target-directory options, optional
   option values, rename operands, implicit link destinations, and rsync
   source removal.
