@@ -75,6 +75,22 @@ export async function evaluateReview(
     }
   }
   if (!ports.active()) return superseded()
+  // Static-analysis limits gate BEFORE the model runs: a command whose
+  // structure could not be fully analyzed must not spend a review (and a
+  // simulated model allow must not bypass the protection). The reviewer is
+  // skipped entirely and the request escalates deterministically.
+  if (envelope.parsedCommand?.analysisTruncated === true) {
+    return applyEscalationDisposition(
+      {
+        kind: "escalate",
+        reason:
+          "Automatic approval is blocked: the command structure exceeded the static analysis depth or expansion budget, so deterministic analysis only covered part of the action.",
+        decisionSource: "deterministic-policy",
+      },
+      config,
+      "general",
+    )
+  }
   let result = await ports.review(envelope)
   if (!ports.active()) return superseded()
   if (result.kind === "allow") {
@@ -84,9 +100,7 @@ export async function evaluateReview(
         ? `Automatic approval is disabled: the reviewer configuration is degraded (${degraded.join("; ")}). Fix the trusted config to restore auto-approval.`
         : envelope.actionEvidenceComplete === false
           ? "Automatic approval is blocked: a material part of the pending action was elided or truncated in the reviewer evidence, so the model judged an incomplete view of the action."
-          : envelope.parsedCommand?.analysisTruncated === true
-            ? "Automatic approval is blocked: the command structure exceeded the static analysis depth or expansion budget, so deterministic analysis only covered part of the action."
-            : undefined
+          : undefined
     if (reason !== undefined) {
       result = applyEscalationDisposition(
         {

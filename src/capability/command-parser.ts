@@ -1,5 +1,10 @@
 import type { ParsedCommand, Redirection } from "../types.ts"
-import { analyzeEffectiveCommands, lexSegments, type ShellToken } from "../shell-lexer.ts"
+import {
+  analyzeEffectiveCommands,
+  lexSegmentsBounded,
+  newAnalysisBudget,
+  type ShellToken,
+} from "../shell-lexer.ts"
 import { extractHeredocs } from "./heredoc-extractor.ts"
 
 /*
@@ -21,15 +26,17 @@ const REDIRECTION_OPS = new Set([">", ">>", "<", "<<", ">&", "2>", "&>", "1>", "
 /** Parse a raw bash command into the reusable structure. */
 export function parseCommand(rawCommand: string): ParsedCommand {
   const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(rawCommand)
-  const segments = lexSegments(sanitizedCommand)
-  // Each segment may yield multiple effective commands (e.g. `sh -c 'a; b'`);
-  // flatten into a single list of token lists so the analyzer can walk every
-  // real executable uniformly.
+  // Bounded from the start: oversized input or token floods stop HERE, and
+  // every segment shares one effective-command budget so wide inputs cannot
+  // stay under per-segment ceilings while the total grows unbounded.
+  const lex = lexSegmentsBounded(sanitizedCommand)
+  const segments = lex.segments
   const effective: ShellToken[][] = []
   const redirections: Redirection[][] = []
-  let analysisTruncated = false
+  let analysisTruncated = lex.truncated
+  const budget = newAnalysisBudget()
   for (const segment of segments) {
-    const analysis = analyzeEffectiveCommands(segment)
+    const analysis = analyzeEffectiveCommands(segment, budget)
     analysisTruncated = analysisTruncated || analysis.truncated
     for (const cmd of analysis.commands) {
       effective.push(cmd)

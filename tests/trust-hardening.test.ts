@@ -1179,17 +1179,40 @@ describe("trust hardening — elided action evidence blocks automatic approval",
     expect(client.uiStatuses.map((s) => s.phase)).toEqual(["reviewing", "manual"])
   })
 
-  test("an LLM allow for wrapper nesting beyond the lexer budget escalates instead", async () => {
-    // The deterministic brake cannot resolve this structure, so a fooled
-    // model allow must not auto-approve: the truncation flag blocks it.
+  test("wrapper nesting beyond the lexer budget is denied before any model call", async () => {
+    // The deterministic brake cannot resolve this structure within its
+    // budget, so the request is rejected with the resource-limit reason
+    // before evidence collection or a model call: a fooled model allow never
+    // gets the chance to auto-approve it.
     const client = new MockClient()
     const harness = runtime(client)
     const command = `${"env -S ".repeat(33)}rm -rf /`
     const result = await harness.runtime.process(
       request({ metadata: { command }, patterns: [command] }),
     )
-    expect(result.kind).toBe("escalate")
-    expect(result.reason).toContain("static analysis depth or expansion budget")
+    expect(result.kind).toBe("deny")
+    expect(result.reason).toContain("exceeded the static analysis budget")
+    expect(result.reason).not.toContain("unmistakable broad system destruction")
+    // No reviewer session is ever created: the limit is resolved before any
+    // model call, and the deny itself is delivered as the single reply.
+    expect(client.creates).toHaveLength(0)
+    expect(client.replies).toHaveLength(1)
+  })
+
+  test("a wide command past the total effective-command budget never reaches the model", async () => {
+    // Thousands of independent segments each fit every per-segment ceiling;
+    // only the shared per-request budget catches the total. The engine must
+    // stop it deterministically without spending a review.
+    const client = new MockClient()
+    const harness = runtime(client)
+    const command = Array.from({ length: 9_000 }, (_, i) => `echo segment-${i}`).join(";")
+    const result = await harness.runtime.process(
+      request({ metadata: { command }, patterns: [command] }),
+    )
+    expect(result.kind).toBe("deny")
+    expect(result.reason).toContain("exceeded the static analysis budget")
+    expect(client.creates).toHaveLength(0)
+    expect(client.replies).toHaveLength(1)
   })
 })
 

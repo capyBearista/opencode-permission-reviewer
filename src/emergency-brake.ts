@@ -1,11 +1,21 @@
 import type { PermissionRequest } from "./types.ts"
 import {
-  effectiveCommands,
-  lexSegments,
+  analyzeEffectiveCommands,
+  lexSegmentsBounded,
+  MAX_ANALYSIS_INPUT_CHARS,
+  newAnalysisBudget,
   tokenCharIsQuoted,
+  type ShellSegment,
   type ShellToken,
   shellBasename,
 } from "./shell-lexer.ts"
+
+/** One segment with its resolved effective commands, computed once per
+ *  request and shared by every detector. */
+interface AnalyzedSegment {
+  segment: ShellSegment
+  effective: ShellToken[][]
+}
 
 /*
  * Deterministic emergency brake.
@@ -24,6 +34,13 @@ import {
  * It deliberately does NOT expand variables, globs, command substitutions, or
  * heredocs. Those remain the reviewer's job; the brake only catches literal,
  * unambiguous `rm -rf /`-style root destruction (target resolves to `/`).
+ *
+ * The whole command is lexed and destructured exactly once per request under
+ * a shared analysis budget (input size, tokens, depth, re-lexed text, and
+ * total effective commands). When any limit is hit, the brake rejects with a
+ * resource-limit reason of its own: the command was NOT proven destructive,
+ * only unanalyzable within bounds, and downstream gates must not confuse the
+ * two.
  */
 
 const ROOT_DESTRUCTION_REGEX = [
@@ -44,6 +61,8 @@ const ROOT_DESTRUCTION_REASON =
   "Emergency brake: command contains unmistakable broad system destruction."
 const SECRET_EXPORT_REASON =
   "Emergency brake: command appears to export credential material through a network utility."
+const ANALYSIS_LIMIT_REASON =
+  "Emergency brake: command exceeded the static analysis budget (input size, token count, or command-string expansion). Split the command into smaller steps and retry. This is a resource limit, not a detected destruction."
 
 /** Short flags that make `rm` recursive / forceful when clustered (e.g. `-rf`). */
 function hasRmFlags(tokens: ShellToken[]): { recursive: boolean; force: boolean } {
@@ -122,22 +141,22 @@ function isLiveRootGlob(token: ShellToken): boolean {
   return stack.length === 0
 }
 
-function isRmRootDestruction(command: string): boolean {
-  for (const segment of lexSegments(command)) {
-    for (const effective of effectiveCommands(segment)) {
-      if (effective.length === 0) continue
-      if (shellBasename(effective[0]!.value) !== "rm") continue
-      const { recursive, force } = hasRmFlags(effective)
+function isRmRootDestruction(analyzed: AnalyzedSegment[]): boolean {
+  for (const { effective } of analyzed) {
+    for (const tokens of effective) {
+      if (tokens.length === 0) continue
+      if (shellBasename(tokens[0]!.value) !== "rm") continue
+      const { recursive, force } = hasRmFlags(tokens)
       if (!recursive || !force) continue
       let endOfFlags = false
-      for (let i = 1; i < effective.length; i += 1) {
-        const value = effective[i]!.value
+      for (let i = 1; i < tokens.length; i += 1) {
+        const value = tokens[i]!.value
         if (!endOfFlags && value === "--") {
           endOfFlags = true
           continue
         }
         if (!endOfFlags && value.startsWith("-") && value.length > 1) continue
-        if (resolvesToRoot(value) || isLiveRootGlob(effective[i]!)) return true
+        if (resolvesToRoot(value) || isLiveRootGlob(tokens[i]!)) return true
       }
     }
   }
@@ -150,16 +169,16 @@ function isRmRootDestruction(command: string): boolean {
  * above does not see them. Detect them directly: when the search root resolves
  * to `/` and the expression deletes its results, the destruction is unmistakable.
  */
-function isFindRootDestruction(command: string): boolean {
-  for (const segment of lexSegments(command)) {
-    for (const effective of effectiveCommands(segment)) {
-      if (effective.length === 0) continue
-      if (shellBasename(effective[0]!.value) !== "find") continue
+function isFindRootDestruction(analyzed: AnalyzedSegment[]): boolean {
+  for (const { effective } of analyzed) {
+    for (const tokens of effective) {
+      if (tokens.length === 0) continue
+      if (shellBasename(tokens[0]!.value) !== "find") continue
       let root: ShellToken | null = null
       let hasDelete = false
       let hasExecRm = false
-      for (let i = 1; i < effective.length; i += 1) {
-        const value = effective[i]!.value
+      for (let i = 1; i < tokens.length; i += 1) {
+        const value = tokens[i]!.value
         // The search root is the first non-flag operand; everything after it
         // belongs to the expression. Flags that take a value (e.g. `-maxdepth`)
         // are not modelled here, so `find -maxdepth 1 / …` is a false negative
@@ -167,7 +186,7 @@ function isFindRootDestruction(command: string): boolean {
         if (root === null) {
           if (value.startsWith("-") && value.length > 1) continue
           if (value === "--") continue
-          root = effective[i]!
+          root = tokens[i]!
           continue
         }
         if (value === "-delete") hasDelete = true
@@ -175,13 +194,9 @@ function isFindRootDestruction(command: string): boolean {
           // First non-placeholder token after -exec is the executable; if it is
           // `rm` with recursive+force flags, find destroys its matches.
           let j = i + 1
-          while (
-            j < effective.length &&
-            (effective[j]!.value === "{" || effective[j]!.value === "}")
-          )
-            j += 1
-          if (j < effective.length && shellBasename(effective[j]!.value) === "rm") {
-            const { recursive, force } = hasRmFlags(effective.slice(j))
+          while (j < tokens.length && (tokens[j]!.value === "{" || tokens[j]!.value === "}")) j += 1
+          if (j < tokens.length && shellBasename(tokens[j]!.value) === "rm") {
+            const { recursive, force } = hasRmFlags(tokens.slice(j))
             if (recursive && force) hasExecRm = true
           }
         }
@@ -266,10 +281,9 @@ function shortFlagClusterIncludes(value: string, letter: string): boolean {
   )
 }
 
-function isDeviceDestruction(command: string): boolean {
-  const segments = lexSegments(command)
-  for (let s = 0; s < segments.length; s += 1) {
-    const segment = segments[s]!
+function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
+  for (let s = 0; s < analyzed.length; s += 1) {
+    const { segment, effective } = analyzed[s]!
     if (redirectTargetsBlockDevice(segment.tokens)) return true
     // The clobber-override redirect `>|` loses its `|` to the lexer's
     // separator handling: the operator survives as a trailing `>` with the
@@ -281,17 +295,17 @@ function isDeviceDestruction(command: string): boolean {
       (trailing.value === ">" || trailing.value === ">>") &&
       !tokenCharIsQuoted(trailing, 0)
     ) {
-      const next = segments[s + 1]?.tokens[0]
+      const next = analyzed[s + 1]?.segment.tokens[0]
       if (next !== undefined && isBlockDeviceTarget(next.value)) return true
     }
-    for (const effective of effectiveCommands(segment)) {
-      if (effective.length === 0) continue
+    for (const tokens of effective) {
+      if (tokens.length === 0) continue
       // Command-string destructuring (`sh -c '… > /dev/sda'`, `script -c …`,
       // ssh remote commands) only surfaces inside the resolved effective
       // commands, so the redirect scan runs on them too.
-      if (redirectTargetsBlockDevice(effective)) return true
-      const base = shellBasename(effective[0]!.value)
-      const args = effective.slice(1)
+      if (redirectTargetsBlockDevice(tokens)) return true
+      const base = shellBasename(tokens[0]!.value)
+      const args = tokens.slice(1)
       const targetsBlock = args.some((t) => isBlockDeviceTarget(t.value))
 
       // tee copies its stdin into every file operand: a real block device
@@ -381,12 +395,12 @@ function isDeviceDestruction(command: string): boolean {
  * the brake, exactly like the destruction detectors above. Wrapper peeling
  * (`sh -c`, `ssh host …`, `sudo …`) still reaches the real executable.
  */
-function isObviousSecretExport(command: string): boolean {
-  for (const segment of lexSegments(command)) {
-    for (const effective of effectiveCommands(segment)) {
-      if (effective.length === 0) continue
-      if (!SECRET_EXPORT_UTILITIES.has(shellBasename(effective[0]!.value))) continue
-      const args = effective
+function isObviousSecretExport(analyzed: AnalyzedSegment[]): boolean {
+  for (const { effective } of analyzed) {
+    for (const tokens of effective) {
+      if (tokens.length === 0) continue
+      if (!SECRET_EXPORT_UTILITIES.has(shellBasename(tokens[0]!.value))) continue
+      const args = tokens
         .slice(1)
         .map((token) => token.value)
         .join(" ")
@@ -403,10 +417,26 @@ export function emergencyBrakeReason(request: PermissionRequest): string | undef
       ? request.metadata.command
       : request.patterns.filter((pattern) => typeof pattern === "string").join("\n")
 
-  if (isRmRootDestruction(command)) return ROOT_DESTRUCTION_REASON
-  if (isFindRootDestruction(command)) return ROOT_DESTRUCTION_REASON
-  if (isDeviceDestruction(command)) return ROOT_DESTRUCTION_REASON
+  // Resource limits come first and are their own outcome: an input the static
+  // analysis cannot finish is rejected for THAT reason, before any lexing or
+  // detector runs, and is never described as detected destruction. The whole
+  // command is lexed and resolved exactly once here; detectors share the
+  // result instead of re-analyzing the same text once per detector.
+  if (command.length > MAX_ANALYSIS_INPUT_CHARS) return ANALYSIS_LIMIT_REASON
+  const lex = lexSegmentsBounded(command)
+  if (lex.truncated) return ANALYSIS_LIMIT_REASON
+  const budget = newAnalysisBudget()
+  const analyzed: AnalyzedSegment[] = []
+  for (const segment of lex.segments) {
+    const analysis = analyzeEffectiveCommands(segment, budget)
+    if (analysis.truncated) return ANALYSIS_LIMIT_REASON
+    analyzed.push({ segment, effective: analysis.commands })
+  }
+
+  if (isRmRootDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
+  if (isFindRootDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
+  if (isDeviceDestruction(analyzed)) return ROOT_DESTRUCTION_REASON
   if (ROOT_DESTRUCTION_REGEX.some((pattern) => pattern.test(command)))
     return ROOT_DESTRUCTION_REASON
-  if (isObviousSecretExport(command)) return SECRET_EXPORT_REASON
+  if (isObviousSecretExport(analyzed)) return SECRET_EXPORT_REASON
 }

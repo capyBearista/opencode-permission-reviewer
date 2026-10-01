@@ -211,6 +211,30 @@ const MAX_WALK_DEPTH = 32
  *  past this bound collection stops instead of exhausting time or memory on
  *  adversarial input. */
 const MAX_EFFECTIVE_COMMANDS = 4096
+
+/** Hard cap on the raw text a single lexing pass accepts, and on the tokens
+ *  it may materialize, both checked BEFORE building large structures. */
+export const MAX_ANALYSIS_INPUT_CHARS = 131_072
+const MAX_LEX_TOKENS = 16_384
+const MAX_REANALYSIS_CHARS = 262_144
+
+/** Per-request analysis budget: one instance covers a whole permission
+ *  request (every segment, every nested command string), not a single
+ *  segment. Without shared counters, an input made of thousands of small
+ *  segments stayed under every per-call ceiling while the TOTAL work grew
+ *  without bound. `remainingReanalysisChars` bounds the text re-lexed while
+ *  destructuring command strings (`sh -c '…'`, `env -S …`). */
+export interface AnalysisBudget {
+  remainingCommands: number
+  remainingReanalysisChars: number
+}
+
+export function newAnalysisBudget(): AnalysisBudget {
+  return {
+    remainingCommands: MAX_EFFECTIVE_COMMANDS,
+    remainingReanalysisChars: MAX_REANALYSIS_CHARS,
+  }
+}
 const SSH_VALUE_OPTIONS = new Set([
   "-i",
   "-l",
@@ -256,8 +280,11 @@ export function tokenCharIsQuoted(token: ShellToken, index: number): boolean {
 /**
  * Tokenize `command` into logical segments (one per sub-command separated by
  * `;`, `|`, `&`, or newline) with quote-aware, comment-aware grouping.
+ * `state.tokensRemaining` (when given) is decremented per token and stops
+ * the scan at zero: callers that must not miss tail content use
+ * `lexSegmentsBounded` and treat the stop as a truncation fact.
  */
-export function lexSegments(command: string): ShellSegment[] {
+export function lexSegments(command: string, state?: { tokensRemaining: number }): ShellSegment[] {
   const segments: ShellSegment[] = []
   let tokens: ShellToken[] = []
   let value = ""
@@ -267,6 +294,7 @@ export function lexSegments(command: string): ShellSegment[] {
   let inSingle = false
   let inDouble = false
   let lastSeparator: string | undefined
+  let outOfTokens = false
 
   const appendValue = (text: string, quoted: boolean) => {
     if (text.length === 0) return
@@ -283,6 +311,10 @@ export function lexSegments(command: string): ShellSegment[] {
       raw = ""
       spans = []
       hasToken = false
+      if (state !== undefined) {
+        state.tokensRemaining -= 1
+        if (state.tokensRemaining <= 0) outOfTokens = true
+      }
     }
   }
   const flushSegment = (endedBy?: string) => {
@@ -303,6 +335,7 @@ export function lexSegments(command: string): ShellSegment[] {
 
   let i = 0
   while (i < command.length) {
+    if (outOfTokens) break
     const c = command[i]!
     if (inSingle) {
       raw += c
@@ -393,8 +426,23 @@ export function lexSegments(command: string): ShellSegment[] {
     hasToken = true
     i += 1
   }
-  flushSegment()
+  if (!outOfTokens) flushSegment()
   return segments
+}
+
+/** Bounded lexing pass: refuses oversized input up front and stops at the
+ *  token cap, reporting `truncated` so no caller mistakes a prefix for the
+ *  whole command. */
+export interface LexAnalysis {
+  segments: ShellSegment[]
+  truncated: boolean
+}
+
+export function lexSegmentsBounded(command: string): LexAnalysis {
+  if (command.length > MAX_ANALYSIS_INPUT_CHARS) return { segments: [], truncated: true }
+  const state = { tokensRemaining: MAX_LEX_TOKENS }
+  const segments = lexSegments(command, state)
+  return { segments, truncated: state.tokensRemaining <= 0 }
 }
 
 /**
@@ -415,10 +463,17 @@ export interface EffectiveCommandsAnalysis {
   truncated: boolean
 }
 
-export function analyzeEffectiveCommands(segment: ShellSegment): EffectiveCommandsAnalysis {
+/** Resolve one segment into effective commands. Pass a shared `budget` to
+ *  cover a whole request: without it, every segment gets a fresh ceiling and
+ *  a wide input never reports truncation. */
+export function analyzeEffectiveCommands(
+  segment: ShellSegment,
+  budget?: AnalysisBudget,
+): EffectiveCommandsAnalysis {
   const out: ShellToken[][] = []
   const state = { truncated: false }
-  walk(segment.tokens, out, 0, state)
+  const b = budget ?? newAnalysisBudget()
+  walk(segment.tokens, out, 0, state, b)
   return { commands: out, truncated: state.truncated }
 }
 
@@ -427,12 +482,17 @@ function walk(
   out: ShellToken[][],
   depth: number,
   state: { truncated: boolean },
+  budget: AnalysisBudget,
 ): void {
   // Depth and expansion budget: recursion here is driven by the (untrusted)
   // command text, so both bounds are hard stops, not tuning knobs. Hitting
   // either one marks the analysis truncated so downstream gates know the
   // collected commands do not cover the whole command.
-  if (depth > MAX_WALK_DEPTH || out.length >= MAX_EFFECTIVE_COMMANDS) {
+  if (
+    depth > MAX_WALK_DEPTH ||
+    out.length >= MAX_EFFECTIVE_COMMANDS ||
+    budget.remainingCommands <= 0
+  ) {
     state.truncated = true
     return
   }
@@ -461,8 +521,13 @@ function walk(
           .slice(s.tailIndex)
           .map((t) => t.value)
           .join(" ")
-        for (const sub of lexSegments(tail ? `${s.script} ${tail}` : s.script))
-          walk(sub.tokens, out, depth + 1, state)
+        const reanalyzed = tail ? `${s.script} ${tail}` : s.script
+        budget.remainingReanalysisChars -= reanalyzed.length
+        if (budget.remainingReanalysisChars < 0) {
+          state.truncated = true
+          return
+        }
+        for (const sub of lexSegments(reanalyzed)) walk(sub.tokens, out, depth + 1, state, budget)
         return
       }
     }
@@ -487,7 +552,7 @@ function walk(
         break
       }
       if (j < tokens.length) j += 1
-      if (j < tokens.length) walk(tokens.slice(j), out, depth + 1, state)
+      if (j < tokens.length) walk(tokens.slice(j), out, depth + 1, state, budget)
       return
     }
     if (TRANSPARENT_WRAPPERS.has(base)) {
@@ -518,27 +583,42 @@ function walk(
       // nothing to peel.
       const command = findCommandString(tokens, i + 1)
       if (command !== null) {
-        for (const sub of lexSegments(command)) walk(sub.tokens, out, depth + 1, state)
+        budget.remainingReanalysisChars -= command.length
+        if (budget.remainingReanalysisChars < 0) {
+          state.truncated = true
+          return
+        }
+        for (const sub of lexSegments(command)) walk(sub.tokens, out, depth + 1, state, budget)
         return
       }
     }
     if (SHELL_BINARIES.has(base) || SU_BINARIES.has(base)) {
       const script = findCommandString(tokens, i + 1)
       if (script !== null) {
-        for (const sub of lexSegments(script)) walk(sub.tokens, out, depth + 1, state)
+        budget.remainingReanalysisChars -= script.length
+        if (budget.remainingReanalysisChars < 0) {
+          state.truncated = true
+          return
+        }
+        for (const sub of lexSegments(script)) walk(sub.tokens, out, depth + 1, state, budget)
         return
       }
     }
     if (base === "ssh") {
       const rest = consumeSshRemote(tokens, i + 1)
       if (rest.length > 0) {
-        for (const sub of lexSegments(rest.map((t) => t.value).join(" ")))
-          walk(sub.tokens, out, depth + 1, state)
+        const remote = rest.map((t) => t.value).join(" ")
+        budget.remainingReanalysisChars -= remote.length
+        if (budget.remainingReanalysisChars < 0) {
+          state.truncated = true
+          return
+        }
+        for (const sub of lexSegments(remote)) walk(sub.tokens, out, depth + 1, state, budget)
       }
       return
     }
     if (base === "busybox") {
-      if (i + 1 < tokens.length) walk(tokens.slice(i + 1), out, depth + 1, state)
+      if (i + 1 < tokens.length) walk(tokens.slice(i + 1), out, depth + 1, state, budget)
       return
     }
     if (base === "chroot") {
@@ -557,10 +637,11 @@ function walk(
         }
         break
       }
-      if (j + 1 < tokens.length) walk(tokens.slice(j + 1), out, depth + 1, state)
+      if (j + 1 < tokens.length) walk(tokens.slice(j + 1), out, depth + 1, state, budget)
       return
     }
     out.push(tokens.slice(i))
+    budget.remainingCommands -= 1
     return
   }
 }

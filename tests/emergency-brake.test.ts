@@ -216,14 +216,17 @@ describe("deterministic emergency brake", () => {
     ).toBeUndefined()
   })
 
-  test("wrapper nesting beyond the lexer budget is invisible to the brake but flagged truncated", () => {
+  test("wrapper nesting beyond the lexer budget is rejected by the brake as a limit", () => {
     // The lexer's hard depth budget means this destructively-wrapped command
-    // never reaches the brake as effective commands. The contract: the brake
-    // stays quiet (it only judges what it fully resolves), while the
+    // never resolves fully. The contract: the brake rejects with its own
+    // resource-limit reason (distinct from detected destruction), while the
     // capability analyzer reports partial coverage so the review engine can
-    // block auto-approval for the request.
+    // block auto-approval before any model call.
     const command = `${"env -S ".repeat(33)}rm -rf /`
-    expect(emergencyBrakeReason(request({ metadata: { command } }))).toBeUndefined()
+    const brakeReason = emergencyBrakeReason(request({ metadata: { command } }))
+    expect(brakeReason).toBeString()
+    expect(brakeReason).toContain("exceeded the static analysis budget")
+    expect(brakeReason).not.toContain("unmistakable broad system destruction")
     const capability = analyzeCapability(
       parseCommand(command),
       "/home/user/project",
