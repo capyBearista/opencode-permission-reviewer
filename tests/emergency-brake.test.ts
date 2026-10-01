@@ -48,6 +48,11 @@ describe("deterministic emergency brake", () => {
     "rm -rf / *",
     // Command-string and remote forms.
     "sh -c 'rm -rf /'",
+    "sh -ce 'rm -rf /'",
+    "bash -ce 'rm -rf /'",
+    "bash -ecx 'rm -rf /'",
+    "env --chdir /tmp -S 'rm -rf /'",
+    "env --unset FIXTURE_VAR -S 'rm -rf /'",
     "sudo bash -c 'rm -rf /'",
     "su -c 'rm -rf /'",
     "runuser -c 'rm -rf /'",

@@ -40,6 +40,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Recognize shell `-c` flag clusters such as `bash -ce` and `env -S` after
+  long options with separate values, so they cannot hide destructive commands
+  from the emergency brake.
+- Preserve file mutation effects for target-directory options, optional
+  option values, rename operands, implicit link destinations, and rsync
+  source removal.
+- Keep relative `cd` targets unresolved when the preceding working directory
+  is ambiguous, instead of throwing or assuming the initial directory.
+- Resolve attached and trailing Git push `--repo` overrides, and redact URL
+  passwords before bounding evidence, including unavailable Git snapshots.
+- Withhold Git snapshots when a successful status process returns incomplete
+  output, preserving the planned action without inventing repository state.
 - Include the executed file as local script evidence for `bun run <file>`
   commands; package manifest scripts (`bun run check`) and bun option values
   are not mistaken for the run target.

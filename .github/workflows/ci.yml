@@ -99,7 +99,7 @@ jobs:
             python -m pytest tests/compatibility/test_opencode_v1.py -q
             python -m pytest tests/compatibility/test_tui.py -k v1 -q
           else
-            python -m pytest tests/compatibility/test_opencode_v2.py tests/compatibility/test_v2_reviewer.py tests/compatibility/test_rollback.py -q
+            python -m pytest tests/compatibility/test_opencode_v2.py tests/compatibility/test_v2_reviewer.py tests/compatibility/test_v2_analysis_regressions.py tests/compatibility/test_rollback.py -q
             python -m pytest tests/compatibility/test_tui.py -k v2 -q
           fi
 

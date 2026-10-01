@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -40,6 +40,55 @@ afterEach(async () => {
 })
 
 describe("Git state evidence enrichment", () => {
+  test("withholds successful but incomplete Git status output", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "reviewer-git-output-"))
+    temporaryDirectories.push(directory)
+    const bin = join(directory, "bin")
+    await mkdir(bin)
+    const executable = join(bin, "git")
+    await writeFile(
+      executable,
+      `#!/usr/bin/env bun
+const args = process.argv.slice(2)
+if (args.includes("--get-regexp")) process.exit(1)
+if (args.includes("--show-toplevel")) console.log(process.cwd())
+else if (args.includes("status")) process.stdout.write(process.env.REVIEWER_SYNTHETIC_GIT_STATUS ?? "")
+else process.exit(1)
+`,
+    )
+    await chmod(executable, 0o755)
+    const entry = new URL("../src/git-evidence.ts", import.meta.url).href
+    const command = "git checkout HEAD -- target.txt"
+    const input = request({ patterns: [command], metadata: { command } })
+    for (const stdout of ["", " M target.txt\n"]) {
+      // Isolate the fake executable's PATH to this child so concurrent
+      // evidence reads elsewhere keep using the real Git binary.
+      const child = Bun.spawn({
+        cmd: [
+          process.execPath,
+          "-e",
+          `import { enrichGitEvidence } from ${JSON.stringify(entry)};
+console.log((await enrichGitEvidence(${JSON.stringify(input)}, process.cwd(), 8000)).text)`,
+        ],
+        cwd: directory,
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          REVIEWER_SYNTHETIC_GIT_STATUS: stdout,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      })
+      const [exitCode, text] = await Promise.all([child.exited, new Response(child.stdout).text()])
+      expect(exitCode).toBe(0)
+      const record = JSON.parse(text.replace(/^GIT_STATE_ANALYSIS\n/, ""))
+      expect(record.status).toBe("unavailable")
+      expect(record.reason).toContain("missing branch header")
+      expect(record.planned.discardTargets).toEqual(["target.txt"])
+      expect(record.branch).toBeUndefined()
+    }
+  }, 30_000)
+
   test("separates preexisting staging from files a compound command plans to add", async () => {
     const directory = await repository()
     await writeFile(join(directory, "unrelated.py"), "before = 2\n")
@@ -263,15 +312,20 @@ describe("Git state evidence enrichment", () => {
   test("a --repo override is the push destination, not the named remote", async () => {
     const directory = await repository()
     await git(directory, ["remote", "add", "origin", "https://example.invalid/upstream.git"])
-    const command = "git push --repo https://override.example.invalid/x.git origin main"
-    const result = await enrichGitEvidence(
-      request({ patterns: [command], metadata: { command } }),
-      directory,
-      24_000,
-    )
-    expect(result.text).toContain('"input": "https://override.example.invalid/x.git"')
-    expect(result.text).toContain('"kind": "literal"')
-    expect(result.text).not.toContain('"kind": "configured-remote"')
+    for (const command of [
+      "git push --repo https://override.example.invalid/x.git origin main",
+      "git push --repo=https://override.example.invalid/x.git main",
+      "git push main --repo=https://override.example.invalid/x.git",
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        24_000,
+      )
+      expect(result.text).toContain('"input": "https://override.example.invalid/x.git"')
+      expect(result.text).toContain('"kind": "literal"')
+      expect(result.text).not.toContain('"kind": "configured-remote"')
+    }
   }, 30_000)
 
   test("redacts credential userinfo embedded in literal remote URLs", async () => {
@@ -286,6 +340,37 @@ describe("Git state evidence enrichment", () => {
     expect(result.text).toContain('"kind": "literal"')
     expect(result.text).toContain('"url": "https://user:<redacted>@example.invalid/x.git"')
     expect(result.text).not.toContain(secret)
+  }, 30_000)
+
+  test("redacts long URL passwords before applying evidence bounds", async () => {
+    const directory = await repository()
+    const password = "synthetic-password-".repeat(40)
+    const url = `https://user:${password}@example.invalid/x.git`
+    await git(directory, ["remote", "add", "origin", url])
+    await git(directory, ["config", "branch.staging.remote", url])
+    for (const command of [`git push ${url} main`, "git push origin main", "git pull"]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        24_000,
+      )
+      expect(result.text).toContain("https://user:<redacted>@example.invalid/x.git")
+      expect(result.text).not.toContain("synthetic-password-")
+    }
+    for (const command of [
+      `cd sub; git push ${url} main`,
+      `git -C missing push ${url} main`,
+      `git -C /outside push ${url} main`,
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ patterns: [command], metadata: { command } }),
+        directory,
+        24_000,
+      )
+      expect(result.text).toContain('"status": "unavailable"')
+      expect(result.text).toContain("https://user:<redacted>@example.invalid/x.git")
+      expect(result.text).not.toContain("synthetic-password-")
+    }
   }, 30_000)
 
   test("reports an operand that matches no configured remote", async () => {

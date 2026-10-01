@@ -391,22 +391,41 @@ describe("npm install dedupe shape", () => {
     const platformPattern =
       /(?:-|--)(?:linux|darwin|win32|android|freebsd|netbsd|openbsd|sunos|aix|arm|arm64|x64|x86|ia32|ppc64|riscv64|s390x|musl|glibc|android-arm(?:64)?|fuchsia)(?:$|[/-])/
     const natives: string[] = []
-    const walkNatives = (dir: string) => {
+    const walkNatives = (dir: string, scope?: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name === ".bin" || entry.name === ".package-lock.json")
           continue
         const full = join(dir, entry.name)
-        if (dir.endsWith("node_modules") && platformPattern.test(entry.name)) {
-          natives.push(entry.name)
+        if (dir.endsWith("node_modules") && entry.name.startsWith("@")) {
+          walkNatives(full, entry.name)
+          continue
+        }
+        const packageName = scope === undefined ? entry.name : `${scope}/${entry.name}`
+        if (
+          (scope !== undefined || dir.endsWith("node_modules")) &&
+          platformPattern.test(packageName)
+        ) {
+          natives.push(packageName)
           continue
         }
         walkNatives(full)
       }
     }
     walkNatives(join(installDir, "node_modules"))
-    // Only the @opentui rendering stack may carry platform-tagged packages;
-    // anything else appearing here is a supply-chain change to review.
-    const unexpected = natives.filter((name) => !name.startsWith("@opentui/"))
+    expect(natives.some((name) => name.startsWith("@opentui/core-"))).toBe(true)
+    // OpenTUI carries the renderer; the client's effect dependency carries
+    // optional msgpackr accelerators. Freeze both reviewed platform families.
+    const msgpackrPlatforms = new Set([
+      "@msgpackr-extract/msgpackr-extract-darwin-arm64",
+      "@msgpackr-extract/msgpackr-extract-darwin-x64",
+      "@msgpackr-extract/msgpackr-extract-linux-arm",
+      "@msgpackr-extract/msgpackr-extract-linux-arm64",
+      "@msgpackr-extract/msgpackr-extract-linux-x64",
+      "@msgpackr-extract/msgpackr-extract-win32-x64",
+    ])
+    const unexpected = natives.filter(
+      (name) => !name.startsWith("@opentui/core-") && !msgpackrPlatforms.has(name),
+    )
     if (unexpected.length > 0) console.log("consumer native set:", natives)
     expect(unexpected).toEqual([])
 

@@ -8,7 +8,9 @@ and are not included in the scores.
 
 | Model                         | Effort  | Model/100 | Reachable/100 | Core/100 | JSON valid (%) | Critical approvals | Unsupported approvals | Attempts | Mean host latency |
 | ----------------------------- | ------- | --------: | ------------: | -------: | -------------: | -----------------: | --------------------: | -------: | ----------------: |
+| GPT-6 Luna                    | low     |     97.22 |         97.21 |    97.04 |         100.0% |                  0 |                     0 |      600 |            5.38 s |
 | GPT-6 Luna                    | medium  |     97.17 |         97.34 |    97.17 |         100.0% |                  0 |                     2 |      600 |            8.12 s |
+| GPT-6 Luna                    | none    |     96.85 |         96.84 |    96.67 |         100.0% |                  0 |                     0 |      600 |            5.16 s |
 | GPT-5.6 Luna                  | high    |     96.77 |         96.85 |    96.68 |         100.0% |                  0 |                     3 |      600 |            8.60 s |
 | GPT-6 Luna                    | high    |     96.02 |         96.01 |    95.84 |         100.0% |                  0 |                     0 |      644 |           11.51 s |
 | GPT-5.6 Luna                  | medium  |     95.84 |         95.84 |    95.67 |         100.0% |                  0 |                     4 |      600 |            7.35 s |
@@ -25,6 +27,13 @@ and are not included in the scores.
 | GLM-5.3-Flash                 | low     |     85.31 |         85.54 |    90.24 |          90.5% |                  0 |                    25 |      655 |            5.66 s |
 | MiMo V2.5 Reasoning           | default |     58.99 |         58.94 |    67.28 |          66.8% |                  0 |                    44 |      600 |           29.02 s |
 
+Span-01 Lite was evaluated separately after adapting the backend to its native
+behavior-scoring API. It scored **59.15/100 after the plugin's common controls**
+on PRB-600, with four critical dangerous approvals and four separate approvals
+of cases requiring escalation. This result did not meet the safety bar for
+permission review, so Span-01 Lite is not offered as a selectable model.
+The paid Span-01 Pro model was not evaluated.
+
 `JSON valid (%)` is the share of 600 responses that passed the decision parser, not
 the share of correct answers.
 Invalid outputs are missing decisions in `Model/100`, not successful escalations.
@@ -37,9 +46,10 @@ labeled `deny`, and none approved any of the 159 critical cases. The
 `Unsupported approvals` column counts approvals of cases labeled `escalate`;
 these require individual review even when the aggregate score is high.
 
-The GPT-6 runs used plugin source `dc5fd3d`; their prompts and evidence hashes
-match the earlier rows on all 600 cases. The older rows used a prior core replay,
-so cross-revision comparisons should use `Model/100`, not `Core/100`.
+The GPT-6 medium and high runs used plugin source `dc5fd3d`; low and none used
+`426b315`. Their case, prompt, and evidence hashes match on all 600 cases. The
+older rows used a prior core replay, so cross-revision comparisons should use
+`Model/100`, not `Core/100`.
 
 ## Paired comparisons
 
@@ -49,6 +59,9 @@ real-world incident rates.
 
 | Comparison                              | Score difference | 95% interval     |
 | --------------------------------------- | ---------------: | ---------------- |
+| GPT-6 Luna low minus none               |            +0.37 | -0.63 to +1.29   |
+| GPT-6 Luna low minus medium             |            +0.05 | -0.96 to +1.12   |
+| GPT-6 Luna low minus high               |            +1.20 | -0.21 to +2.49   |
 | GPT-6 Luna medium minus high            |            +1.16 | -0.21 to +2.64   |
 | Grok medium minus Grok low              |            +3.92 | +1.54 to +6.83   |
 | Luna medium minus Grok medium           |            +4.26 | +2.28 to +6.58   |
@@ -60,26 +73,31 @@ real-world incident rates.
 | MiMo V2.6 minus MiMo V2.5               |           +35.06 | +30.13 to +39.29 |
 | MiMo V2.6 reasoning minus non-reasoning |            +3.98 | +1.44 to +6.18   |
 
-GPT-6 Luna medium had the highest observed score. Its advantage over GPT-6 Luna
-high is not established by this interval. GPT-5.6 Luna high scored above its
+GPT-6 Luna low had the highest observed score, but its differences from none,
+medium, and high are not established by these intervals. Low, none, and high had
+no unsupported approvals in this corpus; medium had two. GPT-5.6 Luna high scored above its
 medium variant, but that interval also crosses zero; its xhigh variant scored
 below high and had more unsupported approvals. Muse high scored above Muse
 medium, but the interval does not establish a winner between those effort levels.
 
 ## GPT-6 Luna
 
-Evaluated on 2026-09-22 through OpenCode V1 1.18.30 with OpenAI OAuth and the
-text profile. Both effort levels returned 600 valid decisions with no dangerous
-or critical approvals. Medium scored 97.17, with two unsupported approvals,
-four unnecessary escalations, and 8.12 s mean host latency. High scored 96.02,
-with no unsupported approvals, nine unnecessary escalations, and 11.51 s mean
-host latency. The paired interval does not establish a winner. Medium is the
-faster default on this corpus; high is the more conservative choice if avoiding
-unsupported approvals
-matters more than latency. High's 600 scored cases came from two segments after
-the first was interrupted. The 42 repeated controls and two interrupted calls
-are retained in the 644 recorded host attempts, not scored twice. Its latency
-is descriptive of those run conditions, not an effort-only comparison.
+Evaluated on 2026-09-22 (medium and high) and 2026-09-28 (low and none) through
+OpenCode V1 1.18.30 with OpenAI OAuth and the text profile. All four effort
+levels returned 600 valid decisions with no dangerous or critical approvals.
+Low scored 97.22 with no unsupported approvals, five false denials, six
+unnecessary escalations, and 5.38 s mean host latency. None scored 96.85 with
+no unsupported approvals, three false denials, seven unnecessary escalations,
+and 5.16 s mean host latency. Both used three workers and recorded exactly 600
+attempts each, with no retries or transport failures. Their paired interval
+does not establish a winner. Medium scored 97.17, with two unsupported
+approvals, four unnecessary escalations, and 8.12 s mean host latency. High
+scored 96.02, with no unsupported approvals, nine unnecessary escalations, and
+11.51 s mean host latency. Medium and high used two workers, so their latency
+differences from low and none are descriptive of different run conditions.
+High's 600 scored cases came from two segments after the first was interrupted.
+The 42 repeated controls and two interrupted calls are retained in the 644
+recorded host attempts, not scored twice.
 
 ## Grok 4.6, low effort
 

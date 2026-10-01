@@ -104,6 +104,8 @@ function networkOperand(
 ): { operand?: string | undefined; repoOverride?: string | undefined } {
   const valueOpts = NETWORK_VALUE_OPTIONS[subcommand] ?? new Set<string>()
   let afterSeparator = false
+  let operand: string | undefined
+  let repoOverride: string | undefined
   for (let cursor = index + 1; cursor < tokens.length; cursor += 1) {
     const token = tokens[cursor]!
     if (token === "--") {
@@ -112,14 +114,19 @@ function networkOperand(
     }
     if (!afterSeparator && token.startsWith("-") && token.length > 1) {
       if (token === "--repo" && cursor + 1 < tokens.length) {
-        return { repoOverride: tokens[cursor + 1] }
+        repoOverride = tokens[++cursor]
+        continue
+      }
+      if (subcommand === "push" && token.startsWith("--repo=")) {
+        repoOverride = token.slice("--repo=".length)
+        continue
       }
       if (valueOpts.has(token)) cursor += 1
       continue
     }
-    return { operand: token }
+    operand ??= token
   }
-  return {}
+  return repoOverride === undefined ? { operand } : { repoOverride }
 }
 
 function gitSubcommand(tokens: string[], gitIndex: number): { command?: string; index: number } {
@@ -451,7 +458,9 @@ function remoteOperandKind(value: string): "literal" | "name" {
  *  reviewer evidence or audit logs; the user part stays because `git@host`
  *  and token-user URLs identify the destination. */
 function sanitizeRemoteUrl(url: string): string {
-  return url.slice(0, 500).replace(/(\w+:\/\/)([^@/\s:]+):([^@/\s]*)@/g, "$1$2:<redacted>@")
+  // Redact before bounding: truncating first can remove the closing @ and
+  // leave a credential prefix that no longer matches the userinfo pattern.
+  return url.replace(/(\w+:\/\/)([^@/\s:]+):([^@/\s]*)@/g, "$1$2:<redacted>@").slice(0, 500)
 }
 
 interface RemoteTargetRecord {
@@ -546,7 +555,7 @@ async function resolveRemoteTargets(
     seen.add(input)
     // Every recorded operand is bounded and redacted: names get the length
     // cap, literals additionally lose credential userinfo.
-    const bounded = sanitizeRemoteUrl(input.slice(0, 200))
+    const bounded = sanitizeRemoteUrl(input).slice(0, 200)
     if (remoteOperandKind(input) === "literal") {
       targets.push({ input: bounded, kind: "literal", url: bounded })
       continue
@@ -621,14 +630,15 @@ async function resolveDefaultRemote(
   for (const step of configChain) {
     const value = await runGit(directory, ["config", "--get", step.key], neutralization)
     if (!value.ok || !value.stdout.trim()) continue
-    const name = sanitizeRemoteUrl(value.stdout.trim().slice(0, 200))
-    if (!configuredNames.includes(name)) {
+    const rawName = value.stdout.trim()
+    const name = sanitizeRemoteUrl(rawName).slice(0, 200)
+    if (!configuredNames.includes(rawName)) {
       // branch.*.remote may legitimately hold a URL or path instead of a
       // configured remote name: report it as the destination verbatim
       // (bounded) instead of resolving it as a name.
       return { source: step.source, name, note: "configured value is not a named remote" }
     }
-    const urls = await resolveRemote(name)
+    const urls = await resolveRemote(rawName)
     return { source: step.source, name, ...urls }
   }
   if (configuredNames.includes("origin")) {
@@ -717,13 +727,17 @@ export async function enrichGitEvidence(
   const command = sourceCommand(request)
   const planned = plannedActions(command, directory)
   if (!planned.relevant) return { text: "" }
+  const publicPlanned = {
+    ...planned,
+    remoteCandidates: planned.remoteCandidates.map(sanitizeRemoteUrl),
+  }
   if (!planned.executionDirectory) {
     return {
       text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
         {
           status: "unavailable",
           reason: planned.directoryReason ?? "Git directory is unresolved",
-          planned,
+          planned: publicPlanned,
         },
         null,
         2,
@@ -747,7 +761,7 @@ export async function enrichGitEvidence(
         {
           status: "unavailable",
           reason: "planned Git directory does not resolve to a real path",
-          planned,
+          planned: publicPlanned,
         },
         null,
         2,
@@ -761,7 +775,7 @@ export async function enrichGitEvidence(
         {
           status: "unavailable",
           reason: "planned Git directory is outside approved enrichment roots",
-          planned,
+          planned: publicPlanned,
         },
         null,
         2,
@@ -777,7 +791,7 @@ export async function enrichGitEvidence(
     const reason = `unable to verify git conversion filters before inspection (${error instanceof Error ? error.message : String(error)})`
     return {
       text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
-        { status: "unavailable", reason: reason.slice(0, 1_000), planned },
+        { status: "unavailable", reason: reason.slice(0, 1_000), planned: publicPlanned },
         null,
         2,
       ).slice(0, maxChars)}`,
@@ -795,7 +809,7 @@ export async function enrichGitEvidence(
   if (!root.ok) {
     return {
       text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
-        { status: "unavailable", reason: root.reason, planned },
+        { status: "unavailable", reason: root.reason, planned: publicPlanned },
         null,
         2,
       ).slice(0, maxChars)}`,
@@ -808,7 +822,7 @@ export async function enrichGitEvidence(
         {
           status: "unavailable",
           reason: "repository root is outside approved enrichment roots",
-          planned,
+          planned: publicPlanned,
         },
         null,
         2,
@@ -821,10 +835,16 @@ export async function enrichGitEvidence(
     ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"],
     neutralization,
   )
-  if (!status.ok) {
+  if (!status.ok || !/^## [^\r\n]+\r?\n/.test(status.stdout)) {
     return {
       text: `GIT_STATE_ANALYSIS\n${JSON.stringify(
-        { status: "unavailable", reason: status.reason, planned },
+        {
+          status: "unavailable",
+          reason: status.ok
+            ? "Git status output is incomplete: missing branch header"
+            : status.reason,
+          planned: publicPlanned,
+        },
         null,
         2,
       ).slice(0, maxChars)}`,

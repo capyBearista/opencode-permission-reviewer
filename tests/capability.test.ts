@@ -265,8 +265,11 @@ describe("capability analyzer — classification matrix", () => {
     // destination directory, and its sources stay reads.
     for (const command of [
       "cp --target-directory=/etc ./a ./b",
+      "cp --target-directory /etc ./a ./b",
       "cp -t /etc ./a ./b",
       "cp -t/etc ./a",
+      "cp -at /etc ./a",
+      "cp -at/etc ./a",
     ]) {
       const a = assess(command)
       expect(a.writeEffects.externalWrite.value).toBe(true)
@@ -289,6 +292,39 @@ describe("capability analyzer — classification matrix", () => {
     const dashed = assess("cp -- ./a /etc/b")
     expect(dashed.writeEffects.externalWrite.value).toBe(true)
     expect(dashed.writeEffects.workspaceWrite.value).not.toBe(true)
+  })
+
+  test("mutation options preserve source effects and tool-specific operands", () => {
+    for (const command of [
+      "mv -Z /etc/hosts ./hosts",
+      "mv --context /etc/hosts ./hosts",
+      "mv --suffix backup /etc/hosts ./hosts",
+      "mv -fSbackup /etc/hosts ./hosts",
+      "rename old new /etc/old ./old",
+      "rsync -b --remove-source-files /etc/hosts ./hosts",
+    ]) {
+      const a = assess(command)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.writeEffects.workspaceWrite.value).toBe(true)
+    }
+    for (const command of [
+      "ln -s /etc/hosts",
+      "cp --reflink /etc/hosts ./hosts",
+      "cp a:b ./hosts",
+    ]) {
+      const a = assess(command)
+      expect(a.writeEffects.workspaceWrite.value).toBe(true)
+      expect(a.writeEffects.externalWrite.value).not.toBe(true)
+    }
+    for (const command of [
+      "cp -S /etc ./a ./b",
+      "cp --suffix /etc ./a ./b",
+      "rsync --rsh /etc/ssh ./a ./b",
+    ]) {
+      const a = assess(command)
+      expect(a.writeEffects.workspaceWrite.value).toBe(true)
+      expect(a.writeEffects.externalWrite.value).not.toBe(true)
+    }
   })
 
   test("git status → read-only git, no mutation", () => {

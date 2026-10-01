@@ -25,6 +25,22 @@ afterEach(async () => {
 })
 
 describe("command segments with directory tracking", () => {
+  test("relative cd after an ambiguous directory stays unresolved without throwing", () => {
+    for (const operator of ["&&", "||"]) {
+      const segments = shellCommandSegmentsWithDirectory(
+        `cd elsewhere; cd sub ${operator} python p.py`,
+        "/workspace",
+      )
+      expect(segments.at(-1)!.directory).toBeUndefined()
+      expect(segments.at(-1)!.directoryReason).toMatch(/unresolved|ambiguous/)
+    }
+    const recovered = shellCommandSegmentsWithDirectory(
+      "cd elsewhere; cd /workspace/sub && python p.py",
+      "/workspace",
+    )
+    expect(recovered.at(-1)!.directory).toBe("/workspace/sub")
+  })
+
   test("a symlinked temp area never becomes an evidence root", async () => {
     const outside = await fixture()
     await writeFile(join(outside, "sentinel.txt"), "EXTERNAL-SENTINEL\n")

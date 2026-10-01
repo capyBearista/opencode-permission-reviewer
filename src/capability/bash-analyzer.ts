@@ -180,16 +180,14 @@ const FILE_MUTATION_TOOLS = new Set(["cp", "mv", "rename", "ln", "link", "symlin
 
 /** Options of the mutation tools that consume a separate value token, so the
  *  value is never mistaken for a source or destination operand. The lists
- *  cover the structural options (destination and suffix selection); an
- *  unmodeled value-taking option can only shift a classification toward a
- *  read (harmless) or, rarely, toward the last-operand destination
- *  (conservative), never hide the real destination. */
+ *  cover structural options (destination and suffix selection). Options
+ *  with optional values require an attached value and must not consume the
+ *  following operand. */
 const MUTATION_VALUE_OPTIONS: Record<string, Set<string>> = {
-  cp: new Set(["-t", "--target-directory", "-S", "--suffix", "-Z", "--context", "--reflink"]),
-  mv: new Set(["-t", "--target-directory", "-S", "--suffix", "-Z", "--context"]),
+  cp: new Set(["-t", "--target-directory", "-S", "--suffix"]),
+  mv: new Set(["-t", "--target-directory", "-S", "--suffix"]),
   ln: new Set(["-t", "--target-directory", "-S", "--suffix"]),
   rsync: new Set([
-    "-b",
     "--backup-dir",
     "-e",
     "--rsh",
@@ -233,23 +231,22 @@ function mutationOperands(
       continue
     }
     if (!endOfOptions && v.startsWith("--")) {
-      if (v.startsWith("--target-directory="))
+      if (valueOpts.has(v)) {
+        if (v === "--target-directory") targetDirectory = cmd[i + 1]?.value
+        i += 1
+      } else if (valueOpts.has("--target-directory") && v.startsWith("--target-directory=")) {
         targetDirectory = v.slice("--target-directory=".length)
+      }
       continue
     }
     if (!endOfOptions && v.startsWith("-") && v.length > 1) {
-      if (v === "-t" || v === "--target-directory") {
-        targetDirectory = cmd[i + 1]?.value
-        i += 1
-        continue
-      }
-      if (/^-t.+/.test(v)) {
-        targetDirectory = v.slice(2)
-        continue
-      }
-      if (valueOpts.has(v)) {
-        i += 1
-        continue
+      for (let position = 1; position < v.length; position += 1) {
+        const option = `-${v[position]!}`
+        if (!valueOpts.has(option)) continue
+        const attached = v.slice(position + 1)
+        const value = attached || cmd[++i]?.value
+        if (option === "-t") targetDirectory = value
+        break
       }
       continue
     }
@@ -259,6 +256,14 @@ function mutationOperands(
     // `-t DIR` redirects every SOURCE argument into DIR: with it, no operand
     // is itself a destination.
     return { sources: operands, destinations: [targetDirectory], sawOperand: operands.length > 0 }
+  }
+  if (base === "rename") {
+    // rename rewrites each named file, rather than copying to the last
+    // operand. Keep every operand as a possible mutation across dialects.
+    return { sources: [], destinations: operands, sawOperand: operands.length > 0 }
+  }
+  if (base === "ln" && operands.length === 1) {
+    return { sources: operands, destinations: ["."], sawOperand: true }
   }
   const destinations: string[] = []
   if (operands.length > 0) destinations.push(operands[operands.length - 1]!)
@@ -886,9 +891,16 @@ export function analyzeCapability(
       // writes on another machine, whatever a relative-looking local
       // classification would say.
       const { sources, destinations, sawOperand } = mutationOperands(base, cmd)
-      const writeOperands = base === "mv" ? [...destinations, ...sources] : destinations
+      const optionEnd = cmd.findIndex((token) => token.value === "--")
+      const mutatesSources =
+        base === "mv" ||
+        (base === "rsync" &&
+          cmd
+            .slice(1, optionEnd < 0 ? cmd.length : optionEnd)
+            .some((token) => token.value === "--remove-source-files"))
+      const writeOperands = mutatesSources ? [...destinations, ...sources] : destinations
       for (const operand of writeOperands) {
-        if (isRemoteMutationOperand(operand)) {
+        if (base === "rsync" && isRemoteMutationOperand(operand)) {
           externalWrite = true
           continue
         }

@@ -86,12 +86,19 @@ export interface ShellCommandSegmentWithDirectory {
   directoryReason?: string
 }
 
-function cdTarget(tokens: string[], directory: string): { directory?: string; reason?: string } {
+function cdTarget(
+  tokens: string[],
+  directory: string | undefined,
+): { directory?: string; reason?: string } {
   if (tokens.length < 2 || commandName(tokens[0]!) !== "cd") return {}
   const values = tokens[1] === "--" ? tokens.slice(2) : tokens.slice(1)
   if (values.length !== 1) return { reason: "cd target is absent or ambiguous" }
   const target = values[0]!
   if (/[$`*?{}<>]/.test(target)) return { reason: "cd target contains unresolved shell expansion" }
+  if (isAbsolute(target)) return { directory: resolve(target) }
+  if (directory === undefined) {
+    return { reason: "relative cd target follows an unresolved working directory" }
+  }
   return { directory: resolve(directory, target) }
 }
 
@@ -103,7 +110,8 @@ export function shellCommandSegmentsWithDirectory(
   const result: ShellCommandSegmentWithDirectory[] = []
   let directory: string | undefined = resolve(initialDirectory)
   let directoryReason: string | undefined
-  let pendingCd: { before: string; target?: string; reason?: string } | undefined
+  let pendingCd:
+    { before?: string; beforeReason?: string; target?: string; reason?: string } | undefined
   // Parent states of open subshells, innermost last. A `cd` inside `( ... )`
   // only affects segments up to the matching `)`: the outer state resumes
   // after it, and a cd as the last subshell command never reaches the next
@@ -128,7 +136,7 @@ export function shellCommandSegmentsWithDirectory(
       }
     } else if (operator === "||") {
       directory = pendingCd.before
-      directoryReason = undefined
+      directoryReason = pendingCd.beforeReason
     } else {
       directory = undefined
       directoryReason = "working directory after cd is conditional or ambiguous"
@@ -180,7 +188,8 @@ export function shellCommandSegmentsWithDirectory(
     if (commandName(segment.tokens[0]!) === "cd") {
       const target = cdTarget(segment.tokens, directory)
       pendingCd = {
-        before: directory ?? resolve(initialDirectory),
+        ...(directory === undefined ? {} : { before: directory }),
+        ...(directoryReason === undefined ? {} : { beforeReason: directoryReason }),
         ...(target.directory === undefined ? {} : { target: target.directory }),
         ...(target.reason === undefined ? {} : { reason: target.reason }),
       }

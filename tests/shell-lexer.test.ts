@@ -21,6 +21,26 @@ function firstExecutables(command: string): string[][] {
 }
 
 describe("shell lexer", () => {
+  test("shell command flags keep their script in the following token", () => {
+    for (const shell of ["bash", "sh", "dash"]) {
+      for (const flags of ["-ce", "-xec", "-ecx"]) {
+        expect(firstExecutables(`${shell} ${flags} 'rm -rf /'`)).toEqual([["rm", "-rf", "/"]])
+        // Exercise the actual flag parser with a harmless marker command.
+        const run = Bun.spawnSync([shell, flags, "printf SHELL_FLAG_FIXTURE"])
+        expect(run.exitCode).toBe(0)
+        expect(run.stdout.toString()).toBe("SHELL_FLAG_FIXTURE")
+      }
+    }
+    expect(firstExecutables('script -c"rm -rf /" /dev/null')).toEqual([["rm", "-rf", "/"]])
+    expect(firstExecutables('su -c"rm -rf /"')).toEqual([["rm", "-rf", "/"]])
+  })
+
+  test("env split-string honors preceding long options with separate values", () => {
+    for (const option of ["--chdir /tmp", "--unset FIXTURE_VAR", "-C /tmp", "-u FIXTURE_VAR"]) {
+      expect(firstExecutables(`env ${option} -S 'rm -rf /'`)).toEqual([["rm", "-rf", "/"]])
+    }
+  })
+
   test("backslash-newline outside quotes is a line continuation", () => {
     // `r\<LF>m` is one token `rm`: the pair vanishes from the value.
     const segments = lexSegments("r\\\nm -rf /")

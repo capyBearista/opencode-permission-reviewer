@@ -120,7 +120,7 @@ const VALUE_OPTIONS: Record<string, Set<string>> = {
   ]),
   doas: new Set(["-u", "--user", "-a"]),
   pkexec: new Set(["--user", "--session"]),
-  env: new Set(["-u", "--unset", "-S", "-C"]),
+  env: new Set(["-u", "--unset", "-S", "--split-string", "-C", "--chdir"]),
   nice: new Set(["-n", "--adjustment"]),
   time: new Set(["-o", "--output", "-f"]),
   ionice: new Set(["-c", "-n"]),
@@ -593,7 +593,7 @@ function walk(
       }
     }
     if (SHELL_BINARIES.has(base) || SU_BINARIES.has(base)) {
-      const script = findCommandString(tokens, i + 1)
+      const script = findCommandString(tokens, i + 1, SHELL_BINARIES.has(base) && base !== "fish")
       if (script !== null) {
         budget.remainingReanalysisChars -= script.length
         if (budget.remainingReanalysisChars < 0) {
@@ -667,7 +667,7 @@ function skipWrapperOption(tokens: ShellToken[], index: number, valueOpts: Set<s
 }
 
 /** Find a `-c`/`--command` command-string argument and return its (unquoted) value. */
-function findCommandString(tokens: ShellToken[], start: number): string | null {
+function findCommandString(tokens: ShellToken[], start: number, shellFlags = false): string | null {
   let i = start
   let endOfFlags = false
   while (i < tokens.length) {
@@ -697,7 +697,9 @@ function findCommandString(tokens: ShellToken[], start: number): string | null {
         i += 1
         continue
       }
-      if (cPosition === t.length - 1) {
+      // Shells treat every letter in -ce/-xec as a flag: the script is
+      // always the next token. su and script use getopt value semantics.
+      if (shellFlags || cPosition === t.length - 1) {
         return i + 1 < tokens.length ? tokens[i + 1]!.value : null
       }
       return t.slice(cPosition + 1)
@@ -729,6 +731,7 @@ function findEnvSCommand(
       if (value.startsWith("--split-string=")) {
         return { script: value.slice("--split-string=".length), tailIndex: i + 1 }
       }
+      if (VALUE_OPTIONS.env!.has(value)) i += 1
       continue
     }
     if (!value.startsWith("-") || value.length <= 1) return null

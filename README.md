@@ -642,10 +642,11 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 - **The tarball ships no native code.** `@opentui/core` (the host TUI
   pipeline's renderer) declares optional platform-specific native packages
   (for example `@opentui/core-linux-x64` on Linux) that npm resolves into the
-  install tree on your machine. That is the documented behavior of OpenTUI and
-  of every OpenCode plugin carrying a TUI: the native code is only ever loaded
-  in the TUI process, never in the server or CLI bundles. The published
-  tarball itself contains only JavaScript, raw TSX sources, and documentation;
+  install tree on your machine. Those renderer packages are used by the TUI.
+  The `@opencode/client` dependency also reaches optional
+  `@msgpackr-extract/*` native accelerators through `effect` and `msgpackr`;
+  the consumer install test tracks their platform package names too. The
+  published tarball itself contains only JavaScript, raw TSX sources, and documentation;
   `tests/package-smoke.test.ts` rejects native addons and shared libraries,
   `prebuilds/` directories, platform packages, and bundled-dependency payloads
   in the ship set, and every release publishes a CycloneDX SBOM of the
@@ -655,8 +656,9 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   fails until its allowlist is updated in the same commit. The same suite
   installs the published tarball in an isolated tree and freezes what a
   consumer actually gets: the platform-specific packages under `@opentui`
-  (rendering only), the exact `@babel/core` version documented below, and an
-  `npm audit` gate that fails on any high or critical advisory. Root
+  (rendering only), the optional `@msgpackr-extract` accelerators, the exact
+  `@babel/core` version documented below, and an `npm audit` gate that fails
+  on any high or critical advisory. Root
   `overrides` in this repository protect the development tree only; npm never
   applies a dependency's overrides to the installing application, which is
   why consumer-side guarantees live in tests against the installed tree
