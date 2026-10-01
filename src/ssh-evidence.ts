@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { constants as fsConstants } from "node:fs"
-import { open, realpath, readlink } from "node:fs/promises"
+import { open, lstat, realpath, readlink } from "node:fs/promises"
 import { basename, isAbsolute, resolve, sep } from "node:path"
 import type { PermissionRequest } from "./types.ts"
 import { commandSegments } from "./shell-lexer.ts"
@@ -295,19 +295,48 @@ export function isWithinRoot(path: string, root: string): boolean {
 }
 
 /** The only roots enrichment may read or inspect below: the session's
- *  initial directory, the workspace worktree, and /tmp/opencode. Directories
- *  tracked through a `cd` in the reviewed command are resolution bases, never
- *  roots: a command cannot mint the right to enrich from somewhere else. */
+ *  initial directory, the workspace worktree, and the reviewer temp area.
+ *  Directories tracked through a `cd` in the reviewed command are resolution
+ *  bases, never roots: a command cannot mint the right to enrich from
+ *  somewhere else. Roots are re-validated on every enrichment read, so a
+ *  swapped path between two reads re-fails the check instead of widening
+ *  scope mid-request. */
 export async function approvedEvidenceRoots(
   rootDirectory: string,
   worktree?: string,
+  temporaryPath: string = "/tmp/opencode",
 ): Promise<string[]> {
   const [directoryRoot, worktreeRoot, temporaryRoot] = await Promise.all([
     realpath(rootDirectory).catch(() => resolve(rootDirectory)),
     worktree === undefined ? undefined : realpath(worktree).catch(() => resolve(worktree)),
-    realpath("/tmp/opencode").catch(() => "/tmp/opencode"),
+    temporaryEvidenceRoot(temporaryPath),
   ])
-  return [directoryRoot, ...(worktreeRoot === undefined ? [] : [worktreeRoot]), temporaryRoot]
+  return [
+    directoryRoot,
+    ...(worktreeRoot === undefined ? [] : [worktreeRoot]),
+    ...(temporaryRoot === undefined ? [] : [temporaryRoot]),
+  ]
+}
+
+/** The temp area qualifies as an evidence root only when it is exactly the
+ *  directory it claims to be: a real directory (a symlink would quietly make
+ *  whatever it points to readable), owned by the current user, and not
+ *  group- or world-writable (anyone could otherwise plant or replace the
+ *  files enrichment reads). Anything else, including absence, drops the
+ *  root: enrichment simply cannot use it, which fails closed. */
+async function temporaryEvidenceRoot(path: string): Promise<string | undefined> {
+  try {
+    const info = await lstat(path)
+    if (info.isSymbolicLink() || !info.isDirectory()) return undefined
+    if (typeof process.getuid === "function") {
+      const uid = process.getuid()
+      if (typeof info.uid === "number" && info.uid !== uid) return undefined
+    }
+    if (info.mode & 0o022) return undefined
+    return path
+  } catch {
+    return undefined
+  }
 }
 
 /** Best-effort Linux-only resolution of an open descriptor back to its real

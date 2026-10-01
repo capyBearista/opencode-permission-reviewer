@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { enrichLocalScriptEvidence } from "../src/local-script-evidence.ts"
-import { enrichSshEvidence, shellCommandSegmentsWithDirectory } from "../src/ssh-evidence.ts"
+import {
+  approvedEvidenceRoots,
+  enrichSshEvidence,
+  shellCommandSegmentsWithDirectory,
+} from "../src/ssh-evidence.ts"
 import { request } from "./helpers.ts"
 
 const temporaryDirectories: string[] = []
@@ -21,6 +25,37 @@ afterEach(async () => {
 })
 
 describe("command segments with directory tracking", () => {
+  test("a symlinked temp area never becomes an evidence root", async () => {
+    const outside = await fixture()
+    await writeFile(join(outside, "sentinel.txt"), "EXTERNAL-SENTINEL\n")
+    const tempParent = await fixture()
+    const tempPath = join(tempParent, "opencode")
+    await mkdir(tempPath)
+    await symlink(tempPath, join(tempParent, "link-to-temp"))
+    // A clean temp directory qualifies...
+    expect(await approvedEvidenceRoots("/somewhere", undefined, tempPath)).toContain(tempPath)
+    // ...but a symlink standing in for it does not, and neither does a
+    // foreign-writable or non-directory path: the root is dropped, so the
+    // external directory it points at stays unreadable.
+    await symlink(outside, join(tempParent, "opencode-symlink"))
+    const roots = await approvedEvidenceRoots(
+      "/somewhere",
+      undefined,
+      join(tempParent, "opencode-symlink"),
+    )
+    expect(roots).not.toContain(outside)
+    expect(roots).not.toContain(join(tempParent, "opencode-symlink"))
+    await chmod(tempPath, 0o777)
+    const writable = await approvedEvidenceRoots("/somewhere", undefined, tempPath)
+    expect(writable).not.toContain(tempPath)
+    const notADir = join(tempParent, "plain-file")
+    await writeFile(notADir, "x")
+    expect(await approvedEvidenceRoots("/somewhere", undefined, notADir)).not.toContain(notADir)
+    expect(
+      await approvedEvidenceRoots("/somewhere", undefined, join(tempParent, "absent")),
+    ).not.toContain(join(tempParent, "absent"))
+  })
+
   test("a subshell cd never changes the outer working directory", () => {
     const segments = shellCommandSegmentsWithDirectory(
       "cd /ws && ( cd /elsewhere ) && git status",
