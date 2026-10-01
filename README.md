@@ -334,7 +334,7 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `maxIntentChars`               | `8000`                                                    | `1000`–`50000`                      | User-intent history budget                                                                    |
 | `transcriptMessages`           | `12`                                                      | `1`–`100`                           | Recent messages shown to the reviewer                                                         |
 | `intentMessages`               | `8`                                                       | `1`–`50`                            | Genuine user intents kept                                                                     |
-| `historyMessages`              | `200`                                                     | `20`–`500`                          | Messages fetched to recover intent                                                            |
+| `historyMessages`              | `200`                                                     | `20`–`500`                          | Operational messages fetched; literal user intent is recovered separately                     |
 | `retainReviewSessions`         | `false`                                                   | boolean                             | Keep reviewer child sessions (debug only; see below)                                          |
 | `audit`                        | `true`                                                    | boolean                             | Append one JSONL audit record per review                                                      |
 | `auditPath`                    | `~/.local/share/opencode/permission-reviewer-audit.jsonl` | path                                | Audit file location                                                                           |
@@ -562,7 +562,14 @@ by itself** (one narrow deterministic exception exists for SSH, below).
   inspection when they name an explicit script. Inline code, modules, stdin
   programs, dynamic paths, and remote-only SSH arguments are not misidentified
   as local files.
-- **Git operations** (`add`, `commit`, `checkout`, `restore`, `rm`) get a
+- **Package scripts** (`bun run`, `npm run`, `pnpm run`, and `yarn run`) include
+  the selected manifest definition, defined conditional lifecycle hooks, and
+  bounded literal calls to other local scripts. Inspection never executes
+  package code. Cycles, unsupported workspace selection, unavailable files,
+  and expansion limits remain explicit gaps. Running a local script reports
+  possible network access rather than an observed network operation.
+- **Git operations** (`add`, `commit`, `checkout`, `restore`, `rm`, `merge`,
+  `rebase`, and `stash`) get a
   read-only pre-command snapshot: current branch, files already staged before
   the command, unstaged/untracked files, planned targets, unresolved
   shell-expanded paths, and a bounded numstat for changes that would be
@@ -576,6 +583,14 @@ by itself** (one narrow deterministic exception exists for SSH, below).
   repository-configured commands. Verification and inspection are still two
   distinct moments: a filter configured between them is a residual race the
   snapshot does not claim to eliminate.
+  Merge snapshots identify the in-progress merge index and unresolved paths.
+  Rebase snapshots describe the literal commit range and its presence in local
+  remote-tracking refs; those refs may be stale and never prove publication
+  status. Literal destinations report conservative matches to configured
+  push/fetch URLs, including equivalent GitHub HTTPS and SSH forms. A match is
+  destination identity evidence, not authorization or a trust declaration.
+  Repository or destination overrides that cannot be resolved with the safe
+  inspection commands make the snapshot unavailable.
 
 Only regular text files inside the working directory, the worktree, or
 `/tmp/opencode` can be included. A `cd` inside the reviewed command can move
@@ -624,7 +639,14 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 - SSH commands and executable stdin receive bounded, untrusted action
   enrichment; enrichment never makes an approval decision on its own.
 - Long-session user intent is recovered separately from recent operational
-  context; later explicit requests supersede conflicting older ones.
+  context; later explicit requests supersede conflicting older ones. V2 reads
+  literal user messages from the persisted message API, including history
+  before compaction. V1 scans bounded recent-history windows up to 2,000
+  messages. Both retain the configured intent count and character budget.
+  Intent appears once in the reviewer prompt; operational reasoning and
+  duplicate tool evidence are omitted, while attachments and distinct results
+  remain visible. Long literal intent retains its beginning and end with an
+  explicit omission marker.
 - Synthetic compaction/control messages are excluded from authorization
   evidence.
 - Audit failures never affect or relax the safety decision.
