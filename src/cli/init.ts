@@ -18,7 +18,6 @@ import {
   fstatSync,
   ftruncateSync,
   fsyncSync,
-  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -94,7 +93,8 @@ export async function runInit(argv: string[]): Promise<number> {
   }
   const entry = buildEntry(pkg, Boolean(values.npm), host)
   const targets = resolveTargets(directory, Boolean(values.global), Boolean(values.tui), host)
-  const existingConfig = existsSync(targets.config) ? parseConfigFile(targets.config) : undefined
+  const existingSnapshot = readConfigFile(targets.config)
+  const existingConfig = existingSnapshot.status === "read" ? existingSnapshot.config : undefined
   if (
     values.host === "auto" &&
     existingConfig &&
@@ -365,12 +365,25 @@ function pickExisting(candidates: string[]): string | undefined {
   return candidates.find((p) => existsSync(p))
 }
 
-function parseConfigFile(path: string): Record<string, unknown> | null {
+type ConfigSnapshot =
+  | { status: "read"; config: Record<string, unknown>; fingerprint: string }
+  | { status: "missing" }
+  | { status: "error" }
+
+function readConfigFile(path: string): ConfigSnapshot {
+  let fd: number | undefined
   try {
-    const raw = readFileSync(path, "utf8")
-    return parseConfigText(raw)
-  } catch {
-    return null
+    // The parsed config and fingerprint must describe the same opened file.
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+    if (!fstatSync(fd).isFile()) return { status: "error" }
+    const raw = readFileSync(fd)
+    const config = parseConfigText(raw.toString("utf8"))
+    if (config === null) return { status: "error" }
+    return { status: "read", config, fingerprint: createHash("sha256").update(raw).digest("hex") }
+  } catch (error) {
+    return { status: (error as { code?: unknown }).code === "ENOENT" ? "missing" : "error" }
+  } finally {
+    if (fd !== undefined) closeSync(fd)
   }
 }
 
@@ -423,20 +436,10 @@ export function planFileChange(
   pkg: PackageInfo,
   host: HostGeneration = "v1",
 ): FilePlan {
-  if (!existsSync(path)) {
-    return { path, action: "create" }
-  }
-  try {
-    const info = lstatSync(path)
-    if (info.isSymbolicLink() || !info.isFile()) return { path, action: "error" }
-  } catch {
-    return { path, action: "error" }
-  }
-  const cfg = parseConfigFile(path)
-  if (cfg === null) {
-    return { path, action: "error" }
-  }
-  const fingerprint = createHash("sha256").update(readFileSync(path)).digest("hex")
+  const snapshot = readConfigFile(path)
+  if (snapshot.status === "missing") return { path, action: "create" }
+  if (snapshot.status === "error") return { path, action: "error" }
+  const { config: cfg, fingerprint } = snapshot
   const plugin = cfg[host === "v2" ? "plugins" : "plugin"]
   if (plugin === undefined) {
     return { path, action: "append", backup: backupPath(path), fingerprint }

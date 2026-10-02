@@ -18,7 +18,6 @@ export const DEFAULT_AUDIT_PATH = "~/.local/share/opencode/permission-reviewer-a
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
 const O_WRONLY = typeof fsConstants.O_WRONLY === "number" ? fsConstants.O_WRONLY : 0
 const O_CREAT = typeof fsConstants.O_CREAT === "number" ? fsConstants.O_CREAT : 0
-const O_EXCL = typeof fsConstants.O_EXCL === "number" ? fsConstants.O_EXCL : 0
 const O_APPEND = typeof fsConstants.O_APPEND === "number" ? fsConstants.O_APPEND : 0
 const O_NOFOLLOW = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0
 const O_NONBLOCK = typeof fsConstants.O_NONBLOCK === "number" ? fsConstants.O_NONBLOCK : 0
@@ -347,20 +346,9 @@ export function createAuditWriter(
 function appendAuditLine(path: string, line: string): void {
   let fd: number | undefined
   try {
-    try {
-      // 0600 at creation closes the umask window before the first record.
-      fd = openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0o600)
-    } catch (error) {
-      // Anything but "already exists" (notably ELOOP from O_NOFOLLOW on a
-      // symlink) is a genuine failure for the caller to log.
-      if ((error as { code?: unknown }).code !== "EEXIST") throw error
-      // The re-open after EEXIST is refused, not raced: O_NOFOLLOW rejects a
-      // swapped-in symlink with ELOOP, O_NONBLOCK keeps a FIFO from blocking
-      // before the regular-file check can run, and the caller logs and
-      // swallows any failure.
-      // codeql[js/file-system-race]
-      fd = openSync(path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK)
-    }
+    // One atomic open covers creation and append without a path check or retry.
+    // The creation mode closes the umask window before the first record.
+    fd = openSync(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0o600)
     const info = fstatSync(fd)
     if (!info.isFile()) {
       throw new Error(`not a regular file: ${path}`)

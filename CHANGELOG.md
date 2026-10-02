@@ -67,8 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   global configuration.
 - Redact URL userinfo even when a credential occupies only the username slot,
   and block GitHub config and token-shaped content from file enrichment.
-- Refuse symlinked config files in `init`; backups and updates now hold a
-  no-follow regular-file descriptor through their operation.
+- Refuse symlinked config files in `init`; planning, backups, and updates now
+  hold a no-follow regular-file descriptor through their operation. Config
+  parsing and change detection use the same file snapshot.
 - Recognize shell `-c` flag clusters, options after `-c`, `exec`, clustered SSH
   flags, and value-taking wrapper options so they cannot hide destructive
   commands from the emergency brake. Direct `cp` and `install` overwrites of
