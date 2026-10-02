@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-02
+
 ### Added
 
 - Git remote evidence for network subcommands: `git push`, `fetch`, `pull`,
@@ -30,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify compatibility with OpenCode V1 1.18.34 and V2 2.0.21.
 - No lifecycle scripts ship with the package: the `prepare` build hook is
   gone, so installs execute nothing from this repository. The npm registry is
   the supported install source (Git/local installs yield a package without
@@ -48,6 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of globally configured MCP servers. Its local bootstrap excludes MCP, and
   reviews fail closed if the host reports servers or an invalid inventory.
   Isolation files are replaced atomically and reject links and special files.
+  Thanks @jg33 for the fix ([#62](https://github.com/warc0s/opencode-permission-reviewer/pull/62)).
+- Preserve reviewer cancellation and timeout errors across garbage collection,
+  including waits admitted after a review has already ended.
 - Normalize shell redirections before resolving executables, including glued,
   leading, file-descriptor, clobber, and command-string forms. Redirections can
   no longer hide root destruction, credential reads, network clients, or
