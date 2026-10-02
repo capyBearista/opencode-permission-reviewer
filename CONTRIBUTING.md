@@ -8,11 +8,17 @@ decisions, so changes need to be deliberate and well-tested.
 ```bash
 git clone https://github.com/Warc0s/opencode-permission-reviewer.git
 cd opencode-permission-reviewer
+git switch dev
 bun install
 bun run check   # typecheck + tests — must pass before any push
 ```
 
 ## Before you open a PR
+
+Create your branch from `dev` and open your contribution PR against `dev`.
+GitHub defaults to `main`, so select `dev` as the base branch explicitly.
+Maintainers promote validated changes from `dev` to `main` through a separate
+PR; releases are cut from `main`.
 
 1. **`bun run check` is green** (typecheck + full test suite, including the
    stress suite). Do not disable tests to make this pass.
@@ -88,7 +94,7 @@ After building, `bun tests/live-host-regressions.ts` starts its own fresh
 OpenCode server, a synthetic MCP tool, and a local deterministic provider. It
 checks the actual provider tool list after host filtering and the regression
 cases without paid inference. It complements the live model smoke above. It
-resolves the server binary from `OPENCODE_V1_1_18_31` (printed by the installer
+resolves the server binary from `OPENCODE_V1_1_18_32` (printed by the installer
 above) with fallback to `opencode` on PATH, and authenticates with
 `REVIEWER_LIVE_PASSWORD` (default `synthetic-local-host-password`), so no
 manual serve is needed.

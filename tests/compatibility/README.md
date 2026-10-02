@@ -57,8 +57,17 @@ separately from this isolated matrix.
 
 The V1 and V2 pytest modules use independent protocol adapters and fresh hosts.
 They share only the synthetic HTTP model provider and filesystem isolation.
+The MCP regressions count real process starts across concurrent and sequential
+reviews, verify that reviewer locations exclude MCP, and keep operational MCP
+servers connected. V1 also exercises two project backends sharing the same
+isolation files.
 The TUI module opens real PTYs and verifies visible reviewing and terminal
 states. No provider account, key, or paid inference is required.
+
+Set `V1_HOST_VERSION` or `V2_HOST_VERSION` to select one host release for the
+functional reviewer tests, alongside its matching executable variable. For
+example, `V1_HOST_VERSION=1.18.34` uses `OPENCODE_V1_1_18_34` without changing
+the pinned CI matrix.
 
 Without `PLUGIN_PACKAGE_PATH`, the functional tests load this checkout's built
 package. To validate installation, run `PACKAGE_MANAGER=npm bun

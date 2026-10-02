@@ -3,8 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { server } from "../src/index.ts"
-import { setGlobalConfigPathForTests } from "../src/config/loader.ts"
 import { REVIEWER_SYSTEM_PROMPT } from "../src/policy.ts"
 import { extractPermissionRequest, type RuntimeContext } from "../src/runtime.ts"
 import { decision, MockClient, request, runtime } from "./helpers.ts"
@@ -637,47 +635,28 @@ describe("event boundary", () => {
         audit: false,
       }),
     )
-    setGlobalConfigPathForTests(globalConfig)
-    const client = new MockClient()
-    const rawPosts: unknown[] = []
-    let completed!: () => void
-    const completion = new Promise<void>((resolve) => {
-      completed = resolve
-    })
-    const input = {
-      client: {
-        session: client.session,
-        tool: client.tool,
-        _client: {
-          post: async (options: unknown) => {
-            rawPosts.push(options)
-            if (
-              rawPosts.filter((post) => (post as { url?: string }).url === "/tui/publish")
-                .length === 2
-            )
-              completed()
-            return { data: true }
-          },
-        },
-      },
-      directory: "/workspace/project",
-      worktree: "/workspace/project",
-    }
-    const hooks = await server(input as never, {
-      model: "untrusted/redirected",
-      variant: "none",
-      outputFormat: "json_schema",
-      retainReviewSessions: false,
-      audit: false,
-    })
+    let evidence!: { rawPosts: unknown[]; deletes: unknown[]; prompts: unknown[] }
     try {
-      await hooks.event?.({ event: { type: "permission.asked", properties: request() } as never })
-      await completion
-      await hooks.dispose?.()
+      const child = Bun.spawn(
+        [process.execPath, join(import.meta.dir, "fixtures/v1-server.ts"), globalConfig],
+        {
+          env: { ...process.env, HOME: join(configRoot, "home") },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+      expect(stderr).toBe("")
+      expect(exit).toBe(0)
+      evidence = JSON.parse(stdout)
     } finally {
-      setGlobalConfigPathForTests(undefined)
       await rm(configRoot, { recursive: true, force: true })
     }
+    const { rawPosts } = evidence
     expect(
       rawPosts.filter((post) => (post as { url?: string }).url === "/tui/publish"),
     ).toHaveLength(2)
@@ -689,14 +668,14 @@ describe("event boundary", () => {
       path: { requestID: "per_1" },
       body: { reply: "once" },
     })
-    expect(client.deletes).toHaveLength(1)
-    expect((client.prompts[0] as { body: { model: unknown; variant: string } }).body).toMatchObject(
-      {
-        model: { providerID: "openai", modelID: "gpt-5.6-luna" },
-        variant: "max",
-      },
-    )
-  })
+    expect(evidence.deletes).toHaveLength(1)
+    expect(
+      (evidence.prompts[0] as { body: { model: unknown; variant: string } }).body,
+    ).toMatchObject({
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+      variant: "max",
+    })
+  }, 30_000)
 
   test("text mode sends a text format body and approves from parsed JSON", async () => {
     const harness = runtime(new MockClient(), {

@@ -69,9 +69,12 @@ const project = join(root, "project")
 await mkdir(project)
 // A real stdio MCP tool, outside the host's built-in tool registry.
 const mcpPath = join(root, "mcp.ts")
+const mcpStartsPath = join(root, "mcp-starts.txt")
 await writeFile(
   mcpPath,
   `import { createInterface } from "node:readline";
+import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(mcpStartsPath)}, process.pid + "\\n");
 for await (const line of createInterface({ input: process.stdin })) {
   const r = JSON.parse(line); if (r.id === undefined) continue;
   const result = r.method === "initialize" ? {protocolVersion:"2024-11-05",capabilities:{tools:{}},serverInfo:{name:"synthetic",version:"1"}} : r.method === "tools/list" ? {tools:[{name:"demo",description:"Synthetic operational tool",inputSchema:{type:"object",properties:{}}}]} : {};
@@ -158,6 +161,11 @@ try {
     body: { title: "Synthetic requester" },
   })
   assert(session.data?.id)
+  const operationalMcp = (await fetch(`${baseUrl}/mcp?directory=${encodeURIComponent(project)}`, {
+    headers: hostHeaders,
+  }).then((r) => r.json())) as Record<string, { status: string }>
+  assert.equal(operationalMcp.synthetic?.status, "connected")
+  assert.equal((await Bun.file(mcpStartsPath).text()).trim().split("\n").length, 1)
   const client: OpenCodeClientLike = {
     session: {
       create: sdk.session.create.bind(sdk.session),
@@ -167,6 +175,7 @@ try {
       delete: sdk.session.delete.bind(sdk.session),
     },
     tool: { ids: sdk.tool.ids.bind(sdk.tool) },
+    mcp: { status: sdk.mcp.status.bind(sdk.mcp) },
   } as OpenCodeClientLike
   const replies: unknown[] = []
   const config = resolveConfig({ model: "synthetic/reviewer", timeoutMs: 30000, audit: false })
@@ -188,7 +197,7 @@ try {
     )
   }
   const result = await run()
-  assert.equal(result.kind, "allow")
+  assert.equal(result.kind, "allow", JSON.stringify(result))
   assert.equal(replies.length, 1)
   const scriptPath = join(project, "verified.sh")
   const scriptContent = "echo synthetic-diagnostic\n".repeat(1100)
@@ -231,10 +240,11 @@ try {
     { headers: hostHeaders },
   ).then((r) => r.json())) as Record<string, { status: string }>
   assert.equal(
-    mcp.synthetic?.status,
-    "connected",
-    "MCP must be available before reviewer tool filtering",
+    mcp.synthetic,
+    undefined,
+    "the reviewer isolation location must exclude configured MCP servers",
   )
+  assert.equal(Object.keys(mcp).length, 0)
 
   const textResult = await run({ outputFormat: "text" })
   assert.equal(textResult.kind, "allow")
@@ -297,12 +307,20 @@ try {
     assert(!messages.includes('\\"actor\\": \\"user\\"'))
     assert(messages.includes(origin))
   }
+  const starts = (await Bun.file(mcpStartsPath).text()).trim().split("\n").length
+  assert.equal(starts, 1, "Reviews must not start additional MCP processes")
+  const operationalAfter = (await fetch(`${baseUrl}/mcp?directory=${encodeURIComponent(project)}`, {
+    headers: hostHeaders,
+  }).then((r) => r.json())) as Record<string, { status: string }>
+  assert.equal(operationalAfter.synthetic?.status, "connected")
   console.log(
     JSON.stringify({
       ok: true,
       providerRequests: captured.length,
       structuredTools: ["StructuredOutput"],
-      mcpConnected: true,
+      mcpExcludedFromIsolation: true,
+      mcpProcessStarts: starts,
+      operationalMcpStillConnected: true,
       isolationFailuresBlocked: true,
       incompleteActionBlocked: true,
       verifiedScriptReusedWithoutRepeatingContent: true,

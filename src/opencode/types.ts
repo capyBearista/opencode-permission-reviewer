@@ -21,6 +21,13 @@ export interface OpenCodeClientLike {
   tool: {
     ids(options?: unknown): Promise<ClientResponse<string[]>>
   }
+  /** Host MCP inventory, keyed by server name. The V1 host exposes
+   *  `mcp.status({ query: { directory } })` and returns `{}` for a location
+   *  whose config excludes MCP. Optional so narrow clients still typecheck;
+   *  the reviewer guard fails closed when it is absent. */
+  mcp?: {
+    status(options?: unknown): Promise<ClientResponse<Record<string, unknown>>>
+  }
 }
 
 export interface RuntimeContext {

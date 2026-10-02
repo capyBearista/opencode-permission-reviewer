@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Prevent OpenCode V1's isolated reviewer location from starting another copy
+  of globally configured MCP servers. Its local bootstrap excludes MCP, and
+  reviews fail closed if the host reports servers or an invalid inventory.
+  Isolation files are replaced atomically and reject links and special files.
 - Normalize shell redirections before resolving executables, including glued,
   leading, file-descriptor, clobber, and command-string forms. Redirections can
   no longer hide root destruction, credential reads, network clients, or

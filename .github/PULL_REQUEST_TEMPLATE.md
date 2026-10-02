@@ -1,4 +1,5 @@
 <!-- Thanks for the PR. Keep the description focused on the technical change. -->
+<!-- Contribution PRs target dev. Maintainer promotion PRs target main from dev. -->
 
 ## Summary
 
@@ -14,6 +15,7 @@
 
 ## Checklist
 
+- [ ] Contribution targets `dev` (or this is a maintainer promotion from `dev` to `main`)
 - [ ] `bun run check` is green (format + lint + typecheck + tests + build)
 - [ ] No personal data, secrets, or absolute personal paths in the diff
 - [ ] Safety changes include regression tests that demonstrate the invariant
