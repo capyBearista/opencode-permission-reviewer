@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test"
-import { existsSync, mkdtempSync } from "node:fs"
+import { constants as fsConstants, existsSync, mkdtempSync } from "node:fs"
 import {
   chmod,
   link,
   mkdtemp,
+  open,
   readFile,
   readdir,
   rm,
@@ -262,9 +263,14 @@ test("a second backend re-asserts the config in the shared, persistent location"
     const second = fixture({ base })
     try {
       expect((await second.run()).kind).toBe("allow")
-      const isolated = JSON.parse(await readFile(configPath, "utf8")) as { plugin: string[] }
-      expect(isolated.plugin).toEqual(["./reviewer-isolation.js"])
-      expect((await stat(configPath)).mode & 0o777).toBe(0o600)
+      const configFile = await open(configPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+      try {
+        const isolated = JSON.parse(await configFile.readFile("utf8")) as { plugin: string[] }
+        expect(isolated.plugin).toEqual(["./reviewer-isolation.js"])
+        expect((await configFile.stat()).mode & 0o777).toBe(0o600)
+      } finally {
+        await configFile.close()
+      }
       expect((await stat(bootstrapPath)).mode & 0o777).toBe(0o600)
       expect(await readFile(bootstrapPath, "utf8")).toContain("cfg.mcp = {}")
       expect((await stat(base)).mode & 0o777).toBe(0o700)

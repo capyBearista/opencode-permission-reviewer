@@ -2,12 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { execFileSync } from "node:child_process"
 import { applyPlannedWrites, planFileChange, writeBackup, writeEntry } from "../src/cli/init.ts"
 import type { PackageInfo, PluginEntry } from "../src/cli/init.ts"
 
 async function run(
   args: string[],
   env: Record<string, string>,
+  timeoutMs?: number,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const isolatedArgs =
     args.includes("--host") || args.includes("--binary") ? [...args] : ["--host", "v1", ...args]
@@ -28,12 +30,17 @@ async function run(
     stderr: "pipe",
     env: { ...inherited, ...env },
   })
-  const [code, stdout, stderr] = await Promise.all([
-    proc.exited,
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ])
-  return { code, stdout, stderr }
+  const timer = timeoutMs === undefined ? undefined : setTimeout(() => proc.kill(), timeoutMs)
+  try {
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    return { code, stdout, stderr }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 describe("cli init", () => {
@@ -189,6 +196,18 @@ describe("cli init", () => {
     expect(backups).toHaveLength(0)
   })
 
+  test("planning refuses a config linked to a FIFO without reading or blocking", async () => {
+    home = mkdtempSync(join(tmpdir(), "init-home-"))
+    project = mkdtempSync(join(tmpdir(), "init-proj-"))
+    const fifo = join(home, "config-fifo")
+    execFileSync("mkfifo", [fifo])
+    symlinkSync(fifo, join(project, "opencode.json"))
+    const result = await run(["--yes", "--project", project], { HOME: home }, 3000)
+    expect(result.code).toBe(1)
+    expect(result.stderr).toContain("malformed")
+    expect(readdirSync(project)).toEqual(["opencode.json"])
+  }, 10_000)
+
   test("non-TTY without --yes exits 2", async () => {
     home = mkdtempSync(join(tmpdir(), "init-home-"))
     project = mkdtempSync(join(tmpdir(), "init-proj-"))
@@ -318,6 +337,14 @@ describe("cli init apply guards", () => {
     expect(() => writeEntry(linked, entry, false)).toThrow()
     expect(() => writeBackup(linked, join(directory, "backup"))).toThrow()
     expect(readFileSync(target, "utf8")).toBe(original)
+  })
+
+  test("planning distinguishes a dangling config link from a missing file", () => {
+    const directory = freshDir()
+    const linked = join(directory, "opencode.json")
+    symlinkSync(join(directory, "missing-target.json"), linked)
+    expect(planFileChange(linked, pkg).action).toBe("error")
+    expect(planFileChange(join(directory, "missing-config.json"), pkg).action).toBe("create")
   })
 })
 
