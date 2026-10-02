@@ -26,6 +26,8 @@ export class ReviewAttempt {
   readonly startedAt: number
   readonly deadline: number
   private stateValue: AttemptState = "reviewing"
+  // Retain the reason independently of the native signal across garbage collection.
+  private terminalReason: Error | undefined
   private readonly timer: ReturnType<typeof setTimeout>
 
   constructor(
@@ -61,14 +63,15 @@ export class ReviewAttempt {
     if (this.stateValue !== "reviewing") return false
     this.stateValue = state
     clearTimeout(this.timer)
-    this.controller.abort(new Error(`Review ${state}`))
+    this.terminalReason = new Error(`Review ${state}`)
+    this.controller.abort(this.terminalReason)
     return true
   }
 
   /** Abort the wait even if a host operation cannot cancel its transport. */
   async wait<T>(operation: Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const abort = () => reject(this.signal.reason)
+      const abort = () => reject(this.terminalReason ?? this.signal.reason)
       // Observe the operation even when cancellation won before admission.
       // Its transport can still reject after this waiter has already closed.
       if (this.signal.aborted) abort()
@@ -77,7 +80,10 @@ export class ReviewAttempt {
         (value) => {
           this.signal.removeEventListener("abort", abort)
           if (this.active()) resolve(value)
-          else reject(this.signal.reason ?? new Error("Review is no longer active"))
+          else
+            reject(
+              this.terminalReason ?? this.signal.reason ?? new Error("Review is no longer active"),
+            )
         },
         (error: unknown) => {
           this.signal.removeEventListener("abort", abort)
