@@ -4,6 +4,7 @@ import { promisify } from "node:util"
 import { basename, resolve } from "node:path"
 import type { PermissionRequest } from "./types.ts"
 import { sourceCommand } from "./evidence/source-command.ts"
+import { localExecutableCommand } from "./evidence/local-command.ts"
 import {
   approvedEvidenceRoots,
   isWithinRoot,
@@ -167,13 +168,10 @@ function gitExecutionDirectory(
   gitIndex: number,
   subcommandIndex: number,
   initialDirectory: string | undefined,
+  prefix: string[],
 ): { directory?: string; reason?: string } {
   if (!initialDirectory) return { reason: "working directory before Git is unresolved" }
-  if (
-    tokens
-      .slice(0, gitIndex)
-      .some((token) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|CONFIG[^=]*)=/.test(token))
-  )
+  if (prefix.some((token) => /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|CONFIG[^=]*)=/.test(token)))
     return { reason: "Git repository or configuration environment overrides are unresolved" }
   let directory = initialDirectory
   for (let index = gitIndex + 1; index < subcommandIndex; index += 1) {
@@ -221,9 +219,11 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
   const directoryReasons = new Set<string>()
 
   for (const segment of shellCommandSegmentsWithDirectory(command, directory)) {
-    const gitIndex = segment.tokens.findIndex((token) => basename(token) === "git")
-    if (gitIndex < 0) continue
-    const { command: subcommand, index } = gitSubcommand(segment.tokens, gitIndex)
+    const local = localExecutableCommand(segment.tokens)
+    if (!local || basename(local.tokens[0] ?? "") !== "git") continue
+    const tokens = local.tokens
+    const gitIndex = 0
+    const { command: subcommand, index } = gitSubcommand(tokens, gitIndex)
     if (!subcommand) continue
     if (
       ![
@@ -239,7 +239,13 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
       ].includes(subcommand)
     )
       continue
-    const execution = gitExecutionDirectory(segment.tokens, gitIndex, index, segment.directory)
+    const execution = gitExecutionDirectory(
+      tokens,
+      gitIndex,
+      index,
+      segment.directory,
+      local.prefix,
+    )
     if (execution.directory) executionDirectories.add(execution.directory)
     else
       directoryReasons.add(
@@ -248,7 +254,7 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
     result.relevant = true
     result.commands.push(subcommand)
     if (subcommand === "rebase") {
-      const args = segment.tokens.slice(index + 1)
+      const args = tokens.slice(index + 1)
       const bases: string[] = []
       for (let cursor = 0; cursor < args.length; cursor++) {
         const arg = args[cursor]!
@@ -266,11 +272,11 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
         result.rewriteBases.push(bases[0]!)
     }
     if (subcommand === "commit") result.commit = true
-    if (subcommand === "add") result.plannedAdd.push(...positionalAfter(segment.tokens, index))
-    if (subcommand === "rm") result.removeTargets.push(...positionalAfter(segment.tokens, index))
+    if (subcommand === "add") result.plannedAdd.push(...positionalAfter(tokens, index))
+    if (subcommand === "rm") result.removeTargets.push(...positionalAfter(tokens, index))
     if (subcommand === "checkout" || subcommand === "restore") {
-      const separator = segment.tokens.indexOf("--", index + 1)
-      if (separator >= 0) result.discardTargets.push(...segment.tokens.slice(separator + 1))
+      const separator = tokens.indexOf("--", index + 1)
+      if (separator >= 0) result.discardTargets.push(...tokens.slice(separator + 1))
     }
     if (
       subcommand === "push" ||
@@ -278,7 +284,7 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
       subcommand === "pull" ||
       subcommand === "ls-remote"
     ) {
-      const { operand, repoOverride } = networkOperand(segment.tokens, index, subcommand)
+      const { operand, repoOverride } = networkOperand(tokens, index, subcommand)
       const candidates: string[] = []
       if (repoOverride !== undefined) candidates.push(repoOverride)
       if (operand !== undefined) candidates.push(operand)
@@ -288,13 +294,12 @@ function plannedActions(command: string, directory: string): PlannedGitActions {
         }
       } else if (result.needsDefaultRemote.length < 4) {
         // --all fetches every configured remote, not just the default.
-        const all =
-          (subcommand === "fetch" || subcommand === "pull") && segment.tokens.includes("--all")
+        const all = (subcommand === "fetch" || subcommand === "pull") && tokens.includes("--all")
         result.needsDefaultRemote.push(all ? `${subcommand} --all` : subcommand)
       }
     }
     if (subcommand === "remote") {
-      const verbs = positionalAfter(segment.tokens, index)
+      const verbs = positionalAfter(tokens, index)
       const [verb, name, url] = verbs
       if (verb === "update") {
         // `remote update` fetches every configured remote (or the group's

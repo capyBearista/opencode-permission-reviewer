@@ -1,4 +1,5 @@
-import { basename } from "node:path"
+import { basename, resolve } from "node:path"
+import { localExecutableCommand } from "./evidence/local-command.ts"
 import type { PermissionRequest } from "./types.ts"
 import { sourceCommand } from "./evidence/source-command.ts"
 import {
@@ -95,6 +96,11 @@ const DENO_NO_CONSUME = new Set(["-r", "-W", "-I"])
 // Node flags that consume the next token when written without `=`; tsx
 // forwards every flag it does not own, so tsx inherits the same table.
 const NODE_VALUE_OPTIONS = new Set([
+  "-C",
+  "--conditions",
+  "--env-file",
+  "--env-file-if-exists",
+  "--experimental-loader",
   "--test-reporter-destination",
   "--test-reporter",
   "--test-name-pattern",
@@ -189,25 +195,43 @@ function scriptPath(
 ): string | undefined {
   const spec = INTERPRETER_SPECS[interpreter]
   let fileTargetPending = false
+  let optionsEnded = false
   for (let index = interpreterIndex + 1; index < tokens.length; index += 1) {
     const token = tokens[index]!
+    if (token === "--" && !optionsEnded) {
+      optionsEnded = true
+      continue
+    }
+    if (
+      !optionsEnded &&
+      (["--help", "--version"].includes(token) ||
+        (["node", "bun", "deno", "tsx"].includes(interpreter) && token === "-v") ||
+        (["python", "python3"].includes(interpreter) && token === "-V"))
+    )
+      return
+    const inlineOption = [...INLINE_CODE_OPTIONS].find((option) =>
+      option.startsWith("--")
+        ? token === option || token.startsWith(`${option}=`)
+        : token.startsWith(option),
+    )
     // A dash spell can mean inline code for one runtime and a valued option
     // for another (deno -c is --config, node -c is --check): the interpreter
     // spec wins.
     if (
       token === "-" ||
-      (INLINE_CODE_OPTIONS.has(token) && !spec?.valueOptions?.has(token)) ||
-      token === "-m"
+      (!optionsEnded && inlineOption !== undefined && !spec?.valueOptions?.has(inlineOption)) ||
+      (!optionsEnded && token.startsWith("-m"))
     ) {
       return
     }
-    if (spec?.bailOptions !== undefined && matchesOption(token, spec.bailOptions)) return
-    if (spec?.noConsumeOptions?.has(token)) continue
-    if (OPTIONS_WITH_VALUE.has(token) || spec?.valueOptions?.has(token)) {
+    if (!optionsEnded && spec?.bailOptions !== undefined && matchesOption(token, spec.bailOptions))
+      return
+    if (!optionsEnded && spec?.noConsumeOptions?.has(token)) continue
+    if (!optionsEnded && (OPTIONS_WITH_VALUE.has(token) || spec?.valueOptions?.has(token))) {
       index += 1
       continue
     }
-    if (token.startsWith("-")) continue
+    if (!optionsEnded && token.startsWith("-")) continue
     if (spec?.fileTargetSubcommands?.has(token) && !fileTargetPending) {
       fileTargetPending = true
       continue
@@ -222,10 +246,6 @@ function scriptPath(
     return token
   }
   return
-}
-
-function interpreterIn(tokens: string[]): number {
-  return tokens.findIndex((token) => INTERPRETERS.has(basename(token)))
 }
 
 function recordFor(interpreter: string, path: string, file: FileEvidence): Record<string, unknown> {
@@ -259,12 +279,12 @@ export async function enrichLocalScriptEvidence(
   const seen = new Set<string>()
 
   for (const segment of segments) {
-    const interpreterIndex = interpreterIn(segment.tokens)
-    if (interpreterIndex < 0) continue
-    const interpreter = basename(segment.tokens[interpreterIndex]!)
-    const path = scriptPath(segment.tokens, interpreterIndex, interpreter)
+    const command = localExecutableCommand(segment.tokens)?.tokens
+    if (!command || !INTERPRETERS.has(basename(command[0] ?? ""))) continue
+    const interpreter = basename(command[0]!)
+    const path = scriptPath(command, 0, interpreter)
     if (!path) continue
-    const key = `${interpreter}\0${path}`
+    const key = `${interpreter}\0${segment.directory === undefined && !path.startsWith("/") ? `unresolved:${path}` : resolve(segment.directory ?? directory, path)}`
     if (seen.has(key)) continue
     seen.add(key)
     const file =

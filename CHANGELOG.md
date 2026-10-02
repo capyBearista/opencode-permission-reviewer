@@ -16,8 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operand-less command would contact. The reviewer judges the destination
   from this evidence instead of treating an unresolved alias as unknown.
 
-### Added
-
 - Recognize `deno` and `tsx` as local script interpreters, attaching the
   executed file as evidence for direct invocations (`deno <file>`,
   `tsx <file>`), `deno run/serve/watch`, and `tsx watch` file targets. Deno
@@ -25,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ambiguous option forms gather no evidence rather than risk attaching the
   wrong file. Node-family value flags (`--test-reporter-destination` and
   siblings) are skipped for `node` and `tsx` for the same reason.
+- Inspect manifest definitions and bounded local script chains for Bun, npm,
+  pnpm, and Yarn script invocations. Referenced local code and conditional
+  lifecycle hooks are included as evidence without executing package code or
+  assuming the invocation needs network access.
 
 ### Changed
 
@@ -32,14 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone, so installs execute nothing from this repository. The npm registry is
   the supported install source (Git/local installs yield a package without
   `dist/`); build from source explicitly with `bun install && bun run build`.
-- Release hardening: the tag, ancestry (`origin/main`), and version guards in
-  the release workflow now run before any toolchain or dependency install, and
-  the shipped supply chain is documented and tested (no native artifacts or
-  bundled-dependency payloads in the tarball, frozen runtime dependency
-  allowlist, `effect` externalized from the bundles).
 
 ### Fixed
 
+- Attach local script evidence only for the executed interpreter, preserve
+  leading-dash file names after `--`, and inspect equally named scripts in
+  different working directories separately. Remote commands and interpreter
+  mentions no longer attach unrelated local code.
+- Resolve Git repository evidence only for a local Git executable; remote
+  commands and command mentions no longer inherit the local repository's state
+  or configured destinations.
 - Prevent OpenCode V1's isolated reviewer location from starting another copy
   of globally configured MCP servers. Its local bootstrap excludes MCP, and
   reviews fail closed if the host reports servers or an invalid inventory.
@@ -83,6 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Audit records always land in a mode `0600` file: a pre-existing audit path
   with looser permissions is tightened before receiving new records instead of
   being extended as-is.
+- Recover literal user intent after long operational histories, compaction,
+  and host restarts, while keeping synthetic control messages and inherited
+  fork messages out of direct authorization evidence.
 
 ## [2.3.1] - 2026-09-28
 

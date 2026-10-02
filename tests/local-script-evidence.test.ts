@@ -20,6 +20,115 @@ afterEach(async () => {
 })
 
 describe("local script evidence enrichment", () => {
+  test("interpreter mentions and remote commands never attach local file contents", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "task.js"), 'console.log("non-executed local sentinel")')
+    for (const command of [
+      "printf node ./task.js",
+      "echo node ./task.js",
+      "grep node ./task.js",
+      "ssh fixture.invalid node ./task.js",
+      "sudo ssh fixture.invalid node ./task.js",
+      "chroot ./root node ./task.js",
+      "env -C ./other node ./task.js",
+      "sudo -D ./other node ./task.js",
+      "bash -c 'cd other && node ./task.js'",
+      "command -v node ./task.js",
+      "env --help node ./task.js",
+      "node --version ./task.js",
+      "node -v ./task.js",
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        directory,
+        8000,
+      )
+      expect(result.text).toBe("")
+    }
+    for (const command of [
+      "env -u node node ./task.js",
+      "sudo -u fixture node ./task.js",
+      "timeout 5 node ./task.js",
+      "node >output.log ./task.js",
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        directory,
+        8000,
+      )
+      expect(result.text).toContain("non-executed local sentinel")
+    }
+  })
+
+  test("the option terminator keeps a leading-dash file as the executed script", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "--actual.js"), 'console.log("actual script sentinel")')
+    await writeFile(join(directory, "argument.js"), 'console.log("argument-only sentinel")')
+    const command = "node -- --actual.js ./argument.js"
+    const result = await enrichLocalScriptEvidence(
+      request({ metadata: { command }, patterns: [command] }),
+      directory,
+      directory,
+      8000,
+    )
+    expect(result.text).toContain("actual script sentinel")
+    expect(result.text).not.toContain("argument-only sentinel")
+  })
+
+  test("attached inline-code flags and Node option values are not script targets", async () => {
+    const directory = await fixture()
+    await writeFile(join(directory, "argument.js"), 'console.log("argument-only sentinel")')
+    await writeFile(join(directory, "actual.js"), 'console.log("actual script sentinel")')
+    for (const command of [
+      "node --eval=0 ./argument.js",
+      "node -e0 ./argument.js",
+      "node --print=0 ./argument.js",
+      "python -cpass ./argument.js",
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        directory,
+        8000,
+      )
+      expect(result.text).toBe("")
+    }
+    for (const command of [
+      "node --conditions ./argument.js ./actual.js",
+      "node -C ./argument.js ./actual.js",
+      "node --env-file ./argument.js ./actual.js",
+      "node --experimental-loader ./argument.js ./actual.js",
+    ]) {
+      const result = await enrichLocalScriptEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        directory,
+        8000,
+      )
+      expect(result.text).toContain("actual script sentinel")
+      expect(result.text).not.toContain("argument-only sentinel")
+    }
+  })
+
+  test("equal relative file names in different working directories keep both scripts", async () => {
+    const directory = await fixture()
+    for (const name of ["first", "second"]) {
+      await mkdir(join(directory, name))
+      await writeFile(join(directory, name, "task.js"), `console.log("${name} executed sentinel")`)
+    }
+    const command = "(cd first && node task.js) && (cd second && node task.js)"
+    const result = await enrichLocalScriptEvidence(
+      request({ metadata: { command }, patterns: [command] }),
+      directory,
+      directory,
+      8000,
+    )
+    expect(result.text).toContain("first executed sentinel")
+    expect(result.text).toContain("second executed sentinel")
+  })
+
   test("includes a script executed after environment activation", async () => {
     const directory = await fixture()
     const script = join(directory, "consolidate.py")

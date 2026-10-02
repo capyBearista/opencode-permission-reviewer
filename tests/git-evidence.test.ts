@@ -40,6 +40,49 @@ afterEach(async () => {
 })
 
 describe("Git state evidence enrichment", () => {
+  test("remote Git commands and command mentions never resolve against the local repository", async () => {
+    const directory = await repository()
+    await git(directory, ["remote", "add", "origin", "https://local.example.invalid/project.git"])
+    for (const command of [
+      "printf git push origin",
+      "ssh fixture.invalid git push origin",
+      "sudo ssh fixture.invalid git push origin",
+      "chroot ./root git push origin",
+      "env -C other git push origin",
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        8000,
+      )
+      expect(result.text).toBe("")
+    }
+    for (const command of [
+      "env -u git git push origin",
+      "sudo -u fixture git push origin",
+      "git >output.log push origin",
+    ]) {
+      const result = await enrichGitEvidence(
+        request({ metadata: { command }, patterns: [command] }),
+        directory,
+        8000,
+      )
+      expect(result.text).toContain("https://local.example.invalid/project.git")
+    }
+  })
+
+  test("quoted operator characters remain part of a literal remote operand", async () => {
+    const directory = await repository()
+    const url = "https://literal.example.invalid/a>b.git"
+    const command = `git push '${url}' main`
+    const result = await enrichGitEvidence(
+      request({ metadata: { command }, patterns: [command] }),
+      directory,
+      8000,
+    )
+    expect(result.text).toContain(url)
+  })
+
   test("withholds successful but incomplete Git status output", async () => {
     const directory = await mkdtemp(join(tmpdir(), "reviewer-git-output-"))
     temporaryDirectories.push(directory)
