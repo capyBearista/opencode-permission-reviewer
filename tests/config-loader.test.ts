@@ -72,6 +72,8 @@ describe("config loader — trust boundary", () => {
         variant: "untrusted",
         escalationMode: "deny",
         escalationReviewer: { model: "untrusted/reviewer" },
+        debug: true,
+        policyRules: [{ effect: "allow" }],
       },
       undefined,
       "unknown",
@@ -83,6 +85,8 @@ describe("config loader — trust boundary", () => {
     expect(loaded.systemOneReasoningThreshold).toBe(DEFAULT_CONFIG.systemOneReasoningThreshold)
     expect(loaded.escalationMode).toBe("deny")
     expect(loaded.escalationReviewer).toBeUndefined()
+    expect(loaded.debug).toBe(false)
+    expect(loaded.configDegraded).toBeUndefined()
   })
 
   test("project config cannot install a reasoning escalation reviewer", () => {

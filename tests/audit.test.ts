@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { execFile as execFileCallback, spawn } from "node:child_process"
 import {
   chmod,
   mkdir,
@@ -11,11 +12,17 @@ import {
   writeFile,
 } from "node:fs/promises"
 import { readFileSync, writeFileSync, openSync, writeSync, closeSync } from "node:fs"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { createAuditWriter, DEFAULT_AUDIT_PATH, readAuditSummary } from "../src/audit.ts"
 import { DEFAULT_CONFIG } from "../src/config.ts"
 import type { ReviewAuditRecord } from "../src/types.ts"
+
+const execFileAsync = (cmd: string, args: string[]) =>
+  new Promise<void>((resolve, reject) => {
+    execFileCallback(cmd, args, (error) => (error ? reject(error) : resolve()))
+  })
+const repoRoot = join(dirname(import.meta.path), "..")
 
 function record(overrides: Partial<ReviewAuditRecord> = {}): ReviewAuditRecord {
   return {
@@ -173,7 +180,51 @@ describe("audit writer", () => {
     expect(logs.length).toBeGreaterThan(0)
   })
 
-  test("a pre-existing audit file keeps its permissions (restrictive mode only on create)", async () => {
+  test("a readerless FIFO audit path fails fast instead of blocking the writer", async () => {
+    // The dangerous shape is a FIFO at the audit path with no reader: a
+    // blocking write-open would hang the host forever before the
+    // regular-file check could run. The open is non-blocking, so the append
+    // must fail (and be swallowed) promptly. Runs in a subprocess with its
+    // own timeout: a regression to a blocking open shows up as the child
+    // being killed, not as a hung test runner.
+    const fifoPath = join(directory, "audit.jsonl")
+    await execFileAsync("mkfifo", [fifoPath])
+    const child = spawn(
+      process.execPath,
+      [
+        "-e",
+        `const { createAuditWriter } = await import(${JSON.stringify(join(repoRoot, "src/audit.ts"))})
+const writer = createAuditWriter({
+  ...(await import(${JSON.stringify(join(repoRoot, "src/config.ts"))})).DEFAULT_CONFIG,
+  audit: true,
+  auditPath: ${JSON.stringify(fifoPath)},
+}, (_msg, details) => console.log(JSON.stringify(details)))
+await writer({
+  timestamp: new Date().toISOString(), durationMs: 1, requestID: "per_fifo",
+  sessionID: "ses_main", permission: "bash", outcome: "allow", reason: "fifo probe",
+})
+console.log("DONE")`,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    )
+    let stdout = ""
+    child.stdout.on("data", (chunk) => (stdout += chunk))
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL")
+        reject(new Error("appendAuditLine blocked on the readerless FIFO"))
+      }, 8_000)
+      child.on("exit", (code) => {
+        clearTimeout(timer)
+        resolve(code)
+      })
+      child.on("error", reject)
+    })
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain("DONE")
+  }, 30_000)
+
+  test("a pre-existing group-readable audit file is tightened to 0600 on append", async () => {
     const auditPath = join(directory, "audit.jsonl")
     await writeFile(auditPath, "")
     await chmod(auditPath, 0o644)
@@ -182,9 +233,28 @@ describe("audit writer", () => {
     const handle = await open(auditPath, "r")
     try {
       const info = await handle.stat()
-      expect(info.mode & 0o777).toBe(0o644)
+      expect(info.mode & 0o777).toBe(0o600)
       const parsed = JSON.parse((await readFile(handle, "utf8")).trim()) as ReviewAuditRecord
       expect(parsed.requestID).toBe("per_keep")
+    } finally {
+      await handle.close()
+    }
+  })
+
+  test("mode 0600 is re-asserted when the file is loosened between appends", async () => {
+    const auditPath = join(directory, "audit-loosened.jsonl")
+    const writeAudit = createAuditWriter({ ...DEFAULT_CONFIG, audit: true, auditPath })!
+    await writeAudit(record({ requestID: "loose_1" }))
+    // An external process loosens the file mid-life.
+    await chmod(auditPath, 0o644)
+    await writeAudit(record({ requestID: "loose_2" }))
+    const handle = await open(auditPath, "r")
+    try {
+      const info = await handle.stat()
+      expect(info.mode & 0o777).toBe(0o600)
+      const lines = (await readFile(handle, "utf8")).trim().split("\n")
+      expect(lines).toHaveLength(2)
+      expect((JSON.parse(lines[1]!) as ReviewAuditRecord).requestID).toBe("loose_2")
     } finally {
       await handle.close()
     }

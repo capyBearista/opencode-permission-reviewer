@@ -3,15 +3,21 @@ import type { EvidenceFragment, EvidenceProvider, EvidenceProviderInput } from "
 
 /**
  * Wraps {@link enrichGitEvidence} behind the {@link EvidenceProvider} surface.
- * Git evidence resolves the repository from the planned command's directory and
- * does not depend on the worktree root, so `worktree` is accepted for interface
- * uniformity and intentionally ignored here.
+ * Git evidence resolves the repository from the planned command's directory,
+ * but that directory is only a resolution base: inspection is contained to the
+ * session directory plus `worktree` (and /tmp/opencode), so a `cd` or
+ * `git -C` pointing elsewhere yields an unavailable snapshot instead of
+ * inspecting an unrelated repository.
  */
 export class GitEvidenceProvider implements EvidenceProvider {
   readonly id = "git"
   async collect(input: EvidenceProviderInput): Promise<EvidenceFragment> {
-    void input.worktree
-    const result = await enrichGitEvidence(input.request, input.directory, input.maxChars)
+    const result = await enrichGitEvidence(
+      input.request,
+      input.directory,
+      input.maxChars,
+      input.worktree,
+    )
     return { kind: "git", text: result.text }
   }
 }

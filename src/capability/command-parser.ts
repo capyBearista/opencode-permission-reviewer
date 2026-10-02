@@ -1,5 +1,10 @@
 import type { ParsedCommand, Redirection } from "../types.ts"
-import { effectiveCommands, lexSegments, type ShellToken } from "../shell-lexer.ts"
+import {
+  analyzeEffectiveCommands,
+  lexSegmentsBounded,
+  newAnalysisBudget,
+  type ShellToken,
+} from "../shell-lexer.ts"
 import { extractHeredocs } from "./heredoc-extractor.ts"
 
 /*
@@ -7,9 +12,9 @@ import { extractHeredocs } from "./heredoc-extractor.ts"
  *
  * Wraps the existing quote-aware lexer and the heredoc pre-extractor into a
  * single `ParsedCommand` structure consumed by the capability analyzer (and
- * available to evidence providers). The emergency brake keeps calling the raw
- * `lexSegments` / `effectiveCommands` functions unchanged — this module never
- * alters the token stream the brake sees.
+ * available to evidence providers). The emergency brake uses the same bounded
+ * lexer and heredoc sanitization directly, so both paths share command and
+ * redirection semantics.
  *
  * Dynamic constructs (variables, globs, command substitution, dynamic heredoc
  * bodies) are flagged so the analyzer can mark `parserCompleteness` honestly.
@@ -21,17 +26,22 @@ const REDIRECTION_OPS = new Set([">", ">>", "<", "<<", ">&", "2>", "&>", "1>", "
 /** Parse a raw bash command into the reusable structure. */
 export function parseCommand(rawCommand: string): ParsedCommand {
   const { sanitizedCommand, heredocs, hasDynamicConstructs } = extractHeredocs(rawCommand)
-  const segments = lexSegments(sanitizedCommand)
-  // Each segment may yield multiple effective commands (e.g. `sh -c 'a; b'`);
-  // flatten into a single list of token lists so the analyzer can walk every
-  // real executable uniformly.
+  // Bounded from the start: oversized input or token floods stop HERE, and
+  // every segment shares one effective-command budget so wide inputs cannot
+  // stay under per-segment ceilings while the total grows unbounded.
+  const lex = lexSegmentsBounded(sanitizedCommand)
+  const segments = lex.segments
   const effective: ShellToken[][] = []
   const redirections: Redirection[][] = []
+  let analysisTruncated = lex.truncated
+  const budget = newAnalysisBudget()
   for (const segment of segments) {
-    const cmds = effectiveCommands(segment)
-    for (const cmd of cmds) {
+    const analysis = analyzeEffectiveCommands(segment, budget)
+    analysisTruncated = analysisTruncated || analysis.truncated
+    for (let index = 0; index < analysis.commands.length; index += 1) {
+      const cmd = analysis.commands[index]!
       effective.push(cmd)
-      redirections.push(extractRedirections(cmd))
+      redirections.push(analysis.redirections[index] ?? extractRedirections(cmd))
     }
   }
   const dyn = looksDynamic(sanitizedCommand)
@@ -45,6 +55,7 @@ export function parseCommand(rawCommand: string): ParsedCommand {
     redirections,
     heredocs,
     hasDynamicConstructs: dynamic,
+    analysisTruncated,
   }
 }
 

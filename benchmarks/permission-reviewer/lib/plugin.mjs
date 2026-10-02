@@ -7,19 +7,19 @@ import { assert, sha256 } from "./util.mjs"
 
 // Git blob hashes of the security-critical files actually inspected for this kit.
 export const PINNED_BLOBS = {
-  "src/policy.ts": "641e81586e738cfdee64c61bb341529707eac4eb",
-  "src/context.ts": "e099dacaacca78ad4474bd35d36a291c190df256",
+  "src/policy.ts": "72dc68cc8de6f536b196e3ffbe840f8b2236cd01",
+  "src/context.ts": "5473abbe19ccce27163ceaaf87a63e63e6d5215a",
   "src/config.ts": "5799271b0c8ea441f96e89ce5f1c085879ba72f6",
   "src/decision.ts": "ad3443f3bf2ca1b34b3b23e8115c79148e19238b",
   "src/policy/policy-engine.ts": "b4470dc188d956cc0ed25454c2d34465110fe1be",
   "src/escalation.ts": "947f5ed665600927e21be343995cdc4993a45f5a",
-  "src/core/review-engine.ts": "6678bcec69c6bd32f11730ce5629c269c951179e",
-  "src/emergency-brake.ts": "6f1b65a6f2b125a9e07824922a9ac57ce39ef2fc",
-  "src/redact.ts": "78394b5cf92d787e92037ed9e6c44df323b8ed48",
-  "src/capability/command-parser.ts": "520f02c8d55e6d0ffc7dcff3ae862b80acd3af5e",
-  "src/capability/bash-analyzer.ts": "f11abc52f29f44452c340a66e9e8fe39f5ebc515",
-  "src/shell-lexer.ts": "5865d1917b6e61dd2da671611254e93c8de677ca",
-  "src/capability/heredoc-extractor.ts": "81995fef64dde83f9a9b45c8aca2fa11518d64b6",
+  "src/core/review-engine.ts": "e17f72c6775191d8c20fb0d8b24bbf339272dc23",
+  "src/emergency-brake.ts": "f583b97b7d917b785c39ab208faa80b45fb6b6e8",
+  "src/redact.ts": "e93e4d379b64866de9848a8a5a9b5d7b1e4a8f3e",
+  "src/capability/command-parser.ts": "926def261a0f1af1eec4a5991a89eb24da32af59",
+  "src/capability/bash-analyzer.ts": "dcf60b95b18ffe3a0256a01075bd34634265bfec",
+  "src/shell-lexer.ts": "eaf40e0f9a66f82e61ff4c38532c103c37f82759",
+  "src/capability/heredoc-extractor.ts": "de3c1bb00f5d7e430c86845455ce6de6b1c94f6c",
   "src/system-one/review.ts": "5ab2c36e4dd19634b9de7a02ffeb9937414112e2",
 }
 const gitBlob = (bytes) =>

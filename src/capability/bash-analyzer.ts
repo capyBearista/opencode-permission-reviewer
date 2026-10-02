@@ -1,5 +1,5 @@
 import { homedir } from "node:os"
-import { normalize, resolve } from "node:path"
+import { normalize, resolve, sep } from "node:path"
 import type {
   CapabilityActionClass,
   CapabilityAssessment,
@@ -43,6 +43,7 @@ const INTERPRETERS = new Set([
   "nodejs",
   "bun",
   "deno",
+  "tsx",
   "ruby",
   "rb",
   "perl",
@@ -177,6 +178,99 @@ const FILE_WRITE_TOOLS = new Set(["tee", "dd", "install", "truncate", "shred"])
 
 const FILE_MUTATION_TOOLS = new Set(["cp", "mv", "rename", "ln", "link", "symlink", "rsync"])
 
+/** Options of the mutation tools that consume a separate value token, so the
+ *  value is never mistaken for a source or destination operand. The lists
+ *  cover structural options (destination and suffix selection). Options
+ *  with optional values require an attached value and must not consume the
+ *  following operand. */
+const MUTATION_VALUE_OPTIONS: Record<string, Set<string>> = {
+  cp: new Set(["-t", "--target-directory", "-S", "--suffix"]),
+  mv: new Set(["-t", "--target-directory", "-S", "--suffix"]),
+  ln: new Set(["-t", "--target-directory", "-S", "--suffix"]),
+  rsync: new Set([
+    "--backup-dir",
+    "-e",
+    "--rsh",
+    "--rsync-path",
+    "--exclude-from",
+    "--include-from",
+    "--files-from",
+    "--suffix",
+    "--password-file",
+    "--log-file",
+    "--out-format",
+  ]),
+}
+
+/** A remote operand for rsync-style tools: a URL scheme, or an `host:path`
+ *  / `user@host:path` shape whose part before the colon is a bare host (no
+ *  slash), which is exactly how rsync decides local-with-colon vs remote. */
+function isRemoteMutationOperand(value: string): boolean {
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(value)) return true
+  const colon = value.indexOf(":")
+  return colon > 0 && !value.slice(0, colon).includes("/")
+}
+
+/** Split a cp/mv/ln/rsync invocation into read sources and write
+ *  destinations. The last positional operand is the destination (cp/mv/rsync
+ *  destination, ln link name); `--target-directory`/`-t` names an additional
+ *  destination directory everything lands under. Paths after `--` are
+ *  operands like any other. */
+function mutationOperands(
+  base: string,
+  cmd: ReadonlyArray<{ value: string }>,
+): { sources: string[]; destinations: string[]; sawOperand: boolean } {
+  const valueOpts = MUTATION_VALUE_OPTIONS[base] ?? new Set<string>()
+  const operands: string[] = []
+  let targetDirectory: string | undefined
+  let endOfOptions = false
+  for (let i = 1; i < cmd.length; i += 1) {
+    const v = cmd[i]!.value
+    if (!endOfOptions && v === "--") {
+      endOfOptions = true
+      continue
+    }
+    if (!endOfOptions && v.startsWith("--")) {
+      if (valueOpts.has(v)) {
+        if (v === "--target-directory") targetDirectory = cmd[i + 1]?.value
+        i += 1
+      } else if (valueOpts.has("--target-directory") && v.startsWith("--target-directory=")) {
+        targetDirectory = v.slice("--target-directory=".length)
+      }
+      continue
+    }
+    if (!endOfOptions && v.startsWith("-") && v.length > 1) {
+      for (let position = 1; position < v.length; position += 1) {
+        const option = `-${v[position]!}`
+        if (!valueOpts.has(option)) continue
+        const attached = v.slice(position + 1)
+        const value = attached || cmd[++i]?.value
+        if (option === "-t") targetDirectory = value
+        break
+      }
+      continue
+    }
+    operands.push(v)
+  }
+  if (targetDirectory !== undefined) {
+    // `-t DIR` redirects every SOURCE argument into DIR: with it, no operand
+    // is itself a destination.
+    return { sources: operands, destinations: [targetDirectory], sawOperand: operands.length > 0 }
+  }
+  if (base === "rename") {
+    // rename rewrites each named file, rather than copying to the last
+    // operand. Keep every operand as a possible mutation across dialects.
+    return { sources: [], destinations: operands, sawOperand: operands.length > 0 }
+  }
+  if (base === "ln" && operands.length === 1) {
+    return { sources: operands, destinations: ["."], sawOperand: true }
+  }
+  const destinations: string[] = []
+  if (operands.length > 0) destinations.push(operands[operands.length - 1]!)
+  const sources = operands.length > 1 ? operands.slice(0, -1) : []
+  return { sources, destinations, sawOperand: operands.length > 0 }
+}
+
 /** Executables with no observable side effects on the local filesystem when
  *  invoked with plain arguments. An executable NOT in this set (and in none of
  *  the effect families above) is classified "unknown", not read-only: the
@@ -293,26 +387,46 @@ const NO_EFFECT_BUILTINS = new Set([
 const DELETION_TOOLS = new Set(["rm", "rmdir", "unlink", "shred", "truncate"])
 
 const GIT_MUTATION_SUBCOMMANDS = new Set([
-  "push",
-  "commit",
-  "reset",
-  "rebase",
-  "merge",
-  "cherry-pick",
-  "revert",
-  "rm",
-  "clean",
-  "stash",
-  "checkout",
-  "restore",
-  "switch",
-  "init",
-  "gc",
-  "prune",
+  "add",
   "am",
   "apply",
+  "bisect",
+  "branch",
+  "checkout",
+  "cherry-pick",
+  "clean",
+  "clone",
+  "commit",
+  "config",
+  "fetch",
   "filter-branch",
+  "gc",
+  "init",
+  "maintenance",
+  "merge",
+  "mv",
+  "notes",
+  "prune",
+  "pull",
+  "push",
+  "rebase",
+  "remote",
+  "repack",
+  "replace",
+  "reset",
+  "restore",
+  "revert",
+  "rm",
+  "stash",
+  "submodule",
+  "switch",
+  "symbolic-ref",
+  "tag",
+  "update-ref",
+  "worktree",
 ])
+
+const GIT_NETWORK_SUBCOMMANDS = new Set(["clone", "fetch", "ls-remote", "pull", "push"])
 
 const PRIVILEGE_WRAPPERS = new Set([
   "sudo",
@@ -384,8 +498,26 @@ const directoryFallback = "."
 
 function readOnlyToolMutation(cmd: ShellToken[], base: string): ReadOnlyToolMutation | undefined {
   if (base === "find") {
-    // Leading non-flag operands are the search roots (what -delete destroys).
+    // GNU find accepts traversal options before its search roots. In
+    // particular, `-D` consumes a separate diagnostics value; treating that
+    // value as the root would hide a later `/ -delete`.
     let index = 1
+    while (index < cmd.length) {
+      const value = cmd[index]!.value
+      if (value === "--") {
+        index += 1
+        break
+      }
+      if (value === "-D") {
+        index += 2
+        continue
+      }
+      if (value === "-H" || value === "-L" || value === "-P" || /^-O\d+$/.test(value)) {
+        index += 1
+        continue
+      }
+      break
+    }
     const roots: string[] = []
     while (
       index < cmd.length &&
@@ -423,6 +555,8 @@ function readOnlyToolMutation(cmd: ShellToken[], base: string): ReadOnlyToolMuta
         if (target !== undefined && !target.startsWith("-")) result.writeTargets.push(target)
       } else if (value.startsWith("--output=")) {
         result.writeTargets.push(value.slice("--output=".length))
+      } else if (value.startsWith("-o") && value.length > 2) {
+        result.writeTargets.push(value.slice(2))
       }
     }
     return result.writeTargets.length > 0 ? result : undefined
@@ -484,7 +618,20 @@ function hasInlineCodeOption(tokens: ShellToken[]): { interpreter: string; inlin
 
 /** Whether any redirection in a segment writes to a file. */
 function hasWriteRedirect(redirections: Redirection[]): boolean {
-  return redirections.some((r) => r.operator === ">" || r.operator === ">>" || r.operator === "&>")
+  return redirections.some(redirectionWritesPath)
+}
+
+function redirectionWritesPath(redirection: Redirection): boolean {
+  const operator = redirection.operator.replace(/^\d+/, "")
+  if ([">", ">>", ">|", "&>", "&>>", "<>"].includes(operator)) return true
+  // Without an explicit IO number, `>&file` is the historical spelling of
+  // redirecting stdout and stderr to a file. `2>&1` only duplicates an FD.
+  return (
+    operator === ">&" &&
+    !/^\d/.test(redirection.operator) &&
+    redirection.target !== "-" &&
+    !/^\d+$/.test(redirection.target)
+  )
 }
 
 /** Classify a path target as temporary, workspace, or external. Relative
@@ -503,7 +650,6 @@ function classifyPath(
     return { temporary: false, workspace: false, external: false }
   let temp = false
   let external = false
-  let workspace = false
   let absolute: string
   if (target === "~" || target.startsWith("~/")) {
     absolute = resolve(homedir(), target.slice(target === "~" ? 1 : 2))
@@ -512,26 +658,25 @@ function classifyPath(
   } else {
     absolute = normalize(target)
   }
-  if (
+  const absolutePath = absolute.startsWith("/") || /^[A-Za-z]:[\\/]/.test(absolute)
+  const within = (root: string) => {
+    const normalizedRoot = normalize(root)
+    return absolute === normalizedRoot || absolute.startsWith(`${normalizedRoot}${sep}`)
+  }
+  if (!absolutePath) {
+    // A path that still has no absolute form cannot be classified.
+    return { temporary: temp, workspace: false, external }
+  }
+  const workspace = within(directory) || within(worktree)
+  temp =
+    absolute === "/tmp" ||
     absolute.startsWith("/tmp/") ||
+    absolute === "/var/tmp" ||
     absolute.startsWith("/var/tmp/") ||
+    absolute === "/dev/shm" ||
     absolute.startsWith("/dev/shm/") ||
     absolute === "/dev/null"
-  ) {
-    temp = true
-  } else if (absolute.startsWith("/") || /^[A-Za-z]:[\\/]/.test(absolute)) {
-    // Absolute path outside the known temp roots.
-    if (absolute === directory || absolute === worktree || absolute.startsWith(`${worktree}/`)) {
-      workspace = true
-    } else if (absolute.startsWith(`${directory}/`) || absolute === directory) {
-      workspace = true
-    } else {
-      external = true
-    }
-  } else {
-    // A path that still has no absolute form cannot be classified.
-    workspace = false
-  }
+  external = !workspace && !temp
   return { temporary: temp, workspace, external }
 }
 
@@ -549,7 +694,7 @@ function destinationFromTokens(tokens: ShellToken[]): string[] {
  *  (`-C <path>`, `-c <cfg>`, `--git-dir`, …) so `git -C /repo push` still
  *  detects the `push` mutation. Mirrors the flag-aware resolution used by the
  *  git evidence enrichment. */
-function gitSubcommandOf(cmd: ShellToken[]): { sub?: string } {
+function gitSubcommandOf(cmd: ShellToken[]): { sub?: string; index?: number } {
   let index = 1
   while (index < cmd.length) {
     const value = cmd[index]!.value
@@ -569,9 +714,104 @@ function gitSubcommandOf(cmd: ShellToken[]): { sub?: string } {
       index += 1
       continue
     }
-    return { sub: value }
+    return { sub: value, index }
   }
   return {}
+}
+
+/** Distinguish the common read-only forms of Git subcommands that also have
+ * mutation modes. Everything else in the mutation set stays conservative. */
+function gitSubcommandMutates(cmd: ShellToken[], sub: string, index: number): boolean {
+  if (!GIT_MUTATION_SUBCOMMANDS.has(sub)) return false
+  const args = cmd.slice(index + 1).map((token) => token.value)
+  const positional = args.filter((value) => value !== "--" && !value.startsWith("-"))
+  if (sub === "branch") {
+    if (args.length === 0) return false
+    if (
+      args.some((value) =>
+        [
+          "-a",
+          "--all",
+          "-r",
+          "--remotes",
+          "-l",
+          "--list",
+          "-v",
+          "-vv",
+          "--show-current",
+          "--contains",
+          "--no-contains",
+          "--merged",
+          "--no-merged",
+          "--points-at",
+          "--format",
+          "--sort",
+          "--column",
+        ].includes(value),
+      )
+    )
+      return false
+  }
+  if (sub === "tag") {
+    if (args.length === 0) return false
+    if (
+      args.some((value) =>
+        [
+          "-l",
+          "--list",
+          "--contains",
+          "--no-contains",
+          "--merged",
+          "--no-merged",
+          "--points-at",
+          "--format",
+          "--sort",
+          "--column",
+        ].includes(value),
+      )
+    )
+      return false
+  }
+  if (sub === "remote") {
+    return positional.length > 0 && !["show", "get-url"].includes(positional[0]!)
+  }
+  if (sub === "config") {
+    if (
+      args.some((value) =>
+        [
+          "--list",
+          "-l",
+          "--get",
+          "--get-all",
+          "--get-regexp",
+          "--get-urlmatch",
+          "--show-origin",
+          "--show-scope",
+          "get",
+          "get-all",
+          "get-regexp",
+          "get-urlmatch",
+          "list",
+        ].includes(value),
+      )
+    )
+      return false
+    return (
+      positional.length >= 2 || args.some((value) => /(?:add|set|unset|remove|rename)/.test(value))
+    )
+  }
+  if (sub === "worktree" && (positional.length === 0 || positional[0] === "list")) return false
+  if (sub === "notes" && (positional.length === 0 || ["list", "show"].includes(positional[0]!)))
+    return false
+  if (
+    sub === "submodule" &&
+    (positional.length === 0 || ["status", "summary"].includes(positional[0]!))
+  )
+    return false
+  if (sub === "symbolic-ref") {
+    return args.includes("--delete") || positional.length >= 2
+  }
+  return true
 }
 
 /** Whether a token value is a static literal path candidate. Dynamic values
@@ -602,6 +842,7 @@ export function analyzeCapability(
   let externalWrite = false
   let deletion = false
   let networkObserved = false
+  let networkPossible = false
   let childProcesses = false
   let persistence = false
   let privilegeEscalation = false
@@ -717,7 +958,7 @@ export function analyzeCapability(
     // Executable detection.
     if (INTERPRETERS.has(base)) {
       executesCode = true
-      if (base === "bun" || base === "node" || base === "python" || base === "python3") {
+      if (["bun", "node", "python", "python3", "deno", "tsx"].includes(base)) {
         childProcesses = true
       }
       const { inline } = hasInlineCodeOption(cmd)
@@ -754,7 +995,14 @@ export function analyzeCapability(
       if (subs === undefined || sub === undefined || subs.has(sub)) {
         invokesPackageLifecycle = true
         childProcesses = true
-        networkObserved = true
+        networkPossible = true
+        if (["run", "exec"].includes(sub ?? "")) {
+          executesCode = true
+          if (sub === "run") executesRepositoryCode = true
+        }
+        // A local manifest script or installed executable can use the network,
+        // but its invocation is not evidence of an actual network operation.
+        if (!["run", "exec"].includes(sub ?? "")) networkObserved = true
       }
     }
     if (NETWORK_CLIENTS.has(base)) {
@@ -774,36 +1022,52 @@ export function analyzeCapability(
       classConfidence = "high"
     }
     if (FILE_WRITE_TOOLS.has(base)) {
-      for (const r of extractRedirectsFor(cmd)) {
-        const cls = classifyPath(r.target, directory, worktree)
-        if (cls.temporary) temporaryWrite = true
-        if (cls.workspace) workspaceWrite = true
-        if (cls.external) externalWrite = true
-      }
-      // tee/dd also write via arguments.
-      for (let i = 1; i < cmd.length; i += 1) {
-        const cls = classifyPath(cmd[i]!.value, directory, worktree)
+      // dd names its output as `of=PATH`; treating the whole assignment as a
+      // relative path hides absolute destinations. Other members name output
+      // files as ordinary operands.
+      const outputOperands =
+        base === "dd"
+          ? cmd
+              .slice(1)
+              .map((token) => token.value)
+              .filter((value) => value.startsWith("of="))
+              .map((value) => value.slice(3))
+          : cmd.slice(1).map((token) => token.value)
+      for (const output of outputOperands) {
+        const cls = classifyPath(output, directory, worktree)
         if (cls.temporary) temporaryWrite = true
         if (cls.workspace) workspaceWrite = true
         if (cls.external) externalWrite = true
       }
     }
     if (FILE_MUTATION_TOOLS.has(base)) {
-      // cp/mv/ln/rsync move or link content: classify every operand so an
-      // external destination (`mv file /etc/config`) is reported as an
-      // external write instead of a blanket workspace write.
-      let anyOperand = false
-      for (let i = 1; i < cmd.length; i += 1) {
-        const v = cmd[i]!.value
-        if (v.startsWith("-")) continue
-        if (/^[a-z][a-z0-9+.-]*:\/\//.test(v)) continue
-        anyOperand = true
-        const cls = classifyPath(v, directory, worktree)
+      // cp/mv/ln/rsync: only the DESTINATIONS are writes. Sources of cp and
+      // ln are plain reads (`cp /etc/hosts ./hosts` must not report an
+      // external write for its source); mv also changes where each source
+      // lives, so mv sources count as mutations of their origin location.
+      // Remote destinations (`user@host:/srv/app`, rsync://…) are external
+      // writes on another machine, whatever a relative-looking local
+      // classification would say.
+      const { sources, destinations, sawOperand } = mutationOperands(base, cmd)
+      const optionEnd = cmd.findIndex((token) => token.value === "--")
+      const mutatesSources =
+        base === "mv" ||
+        (base === "rsync" &&
+          cmd
+            .slice(1, optionEnd < 0 ? cmd.length : optionEnd)
+            .some((token) => token.value === "--remove-source-files"))
+      const writeOperands = mutatesSources ? [...destinations, ...sources] : destinations
+      for (const operand of writeOperands) {
+        if (base === "rsync" && isRemoteMutationOperand(operand)) {
+          externalWrite = true
+          continue
+        }
+        const cls = classifyPath(operand, directory, worktree)
         if (cls.temporary) temporaryWrite = true
         if (cls.workspace) workspaceWrite = true
         if (cls.external) externalWrite = true
       }
-      if (!anyOperand) workspaceWrite = true
+      if (!sawOperand) workspaceWrite = true
     }
     if (DELETION_TOOLS.has(base)) {
       deletion = true
@@ -821,13 +1085,17 @@ export function analyzeCapability(
     }
     if (base === "git") {
       gitObserved = true
-      const { sub } = gitSubcommandOf(cmd)
-      if (sub !== undefined && GIT_MUTATION_SUBCOMMANDS.has(sub)) {
+      const { sub, index } = gitSubcommandOf(cmd)
+      if (sub !== undefined && GIT_NETWORK_SUBCOMMANDS.has(sub)) {
+        networkObserved = true
+      }
+      if (sub !== undefined && index !== undefined && gitSubcommandMutates(cmd, sub, index)) {
         gitMutation = true
         if (sub === "push") externalWrite = true
-        if (sub === "commit" || sub === "reset" || sub === "merge" || sub === "rebase") {
-          workspaceWrite = true
-        }
+        else workspaceWrite = true
+      } else if (sub !== undefined && GIT_NETWORK_SUBCOMMANDS.has(sub)) {
+        dominantClass = "network"
+        classConfidence = "high"
       }
     }
     if (PRIVILEGE_WRAPPERS.has(base)) {
@@ -888,7 +1156,7 @@ export function analyzeCapability(
   for (const segRedirects of parsed.redirections) {
     if (hasWriteRedirect(segRedirects)) {
       for (const r of segRedirects) {
-        if (r.operator !== ">" && r.operator !== ">>" && r.operator !== "&>") continue
+        if (!redirectionWritesPath(r)) continue
         const cls = classifyPath(r.target, directory, worktree)
         if (cls.temporary) temporaryWrite = true
         if (cls.workspace) workspaceWrite = true
@@ -930,12 +1198,12 @@ export function analyzeCapability(
     } else if (privilegeEscalation) {
       dominantClass = "privilege-escalation"
       classConfidence = "high"
-    } else if (temporaryWrite) {
-      dominantClass = "temporary-write"
-      classConfidence = "high"
     } else if (workspaceWrite) {
       dominantClass = "workspace-write"
       classConfidence = "medium"
+    } else if (temporaryWrite) {
+      dominantClass = "temporary-write"
+      classConfidence = "high"
     } else if (sawUnknownExecutable) {
       // An unrecognized executable is present: report unknown rather than
       // read-only. Absence of detected effects is not evidence of absence.
@@ -956,12 +1224,24 @@ export function analyzeCapability(
   if (parsed.heredocs.length > 0 && parsed.heredocs.some((h) => h.dynamic)) {
     warnings.push("one or more heredoc bodies have unresolvable expansion")
   }
+  // An unterminated or over-bound heredoc body means the scan never saw the
+  // terminator: what follows cannot be proven to be commands rather than body
+  // text, so the analysis cannot claim completeness.
+  const heredocTruncated = parsed.heredocs.some((h) => h.truncated)
+  if (parsed.heredocs.length > 0 && heredocTruncated) {
+    warnings.push("one or more heredoc bodies were truncated or never terminated")
+  }
+  if (parsed.analysisTruncated) {
+    warnings.push("command structure exceeded the static analysis depth or expansion budget")
+  }
 
   const parserCompleteness = parsed.hasDynamicConstructs
     ? hasCommandSubstitution(parsed.sanitizedCommand) || parsed.heredocs.some((h) => h.dynamic)
       ? "opaque"
       : "partial"
-    : "complete-for-supported-form"
+    : parsed.analysisTruncated || heredocTruncated
+      ? "partial"
+      : "complete-for-supported-form"
 
   const summaryParts: string[] = [dominantClass]
   if (createsAdHocCode) summaryParts.push("ad-hoc code")
@@ -993,10 +1273,10 @@ export function analyzeCapability(
     },
     network: {
       observed: staticFact(networkObserved ? true : "unknown"),
-      possible: heuristicFact(networkObserved ? true : "unknown"),
+      possible: heuristicFact(networkObserved || networkPossible ? true : "unknown"),
       destinations,
       observedAccess: staticFact(networkObserved ? true : "unknown"),
-      possibleAccess: heuristicFact("unknown"),
+      possibleAccess: heuristicFact(networkObserved || networkPossible ? true : "unknown"),
     },
     process: {
       childProcesses: staticFact(childProcesses ? true : "unknown"),
@@ -1016,25 +1296,4 @@ export function analyzeCapability(
     parserCompleteness,
     analysisWarnings: warnings,
   }
-}
-
-/** Recover the redirections attached to a specific effective command. */
-function extractRedirectsFor(cmd: ShellToken[]): Redirection[] {
-  // Recompute from the token list directly (the parser stores redirections per
-  // effective-command index, which we avoid coupling to here).
-  const out: Redirection[] = []
-  for (let i = 0; i < cmd.length; i += 1) {
-    const tok = cmd[i]!
-    const value = tok.value
-    const combined = /^([0-9]?>>?)\s*(.+)$/.exec(value)
-    if (combined) {
-      out.push({ operator: combined[1]!, target: combined[2]!, quoted: false })
-      continue
-    }
-    if (value.startsWith(">") || value.startsWith("<")) {
-      const op = value.startsWith(">>") ? ">>" : value[0]!
-      out.push({ operator: op, target: value.slice(op === ">>" ? 2 : 1), quoted: false })
-    }
-  }
-  return out
 }

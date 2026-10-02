@@ -232,10 +232,13 @@ async function fetchMessagesBounded(
   sessionID: string,
   directory: string,
   limit: number,
+  intentOnly = false,
 ): Promise<MessageWithParts[]> {
   try {
     const response = await withTimeout(
-      client.messages(sessionID, directory, limit),
+      intentOnly && client.intentMessages
+        ? client.intentMessages(sessionID, directory, limit)
+        : client.messages(sessionID, directory, limit),
       METADATA_TIMEOUT_MS,
     )
     return normalizeFetched(response)
@@ -405,13 +408,16 @@ async function resolveIntent(
   // itself a top-level session (no grandparent).
   const parent = lineage.nodes[1]
   if (parent) {
-    const parentMessages = await fetchMessagesBounded(client, parent.sessionID, directory, limit)
+    const [parentMessages, parentIntent] = await Promise.all([
+      fetchMessagesBounded(client, parent.sessionID, directory, limit),
+      fetchMessagesBounded(client, parent.sessionID, directory, limit, true),
+    ])
     delegatedTask.push(
       ...extractDelegatedTasks(parentMessages, parent.sessionID, request.sessionID),
     )
     directUserIntent.push(
       ...extractSessionUserBlocks(
-        parentMessages,
+        parentIntent,
         parent.sessionID,
         parent.parentID !== undefined,
       ).filter((block) => block.actor === "user"),
@@ -422,7 +428,7 @@ async function resolveIntent(
   // messages we already hold): authoritative user intent.
   const root = lineage.nodes[lineage.nodes.length - 1]
   if (root && root !== parent && root.sessionID !== request.sessionID) {
-    const rootMessages = await fetchMessagesBounded(client, root.sessionID, directory, limit)
+    const rootMessages = await fetchMessagesBounded(client, root.sessionID, directory, limit, true)
     directUserIntent.push(
       ...extractSessionUserBlocks(rootMessages, root.sessionID, root.parentID !== undefined).filter(
         (block) => block.actor === "user",
@@ -596,12 +602,13 @@ export async function resolveActorContext(
   client: OpenCodeClientLike | ContextReader,
   directory: string,
   config: ReviewerConfig,
+  intentMessages = messages,
 ): Promise<ActorResolution> {
   try {
     const reader = "messages" in client ? client : createV1ContextReader(client)
     const current = resolveCurrentActor(request, messages)
     const lineage = await walkLineage(reader, request.sessionID, directory, config)
-    const intent = await resolveIntent(request, messages, lineage, reader, directory, config)
+    const intent = await resolveIntent(request, intentMessages, lineage, reader, directory, config)
     const actor = assembleActorContext(request, current, lineage, config)
     const completeness = assessCompleteness(actor, lineage, intent)
     return { actor, lineage, intent, completeness }

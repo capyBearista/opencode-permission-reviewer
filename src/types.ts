@@ -591,8 +591,7 @@ export interface HeredocRecord {
 }
 
 /** A command parsed into a reusable structure. Wraps the existing lexer output
- *  plus pre-extracted redirections and heredocs; the emergency brake keeps using
- *  the raw lexer functions unchanged. */
+ *  plus pre-extracted redirections and heredocs. */
 export interface ParsedCommand {
   /** The command after heredoc bodies were replaced with placeholders. */
   sanitizedCommand: string
@@ -606,6 +605,10 @@ export interface ParsedCommand {
   heredocs: HeredocRecord[]
   /** Whether the original command contained any dynamic constructs. */
   hasDynamicConstructs: boolean
+  /** True when the lexer's depth or expansion budget stopped command-string
+   *  resolution early; `effective` is then a prefix of the real structure and
+   *  deterministic facts do not cover the whole command. */
+  analysisTruncated: boolean
 }
 
 /** High-level classification of what the action does. */

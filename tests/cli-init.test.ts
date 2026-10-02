@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { applyPlannedWrites, planFileChange, writeBackup, writeEntry } from "../src/cli/init.ts"
@@ -305,6 +305,19 @@ describe("cli init apply guards", () => {
     expect(actual).not.toBe(preferred)
     expect(readFileSync(actual, "utf8")).toBe('{"plugin":["other@1.0.0"]}')
     expect(readFileSync(preferred, "utf8")).toBe("unrelated backup")
+  })
+
+  test("refuses symlinked configs and backups without touching their target", () => {
+    const directory = freshDir()
+    const target = join(directory, "target.json")
+    const linked = join(directory, "opencode.json")
+    const original = '{"plugin":["other@1.0.0"]}'
+    writeFileSync(target, original)
+    symlinkSync(target, linked)
+    expect(planFileChange(linked, pkg).action).toBe("error")
+    expect(() => writeEntry(linked, entry, false)).toThrow()
+    expect(() => writeBackup(linked, join(directory, "backup"))).toThrow()
+    expect(readFileSync(target, "utf8")).toBe(original)
   })
 })
 

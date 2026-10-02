@@ -268,9 +268,11 @@ for line in sys.stdin:
             "capabilities": {"tools": True, "input": ["text"], "output": ["text"]},
             "limit": {"context": 32000, "output": 1000}}},
     }}, "mcp": {"servers": {"fixture": {"type": "local", "command": [sys.executable, str(mcp), str(starts)]}}}}
+    # Reviews must settle within the reviewer budget even on loaded runners;
+    # the property under test is reviewer location reuse, not review latency.
     host = launch_host("v2", binary, {"plugins": [package]},
-                       reviewer={"model": "fixture/reviewer", "timeoutMs": 5000,
-                                 "reviewBudgetMs": 15000, "retainReviewSessions": True},
+                       reviewer={"model": "fixture/reviewer", "timeoutMs": 15000,
+                                 "reviewBudgetMs": 30000, "retainReviewSessions": True},
                        global_config=provider)
     activate_host(host, "v2")
 
@@ -347,6 +349,10 @@ for line in sys.stdin:
             data=b"", headers=host["headers"], method="POST")
         with urllib.request.urlopen(reload_request, timeout=30) as response:
             assert response.status == 204
+        # The host rebuilds locations after a reload without awaiting plugin
+        # activation; a permission evaluated in that window has no hooks and
+        # would stay pending. Wait for the plugin to be active again.
+        activate_host(host, "v2")
         assert mcp_servers(reviewer_directory) == []
         reloaded_session = review(7)
         deadline = time.monotonic() + 10

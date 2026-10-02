@@ -6,6 +6,7 @@ import type {
   IntentBlock,
   MessageWithParts,
   PermissionRequest,
+  PermissionToolSource,
   PolicyTrace,
   Provenanced,
   ReviewEnvelope,
@@ -20,7 +21,8 @@ function truncate(value: string, max: number): string {
   const redacted = redactSecrets(value)
   if (redacted.length <= max) return redacted
   const omitted = redacted.length - max
-  return `${redacted.slice(0, max)}\n<truncated characters="${omitted}" />`
+  const marker = `\n<truncated characters="${omitted}" />`
+  return `${redacted.slice(0, Math.max(0, max - marker.length))}${marker.slice(0, max)}`
 }
 
 /** Tail-preserving truncation for recency-sensitive content: when a budget cut
@@ -30,7 +32,9 @@ function truncateKeepEnd(value: string, max: number): string {
   const redacted = redactSecrets(value)
   if (redacted.length <= max) return redacted
   const omitted = redacted.length - max
-  return `<truncated characters="${omitted}" />\n${redacted.slice(-max)}`
+  const marker = `<truncated characters="${omitted}" />\n`
+  const available = Math.max(0, max - marker.length)
+  return `${marker.slice(0, max)}${available === 0 ? "" : redacted.slice(-available)}`
 }
 
 /** Elide the middle of an over-long command, keeping head and tail: the head
@@ -101,16 +105,37 @@ function messageSummary(message: MessageWithParts, maxPartChars: number): string
   return `MESSAGE role=${role} id=${id}\n${parts.join("\n")}`
 }
 
-export function buildTranscript(messages: MessageWithParts[], config: ReviewerConfig): string {
+export function buildTranscript(
+  messages: MessageWithParts[],
+  config: ReviewerConfig,
+  options?: { omitUserMessages?: boolean; pendingTool?: PermissionToolSource },
+): string {
   const selected = messages.slice(-config.transcriptMessages)
   // Budget from the newest message backwards so the recency-sensitive tail of
   // the conversation always survives a cut; the oldest messages of the window
   // are dropped first.
   const kept: string[] = []
+  const seen = new Set<string>()
   let remaining = config.maxContextChars
   for (let index = selected.length - 1; index >= 0; index -= 1) {
-    const summary = messageSummary(selected[index]!, config.maxPartChars)
+    const message = selected[index]!
+    const parts = message.parts.filter(
+      (part) =>
+        part.type !== "reasoning" &&
+        !(options?.omitUserMessages && message.info.role === "user" && part.type === "text") &&
+        !(
+          part.type === "tool" &&
+          part.callID === options?.pendingTool?.callID &&
+          message.info.id === options?.pendingTool?.messageID
+        ),
+    )
+    const summary = messageSummary({ ...message, parts }, config.maxPartChars)
     if (!summary) continue
+    const fingerprint = summary
+      .replace(/^MESSAGE[^\n]*\n/, "")
+      .replace(/"callID": "[^"]*"/g, '"callID": "<identity>"')
+    if (message.info.role !== "user" && seen.has(fingerprint)) continue
+    seen.add(fingerprint)
     const separator = kept.length === 0 ? 0 : 2
     if (remaining <= separator) break
     const bounded = truncateKeepEnd(summary, remaining - separator)
@@ -135,6 +160,28 @@ function isSyntheticPart(part: Record<string, unknown>): boolean {
   if (part.type !== "text" || typeof part.text !== "string") return false
   if (part.synthetic === true || part.ignored === true) return true
   return isSyntheticControlMessage(part.text)
+}
+
+/** Keep the newest occurrence of literal user text, preserving chronological order. */
+export function selectIntentMessages(
+  messages: MessageWithParts[],
+  limit: number,
+): MessageWithParts[] {
+  const seen = new Set<string>()
+  const selected: MessageWithParts[] = []
+  for (const message of [...messages].reverse()) {
+    if (message.info.role !== "user" || message.info.synthetic === true) continue
+    const text = message.parts
+      .filter((part) => part.type === "text" && !isSyntheticPart(part))
+      .map((part) => (typeof part.text === "string" ? part.text.trim() : ""))
+      .filter(Boolean)
+      .join("\n")
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    selected.push(message)
+    if (selected.length >= limit) break
+  }
+  return selected.reverse()
 }
 
 function userIntentSummary(message: MessageWithParts, config: ReviewerConfig): string | undefined {
@@ -164,7 +211,10 @@ function keepMostRecentBlocks(blocks: string[], maxChars: number): string {
     const block = blocks[index]!
     const separator = selected.length === 0 ? 0 : 2
     if (remaining <= separator) break
-    const bounded = truncate(block, remaining - separator)
+    const budget = remaining - separator
+    const redacted = redactSecrets(block)
+    const bounded = redacted.length <= budget ? redacted : elideMiddle(redacted, budget)
+    if (bounded.length > budget) break
     selected.push(bounded)
     remaining -= bounded.length + separator
   }
@@ -183,7 +233,7 @@ export function buildIntentHistory(
 ): string {
   if (options?.delegatedSession === true) return ""
   const seen = new Set<string>()
-  const summaries = messages.flatMap((message) => {
+  const summaries = selectIntentMessages(messages, config.intentMessages).flatMap((message) => {
     const summary = userIntentSummary(message, config)
     if (!summary) return []
     const fingerprint = summary.replace(/^USER_INTENT[^\n]*\n/, "")
@@ -202,10 +252,25 @@ function boundedPendingMetadata(
   max: number,
 ): { metadata: Record<string, unknown>; elided: boolean } {
   const command = metadata.command
-  if (typeof command !== "string" || command.length <= max) {
+  if (typeof command !== "string") {
     return { metadata, elided: false }
   }
-  return { metadata: { ...metadata, command: elideMiddle(command, max) }, elided: true }
+  const compact = { ...metadata }
+  const input = metadata.toolInput
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    !Array.isArray(input) &&
+    (input as Record<string, unknown>).command === command
+  ) {
+    const rest = { ...(input as Record<string, unknown>) }
+    delete rest.command
+    compact.toolInput = rest
+  }
+  return {
+    metadata: { ...compact, command: elideMiddle(command, max) },
+    elided: command.length > max,
+  }
 }
 
 /** Render the PENDING_PERMISSION section and report whether the action under
@@ -221,7 +286,11 @@ export function pendingPermissionSection(
   const text = stableJson(
     {
       permission: request.permission,
-      patterns: request.patterns,
+      patterns: request.patterns.map((pattern) =>
+        typeof request.metadata.command === "string" && pattern === request.metadata.command
+          ? "<same as metadata.command>"
+          : pattern,
+      ),
       metadata,
       tool: request.tool,
     },
@@ -244,6 +313,7 @@ export function buildEvidenceResult(
   // for the reviewer (the transcript remains the fallback source).
   const askDecisions = renderAskDecisions(envelope.askDecisions)
   const pending = pendingPermissionSection(request, config)
+  const canonicalIntent = envelope.intent !== undefined && envelope.lineage !== undefined
   const evidence = [
     `PENDING_PERMISSION\n${pending.text}`,
     ...(envelope.verifiedScript === undefined ? [] : [envelope.verifiedScript.text]),
@@ -252,13 +322,13 @@ export function buildEvidenceResult(
     `WORKTREE\n${envelope.worktree}`,
     // Reserve the leading budget for the exact action before contextual sections.
     ...actorEvidenceSections(envelope, config),
-    renderActionPurpose(envelope.actionPurpose, config.maxPartChars * 2),
+    renderActionPurpose(envelope.actionPurpose, config.maxPartChars * 2, canonicalIntent),
     envelope.enrichment || "ACTION_ENRICHMENT\n<none />",
     `REPOSITORY_CONTEXT\n${stableJson(
       { trust: config.repositoryTrust, directory: envelope.directory, worktree: envelope.worktree },
       config.maxPartChars * 2,
     )}`,
-    `USER_INTENT_HISTORY\n${envelope.intentHistory || "<no user intent history available />"}`,
+    `USER_INTENT_HISTORY\n${canonicalIntent ? "<see DIRECT_USER_INTENT />" : envelope.intentHistory || "<no user intent history available />"}`,
     ...(askDecisions === undefined ? [] : [`USER_ASK_DECISIONS\n${askDecisions}`]),
     `RECENT_TRANSCRIPT\n${envelope.transcript || "<no transcript available />"}`,
   ].join("\n\n")
@@ -280,7 +350,11 @@ export function buildEvidenceResult(
   }
 }
 
-function renderActionPurpose(purpose: ActionPurpose | undefined, max: number): string {
+function renderActionPurpose(
+  purpose: ActionPurpose | undefined,
+  max: number,
+  intentReference = false,
+): string {
   if (purpose === undefined) {
     return `ACTION_PURPOSE\n${stableJson({ source: "unavailable", confidence: "unknown" }, max)}`
   }
@@ -288,7 +362,14 @@ function renderActionPurpose(purpose: ActionPurpose | undefined, max: number): s
     {
       source: purpose.source,
       confidence: purpose.confidence,
-      ...(purpose.text === undefined ? {} : { text: purpose.text }),
+      ...(purpose.text === undefined
+        ? {}
+        : {
+            text:
+              intentReference && purpose.source === "intent-derived"
+                ? "<see literal intent sections>"
+                : purpose.text,
+          }),
     },
     max,
   )}`
@@ -367,14 +448,25 @@ function renderLineage(lineage: SessionLineage, max: number): string {
   )
 }
 
-function renderIntentBlocks(blocks: IntentBlock[], max: number): string {
+function renderIntentBlocks(blocks: IntentBlock[], max: number, limit = blocks.length): string {
   if (blocks.length === 0) return "<none />"
-  return stableJson(
-    blocks.map((b) => ({
-      actor: b.actor,
-      text: b.text,
-      ...(b.createdAt === undefined ? {} : { createdAt: b.createdAt }),
-    })),
+  const ordered = [...blocks].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+  const seen = new Set<string>()
+  const distinct = ordered
+    .reverse()
+    .filter((block) => {
+      const key = `${block.actor}:${block.text}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, limit)
+    .reverse()
+  return keepMostRecentBlocks(
+    distinct.map(
+      (block) =>
+        `INTENT actor=${block.actor} session=${block.sessionID} message=${block.messageID}${block.createdAt === undefined ? "" : ` created=${block.createdAt}`}\n${block.text}`,
+    ),
     max,
   )
 }
@@ -413,6 +505,7 @@ function renderCapability(cap: import("./types.ts").CapabilityAssessment, max: n
       },
       network: {
         observed: cap.network.observed.value,
+        possible: cap.network.possible.value,
         ...(cap.network.destinations.length === 0
           ? {}
           : { destinations: cap.network.destinations }),
@@ -445,9 +538,9 @@ export function actorEvidenceSections(envelope: ReviewEnvelope, config: Reviewer
   const sections = [
     `ACTOR_CONTEXT\n${renderActor(actor, cap)}`,
     `SESSION_LINEAGE\n${renderLineage(lineage, cap)}`,
-    `DIRECT_USER_INTENT\n${renderIntentBlocks(intent.directUserIntent, cap)}`,
+    `DIRECT_USER_INTENT\n${renderIntentBlocks(intent.directUserIntent, config.maxIntentChars, config.intentMessages)}`,
     `DELEGATED_TASK\n${renderIntentBlocks(intent.delegatedTask, cap)}`,
-    `LOCAL_SESSION_CONTEXT\n${renderIntentBlocks(intent.localSessionIntent, cap)}`,
+    `LOCAL_SESSION_CONTEXT\n${lineage.origin === "human-root" ? "<see DIRECT_USER_INTENT />" : renderIntentBlocks(intent.localSessionIntent, cap, config.intentMessages)}`,
   ]
   if (envelope.capability !== undefined) {
     sections.push(`CAPABILITY_ASSESSMENT\n${renderCapability(envelope.capability, cap)}`)

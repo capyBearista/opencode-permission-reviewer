@@ -12,13 +12,19 @@ import { createHash } from "node:crypto"
 import { satisfies } from "semver"
 import { applyEdits, modify } from "jsonc-parser"
 import {
+  closeSync,
   constants as fsConstants,
-  copyFileSync,
   existsSync,
+  fstatSync,
+  ftruncateSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   writeFileSync,
+  writeSync,
 } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -241,10 +247,22 @@ export function applyPlannedWrites(
  *  rotation name is used instead of overwriting the collision. Returns the
  *  backup path actually written. Exported for unit tests. */
 export function writeBackup(source: string, preferred: string): string {
+  let sourceFd: number | undefined
+  let data: Buffer
+  try {
+    sourceFd = openSync(
+      source,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    )
+    if (!fstatSync(sourceFd).isFile()) throw new Error(`Config is not a regular file: ${source}`)
+    data = readFileSync(sourceFd)
+  } finally {
+    if (sourceFd !== undefined) closeSync(sourceFd)
+  }
   let dest = preferred
   for (;;) {
     try {
-      copyFileSync(source, dest, fsConstants.COPYFILE_EXCL)
+      writeFileSync(dest, data, { flag: "wx", mode: 0o600 })
       return dest
     } catch (error) {
       if ((error as { code?: unknown }).code !== "EEXIST") throw error
@@ -350,7 +368,15 @@ function pickExisting(candidates: string[]): string | undefined {
 function parseConfigFile(path: string): Record<string, unknown> | null {
   try {
     const raw = readFileSync(path, "utf8")
-    if (raw.trim() === "") return {}
+    return parseConfigText(raw)
+  } catch {
+    return null
+  }
+}
+
+function parseConfigText(raw: string): Record<string, unknown> | null {
+  if (raw.trim() === "") return {}
+  try {
     const parsed: unknown = JSON.parse(stripCommentsAndTrailingCommas(raw))
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null
     return parsed as Record<string, unknown>
@@ -399,6 +425,12 @@ export function planFileChange(
 ): FilePlan {
   if (!existsSync(path)) {
     return { path, action: "create" }
+  }
+  try {
+    const info = lstatSync(path)
+    if (info.isSymbolicLink() || !info.isFile()) return { path, action: "error" }
+  } catch {
+    return { path, action: "error" }
   }
   const cfg = parseConfigFile(path)
   if (cfg === null) {
@@ -466,22 +498,41 @@ export function writeEntry(
     writeFileSync(path, `${JSON.stringify(fresh, null, 2)}\n`, { encoding: "utf8", flag: "wx" })
     return
   }
-  const raw = readFileSync(path, "utf8")
-  if (fingerprint !== undefined && createHash("sha256").update(raw).digest("hex") !== fingerprint) {
-    throw new Error("Config changed after planning; refusing to overwrite")
+  let fd: number | undefined
+  try {
+    // Hold one no-follow descriptor from validation through the write. A config
+    // swapped for a symlink between those steps can no longer redirect the CLI
+    // into overwriting another file.
+    fd = openSync(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK)
+    if (!fstatSync(fd).isFile()) throw new Error("Config is not a regular file")
+    const raw = readFileSync(fd, "utf8")
+    if (
+      fingerprint !== undefined &&
+      createHash("sha256").update(raw).digest("hex") !== fingerprint
+    ) {
+      throw new Error("Config changed after planning; refusing to overwrite")
+    }
+    const cfg = parseConfigText(raw)
+    if (!cfg || (cfg[key] !== undefined && !Array.isArray(cfg[key])))
+      throw new Error("Invalid plugin config")
+    const edits = modify(
+      raw.trim() ? raw : "{}",
+      cfg[key] === undefined ? [key] : [key, -1],
+      cfg[key] === undefined ? [entry] : entry,
+      {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+      },
+    )
+    const data = Buffer.from(applyEdits(raw.trim() ? raw : "{}", edits), "utf8")
+    ftruncateSync(fd, 0)
+    let written = 0
+    while (written < data.length) {
+      written += writeSync(fd, data, written, data.length - written, written)
+    }
+    fsyncSync(fd)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
   }
-  const cfg = parseConfigFile(path)
-  if (!cfg || (cfg[key] !== undefined && !Array.isArray(cfg[key])))
-    throw new Error("Invalid plugin config")
-  const edits = modify(
-    raw.trim() ? raw : "{}",
-    cfg[key] === undefined ? [key] : [key, -1],
-    cfg[key] === undefined ? [entry] : entry,
-    {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
-    },
-  )
-  writeFileSync(path, applyEdits(raw.trim() ? raw : "{}", edits), "utf8")
 }
 
 interface VersionCheck {

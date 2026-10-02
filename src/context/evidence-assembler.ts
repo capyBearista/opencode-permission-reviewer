@@ -19,6 +19,7 @@ import type { SshAuditSummary } from "../ssh-evidence.ts"
 import { SshEvidenceProvider } from "../evidence/ssh-provider.ts"
 import { LocalScriptEvidenceProvider } from "../evidence/local-script-provider.ts"
 import { GitEvidenceProvider } from "../evidence/git-provider.ts"
+import { PackageScriptEvidenceProvider } from "../evidence/package-script-provider.ts"
 import {
   collectVerifiedSshScript,
   configFingerprint,
@@ -52,19 +53,30 @@ export async function assembleEvidence(
   const reader = "messages" in ctx.client ? ctx.client : createV1ContextReader(ctx.client)
   // A transcript fetch that never settles would leave the review pending
   // forever; bound it well above any realistic fetch time.
-  const response = await withTimeout(
-    reader.messages(
-      request.sessionID,
-      ctx.directory,
-      Math.max(ctx.config.historyMessages, ctx.config.transcriptMessages * 2, 20),
-    ),
+  const [response, intentResponse] = await withTimeout(
+    Promise.all([
+      reader.messages(
+        request.sessionID,
+        ctx.directory,
+        Math.max(ctx.config.historyMessages, ctx.config.transcriptMessages * 2, 20),
+      ),
+      reader.intentMessages?.(request.sessionID, ctx.directory, ctx.config.intentMessages),
+    ]),
     Math.min(ctx.config.timeoutMs, 15_000),
   )
   const messages = normalizeMessages(response)
+  const intentMessages = intentResponse === undefined ? messages : normalizeMessages(intentResponse)
 
   // Resolve actor/lineage/intent. The resolver is resilient — it never throws,
   // degrading to "unknown" — so this cannot block a review.
-  const actor = await resolveActorContext(request, messages, reader, ctx.directory, ctx.config)
+  const actor = await resolveActorContext(
+    request,
+    messages,
+    reader,
+    ctx.directory,
+    ctx.config,
+    intentMessages,
+  )
   const verifiedCommand = parseVerifiedSshScriptCommand(request)
   const verifiedScript = verifiedCommand
     ? await collectVerifiedSshScript(
@@ -172,8 +184,12 @@ export async function assembleEvidence(
     directory: ctx.directory,
     worktree: ctx.worktree,
     timings: { contextMs, enrichmentMs },
-    transcript: buildTranscript(messages, ctx.config),
-    intentHistory: buildIntentHistory(messages, ctx.config, {
+    transcript: buildTranscript(messages, ctx.config, {
+      omitUserMessages:
+        actor.lineage.origin === "human-root" && actor.intent.directUserIntent.length > 0,
+      ...(request.tool === undefined ? {} : { pendingTool: request.tool }),
+    }),
+    intentHistory: buildIntentHistory(intentMessages, ctx.config, {
       delegatedSession: actor.lineage.origin !== "human-root",
     }),
     enrichment,
@@ -201,5 +217,10 @@ export async function assembleEvidence(
 
 /** The default evidence bundle used when callers do not inject their own. */
 export function defaultEvidenceProviders(): EvidenceProvider[] {
-  return [new SshEvidenceProvider(), new LocalScriptEvidenceProvider(), new GitEvidenceProvider()]
+  return [
+    new SshEvidenceProvider(),
+    new LocalScriptEvidenceProvider(),
+    new PackageScriptEvidenceProvider(),
+    new GitEvidenceProvider(),
+  ]
 }

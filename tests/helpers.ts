@@ -81,10 +81,20 @@ export class MockClient implements OpenCodeClientLike {
   replyError?: unknown
   publishStatusError?: unknown
   toolIdsError?: unknown
+  /** Host MCP inventory the isolated-location guard reads. Empty means the
+   *  location is MCP-free; tests set an entry to exercise the fail-closed path. */
+  mcpServers: Record<string, unknown> = {}
+  mcpError?: unknown
+  mcpStatusImpl?: (options: unknown) => Promise<{
+    data?: Record<string, unknown>
+    error?: unknown
+  }>
+  readonly mcpStatuses: unknown[] = []
   private sessionCounter = 0
 
   session: OpenCodeClientLike["session"]
   tool: OpenCodeClientLike["tool"]
+  mcp: NonNullable<OpenCodeClientLike["mcp"]>
 
   constructor() {
     this.session = {
@@ -133,6 +143,14 @@ export class MockClient implements OpenCodeClientLike {
         this.toolQueries.push(options)
         if (this.toolIdsError !== undefined) return { error: this.toolIdsError }
         return { data: ["bash", "read", "write", "webfetch", "task"] }
+      },
+    }
+    this.mcp = {
+      status: async (options?: unknown) => {
+        this.mcpStatuses.push(options)
+        if (this.mcpStatusImpl) return this.mcpStatusImpl(options)
+        if (this.mcpError !== undefined) return { error: this.mcpError }
+        return { data: this.mcpServers }
       },
     }
   }

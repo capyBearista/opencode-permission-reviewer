@@ -334,32 +334,48 @@ export function createAuditWriter(
 }
 
 /** Append one JSONL line through an explicitly opened descriptor: O_NOFOLLOW
- *  rejects a symlinked audit path, the descriptor is verified to be a regular
- *  file before writing, and restrictive permissions are applied only when this
- *  call created the file (never tightening or loosening a pre-existing file
- *  the user may own jointly). One open per record matches the previous
+ *  rejects a symlinked audit path, O_NONBLOCK refuses to hang on a FIFO
+ *  destination (a write-open on a readerless FIFO fails with ENXIO instead of
+ *  blocking the host forever), the descriptor is verified to be a regular
+ *  file before writing, and mode 0600 is asserted on every append — a
+ *  pre-existing group- or world-readable audit file is tightened before it
+ *  receives new records, matching the documented 0600 guarantee instead of
+ *  silently extending a looser mode. If the mode cannot be enforced (for
+ *  example a file owned by another user), the append fails rather than adding
+ *  records to a readable file. One open per record matches the previous
  *  append-per-call behavior. Throws on failure; the caller logs and swallows. */
 function appendAuditLine(path: string, line: string): void {
   let fd: number | undefined
-  let created = false
   try {
     try {
-      fd = openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_NOFOLLOW)
-      created = true
+      // 0600 at creation closes the umask window before the first record.
+      fd = openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0o600)
     } catch (error) {
       // Anything but "already exists" (notably ELOOP from O_NOFOLLOW on a
       // symlink) is a genuine failure for the caller to log.
       if ((error as { code?: unknown }).code !== "EEXIST") throw error
       // The re-open after EEXIST is refused, not raced: O_NOFOLLOW rejects a
-      // swapped-in symlink with ELOOP, the descriptor must pass the regular-file
-      // check below, and the caller logs and swallows any failure.
+      // swapped-in symlink with ELOOP, O_NONBLOCK keeps a FIFO from blocking
+      // before the regular-file check can run, and the caller logs and
+      // swallows any failure.
       // codeql[js/file-system-race]
-      fd = openSync(path, O_WRONLY | O_APPEND | O_NOFOLLOW)
+      fd = openSync(path, O_WRONLY | O_APPEND | O_NOFOLLOW | O_NONBLOCK)
     }
-    if (!fstatSync(fd).isFile()) {
+    const info = fstatSync(fd)
+    if (!info.isFile()) {
       throw new Error(`not a regular file: ${path}`)
     }
-    if (created) fchmodSync(fd, 0o600)
+    try {
+      // 0o7777 so setuid/setgid residue also counts as wrong.
+      if ((info.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600)
+    } catch (error) {
+      throw new Error(
+        `cannot enforce mode 0600 on the audit path (chmod 600 it or fix its ownership): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      )
+    }
     const data = Buffer.from(line, "utf8")
     let written = 0
     while (written < data.length) {

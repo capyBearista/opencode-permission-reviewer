@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { join } from "node:path"
 import { promisify } from "node:util"
-import { server } from "../src/index.ts"
 import { REVIEWER_SYSTEM_PROMPT } from "../src/policy.ts"
 import { extractPermissionRequest, type RuntimeContext } from "../src/runtime.ts"
 import { decision, MockClient, request, runtime } from "./helpers.ts"
@@ -213,6 +212,63 @@ describe("runtime decisions", () => {
       expect(prompt).toContain("guide.md")
       expect(prompt).toContain("fileMutationHint")
       expect(client.creates).toHaveLength(1)
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
+  test("includes bun run target semantics in Luna's prompt", async () => {
+    const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-bun-run-")
+    const script = join(directory, "runner.ts")
+    await writeFile(script, 'const key = await Bun.file(".env").text()\n')
+    try {
+      const client = new MockClient()
+      client.nextStructured = decision("allow", {
+        rationale: "The run target reads one bounded file.",
+      })
+      const command = `bun run ${script} --dry-run`
+      const harness = runtime(client, {}, undefined, { directory, worktree: directory })
+      expect(
+        (await harness.runtime.process(request({ patterns: [command], metadata: { command } })))
+          .kind,
+      ).toBe("allow")
+      const evidence = JSON.stringify(
+        (client.prompts[0] as { body?: { parts?: Array<{ text?: string }> } }).body?.parts?.[0]
+          ?.text ?? "",
+      )
+      expect(evidence).toContain("LOCAL_SCRIPT_ANALYSIS")
+      expect(evidence).toContain("local_script")
+      expect(evidence).toContain("runner.ts")
+      expect(evidence).toContain(".env")
+      expect(evidence).toContain("environmentEnumerationHint")
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
+  test("includes deno run target semantics in Luna's prompt", async () => {
+    const directory = await mkdtemp("/tmp/opencode/approval-reviewer-runtime-deno-run-")
+    const script = join(directory, "runner.ts")
+    await writeFile(script, 'const key = await Deno.readTextFile(".env")\n')
+    try {
+      const client = new MockClient()
+      client.nextStructured = decision("allow", {
+        rationale: "The run target reads one bounded file.",
+      })
+      const command = `deno run --allow-read=${directory} ${script}`
+      const harness = runtime(client, {}, undefined, { directory, worktree: directory })
+      expect(
+        (await harness.runtime.process(request({ patterns: [command], metadata: { command } })))
+          .kind,
+      ).toBe("allow")
+      const evidence = JSON.stringify(
+        (client.prompts[0] as { body?: { parts?: Array<{ text?: string }> } }).body?.parts?.[0]
+          ?.text ?? "",
+      )
+      expect(evidence).toContain("LOCAL_SCRIPT_ANALYSIS")
+      expect(evidence).toContain("local_script")
+      expect(evidence).toContain("runner.ts")
+      expect(evidence).toContain(".env")
     } finally {
       await rm(directory, { recursive: true })
     }
@@ -569,41 +625,38 @@ describe("event boundary", () => {
   })
 
   test("plugin uses OpenCode V1's authenticated raw transport to reply", async () => {
-    const client = new MockClient()
-    const rawPosts: unknown[] = []
-    let completed!: () => void
-    const completion = new Promise<void>((resolve) => {
-      completed = resolve
-    })
-    const input = {
-      client: {
-        session: client.session,
-        tool: client.tool,
-        _client: {
-          post: async (options: unknown) => {
-            rawPosts.push(options)
-            if (
-              rawPosts.filter((post) => (post as { url?: string }).url === "/tui/publish")
-                .length === 2
-            )
-              completed()
-            return { data: true }
-          },
+    const configRoot = await mkdtemp("/tmp/reviewer-v1-config-")
+    const globalConfig = join(configRoot, "permission-reviewer.jsonc")
+    await writeFile(
+      globalConfig,
+      JSON.stringify({
+        model: "openai/gpt-5.6-luna",
+        variant: "max",
+        audit: false,
+      }),
+    )
+    let evidence!: { rawPosts: unknown[]; deletes: unknown[]; prompts: unknown[] }
+    try {
+      const child = Bun.spawn(
+        [process.execPath, join(import.meta.dir, "fixtures/v1-server.ts"), globalConfig],
+        {
+          env: { ...process.env, HOME: join(configRoot, "home") },
+          stdout: "pipe",
+          stderr: "pipe",
         },
-      },
-      directory: "/workspace/project",
-      worktree: "/workspace/project",
+      )
+      const [stdout, stderr, exit] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ])
+      expect(stderr).toBe("")
+      expect(exit).toBe(0)
+      evidence = JSON.parse(stdout)
+    } finally {
+      await rm(configRoot, { recursive: true, force: true })
     }
-    const hooks = await server(input as never, {
-      model: "openai/gpt-5.6-luna",
-      variant: "max",
-      outputFormat: "json_schema",
-      retainReviewSessions: false,
-      audit: false,
-    })
-    await hooks.event?.({ event: { type: "permission.asked", properties: request() } as never })
-    await completion
-    await hooks.dispose?.()
+    const { rawPosts } = evidence
     expect(
       rawPosts.filter((post) => (post as { url?: string }).url === "/tui/publish"),
     ).toHaveLength(2)
@@ -615,8 +668,14 @@ describe("event boundary", () => {
       path: { requestID: "per_1" },
       body: { reply: "once" },
     })
-    expect(client.deletes).toHaveLength(1)
-  })
+    expect(evidence.deletes).toHaveLength(1)
+    expect(
+      (evidence.prompts[0] as { body: { model: unknown; variant: string } }).body,
+    ).toMatchObject({
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+      variant: "max",
+    })
+  }, 30_000)
 
   test("text mode sends a text format body and approves from parsed JSON", async () => {
     const harness = runtime(new MockClient(), {

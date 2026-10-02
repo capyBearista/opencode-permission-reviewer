@@ -124,7 +124,13 @@ export async function collectVerifiedSshScript(
     ...(command.port === undefined ? {} : { port: command.port }),
     shell: command.shell,
   }
-  const file = await includeEvidenceFile(command.path, directory, worktree, VERIFIED_SCRIPT_LIMIT)
+  const file = await includeEvidenceFile(
+    command.path,
+    directory,
+    directory,
+    worktree,
+    VERIFIED_SCRIPT_LIMIT,
+  )
   const actual = file.content === undefined ? undefined : file.includedSha256
   if (
     file.status !== "included" ||

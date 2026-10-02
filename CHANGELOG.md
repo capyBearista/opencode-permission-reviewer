@@ -7,6 +7,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-02
+
+### Added
+
+- Git remote evidence for network subcommands: `git push`, `fetch`, `pull`,
+  `ls-remote`, and `git remote` now report each remote operand as a configured
+  remote (with the push/fetch URLs it resolves to, credential userinfo
+  redacted), a literal URL, or unmatched, plus the default remote an
+  operand-less command would contact. The reviewer judges the destination
+  from this evidence instead of treating an unresolved alias as unknown.
+
+- Recognize `deno` and `tsx` as local script interpreters, attaching the
+  executed file as evidence for direct invocations (`deno <file>`,
+  `tsx <file>`), `deno run/serve/watch`, and `tsx watch` file targets. Deno
+  tasks, package specifiers (`jsr:`/`npm:`/URLs), manifest scripts, and
+  ambiguous option forms gather no evidence rather than risk attaching the
+  wrong file. Node-family value flags (`--test-reporter-destination` and
+  siblings) are skipped for `node` and `tsx` for the same reason.
+- Inspect manifest definitions and bounded local script chains for Bun, npm,
+  pnpm, and Yarn script invocations. Referenced local code and conditional
+  lifecycle hooks are included as evidence without executing package code or
+  assuming the invocation needs network access.
+
+### Changed
+
+- Verify compatibility with OpenCode V1 1.18.34 and V2 2.0.21.
+- No lifecycle scripts ship with the package: the `prepare` build hook is
+  gone, so installs execute nothing from this repository. The npm registry is
+  the supported install source (Git/local installs yield a package without
+  `dist/`); build from source explicitly with `bun install && bun run build`.
+
+### Fixed
+
+- Attach local script evidence only for the executed interpreter, preserve
+  leading-dash file names after `--`, and inspect equally named scripts in
+  different working directories separately. Remote commands and interpreter
+  mentions no longer attach unrelated local code.
+- Resolve Git repository evidence only for a local Git executable; remote
+  commands and command mentions no longer inherit the local repository's state
+  or configured destinations.
+- Prevent OpenCode V1's isolated reviewer location from starting another copy
+  of globally configured MCP servers. Its local bootstrap excludes MCP, and
+  reviews fail closed if the host reports servers or an invalid inventory.
+  Isolation files are replaced atomically and reject links and special files.
+  Thanks @jg33 for the fix ([#62](https://github.com/warc0s/opencode-permission-reviewer/pull/62)).
+- Preserve reviewer cancellation and timeout errors across garbage collection,
+  including waits admitted after a review has already ended.
+- Normalize shell redirections before resolving executables, including glued,
+  leading, file-descriptor, clobber, and command-string forms. Redirections can
+  no longer hide root destruction, credential reads, network clients, or
+  external write targets; heredoc payload text is no longer treated as an
+  executed command.
+- Classify `git add`, remote/config/ref mutations, fetch/pull, `dd of=...`,
+  attached `sort -o...`, and writes inside worktrees under temporary roots with
+  their actual mutation, network, and path effects.
+- Treat V1 inline plugin options as unknown-origin input, matching V2, and keep
+  reviewer selection, policy, resource limits, and debug logging under trusted
+  global configuration.
+- Redact URL userinfo even when a credential occupies only the username slot,
+  and block GitHub config and token-shaped content from file enrichment.
+- Refuse symlinked config files in `init`; backups and updates now hold a
+  no-follow regular-file descriptor through their operation.
+- Recognize shell `-c` flag clusters, options after `-c`, `exec`, clustered SSH
+  flags, and value-taking wrapper options so they cannot hide destructive
+  commands from the emergency brake. Direct `cp` and `install` overwrites of
+  block devices are also rejected.
+- Preserve file mutation effects for target-directory options, optional
+  option values, rename operands, implicit link destinations, and rsync
+  source removal.
+- Keep relative `cd` targets unresolved when the preceding working directory
+  is ambiguous, instead of throwing or assuming the initial directory.
+- Resolve attached and trailing Git push `--repo` overrides, and redact URL
+  passwords before bounding evidence, including unavailable Git snapshots.
+- Withhold Git snapshots when a successful status process returns incomplete
+  output, preserving the planned action without inventing repository state.
+- Include the executed file as local script evidence for `bun run <file>`
+  commands; package manifest scripts (`bun run check`) and bun option values
+  are not mistaken for the run target.
+- Emergency brake: peel `systemd-run`, `strace`, `ltrace`, and `script -c`
+  wrappers (including clustered value-taking options such as `sudo -nu root`
+  and `env -iS`), treat a live root glob (`rm -rf /*`) as root destruction,
+  and reject shell redirections onto real block devices (`> /dev/sda`,
+  glued `2>/dev/sda`, `tee /dev/sda`) in direct and command-string forms.
+- Audit records always land in a mode `0600` file: a pre-existing audit path
+  with looser permissions is tightened before receiving new records instead of
+  being extended as-is.
+- Recover literal user intent after long operational histories, compaction,
+  and host restarts, while keeping synthetic control messages and inherited
+  fork messages out of direct authorization evidence.
+
 ## [2.3.1] - 2026-09-28
 
 ### Fixed

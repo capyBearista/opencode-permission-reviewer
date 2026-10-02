@@ -142,7 +142,9 @@ export function projectConfigPath(directory: string): string {
  *  final: the project layer may only tighten them against the trusted
  *  baseline (which already includes inline), and a later inline value must not
  *  undo that tightening. For every other field the documented precedence
- *  applies and inline (trusted, most specific) wins over the project. */
+ *  applies and inline (trusted, most specific) wins over the project. The
+ *  reviewer resource knobs (timeouts, context budgets) are the strictest
+ *  case: the project cannot set them at all, in either direction. */
 const TRUST_BOUNDARY_KEYS = new Set([
   "confidenceThreshold",
   "systemOneConfidenceThreshold",
@@ -158,7 +160,44 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "riskPolicy",
   "escalationMode",
   "policyRules",
+  "variant",
+  "outputFormat",
+  "retainReviewSessions",
+  "timeoutMs",
+  "reviewBudgetMs",
+  "maxContextChars",
+  "maxPartChars",
+  "maxEnrichmentChars",
+  "maxIntentChars",
+  "transcriptMessages",
+  "intentMessages",
+  "historyMessages",
+  "maxSessionDepth",
+  "maxParentSessions",
+  "askDecisions",
+  "debug",
 ])
+
+/** Reviewer resource knobs: how long a review may run and how much context
+ *  (transcript, evidence, session chains) it may consume. These are NOT
+ *  monotonic security fields: raising them means more conversation sent to
+ *  the provider, more cost, and longer processing, so a repository may not
+ *  move them in either direction. Only trusted global/inline config sets
+ *  them; the project layer is restricted to genuinely monotonic hardening
+ *  (deny/manual rules, allowed thresholds, repositoryTrust). */
+const TRUSTED_ONLY_RESOURCE_KEYS = [
+  "timeoutMs",
+  "reviewBudgetMs",
+  "maxContextChars",
+  "maxPartChars",
+  "maxEnrichmentChars",
+  "maxIntentChars",
+  "transcriptMessages",
+  "intentMessages",
+  "historyMessages",
+  "maxSessionDepth",
+  "maxParentSessions",
+] as const
 
 /** Load and merge config from global, project, and inline sources.
  *
@@ -243,7 +282,8 @@ export function loadResolvedConfig(
     }
   }
 
-  const invalidInlineRules = countInvalidPolicyRules(inlineOptions?.policyRules)
+  const invalidInlineRules =
+    inlineTrust === "trusted" ? countInvalidPolicyRules(inlineOptions?.policyRules) : 0
   if (invalidInlineRules > 0) {
     degraded.push(
       `${invalidInlineRules} policy rule(s) from inline config were dropped by validation`,
@@ -344,8 +384,10 @@ function mergeWithTrustBoundary(
   // field must stay authoritative for the loader that computes it).
   delete clamped.configDegraded
 
-  // Confidence floors: project config can raise but not lower them; non-numeric
+  // Numeric floors: project config can raise but not lower them; non-numeric
   // values (including null) are ignored so they cannot reset a trusted floor.
+  // Confidence floors guard the decision gate and are monotonic hardening:
+  // a stricter threshold is always safer, so the project may add one.
   for (const key of [
     "confidenceThreshold",
     "systemOneConfidenceThreshold",
@@ -354,16 +396,32 @@ function mergeWithTrustBoundary(
     if (hasKey(clamped, key)) {
       if (typeof clamped[key] !== "number" || !Number.isFinite(clamped[key])) {
         delete clamped[key]
-      } else if (typeof trusted[key] === "number" && clamped[key] < trusted[key]) {
-        clamped[key] = trusted[key]
+      } else {
+        const floor =
+          typeof trusted[key] === "number"
+            ? (trusted[key] as number)
+            : (DEFAULT_CONFIG[key as keyof typeof DEFAULT_CONFIG] as number)
+        if (clamped[key] < floor) clamped[key] = floor
       }
     }
+  }
+
+  // Reviewer resource knobs (timeouts and context budgets) are deleted
+  // outright: they are not monotonic, so neither raising nor lowering them
+  // from a repository is safe. Wrong-typed values are dropped with them.
+  for (const key of TRUSTED_ONLY_RESOURCE_KEYS) {
+    delete clamped[key]
   }
 
   // audit: project can enable but not disable.
   if (clamped.audit === false && trusted.audit !== false) {
     delete clamped.audit
   }
+
+  // askDecisions: prior user answers are scoped-authorization evidence for
+  // the reviewer. Only trusted layers may decide whether the reviewer sees
+  // them; a repository can neither strip them nor inject them.
+  delete clamped.askDecisions
 
   // auditPath: only trusted global/inline config may choose the audit
   // destination. A repository must never be able to redirect or silence the
@@ -372,10 +430,17 @@ function mergeWithTrustBoundary(
 
   // model and policy: the reviewer destination and the tenant policy text are
   // trusted decisions. A repository must not choose where code/context is sent
-  // for review, nor rewrite the policy the reviewer enforces.
+  // for review, nor rewrite the policy the reviewer enforces. The reasoning
+  // variant, the decision output format, and review-session retention are the
+  // same class of decision: a weaker variant, a looser output format, or
+  // silenced retention must not be selectable from a repository.
   delete clamped.model
   delete clamped.escalationReviewer
   delete clamped.policy
+  delete clamped.variant
+  delete clamped.outputFormat
+  delete clamped.retainReviewSessions
+  delete clamped.debug
 
   // repositoryTrust: the project layer may only declare its own repository
   // untrusted; it cannot grant "trusted" or reset a trusted "untrusted".

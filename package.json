@@ -1,6 +1,6 @@
 {
   "name": "opencode-permission-reviewer",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "Policy-aware permission reviewer for OpenCode V1 and V2",
   "type": "module",
   "main": "./dist/index.js",
@@ -85,8 +85,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
-    "@opencode-ai/plugin": "1.18.32",
-    "@opencode/plugin": "2.0.17",
+    "@opencode-ai/plugin": "1.18.34",
+    "@opencode/plugin": "2.0.21",
     "@types/bun": "^1.3.0",
     "@types/semver": "7.8.0",
     "eslint": "^10.8.0",
@@ -98,8 +98,11 @@
     "typescript": "6.0.3",
     "typescript-eslint": "^8.0.0"
   },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "esbuild": "^0.28.2"
+  },
   "scripts": {
-    "prepare": "bun run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
@@ -109,11 +112,11 @@
     "test:stress": "bun test tests/stress.test.ts --timeout 30000",
     "test:package": "bun test tests/package-smoke.test.ts --timeout 120000",
     "test:coverage": "bun test --coverage --coverage-reporter lcov --coverage-dir ./coverage && bun scripts/check-coverage.ts",
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run build"
+    "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run test"
   },
   "dependencies": {
     "@typesafe-ai/sdk": "0.6.0",
-    "@opencode/client": "2.0.17",
+    "@opencode/client": "2.0.21",
     "jsonc-parser": "3.3.1",
     "semver": "7.8.5",
     "@opentui/core": "0.5.11",

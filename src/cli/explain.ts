@@ -123,7 +123,13 @@ async function runScript(argv: string[]): Promise<number> {
     return 2
   }
   const directory = process.cwd()
-  const evidence = await includeEvidenceFile(file, directory, directory, VERIFIED_SCRIPT_LIMIT)
+  const evidence = await includeEvidenceFile(
+    file,
+    directory,
+    directory,
+    directory,
+    VERIFIED_SCRIPT_LIMIT,
+  )
   if (
     evidence.status !== "included" ||
     evidence.includedSha256 === undefined ||
