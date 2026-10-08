@@ -188,17 +188,20 @@ export class V2ReviewerBackend {
       const failed = results.find((result) => result.status === "rejected")
       if (failed) throw failed.reason
     }
-    const isolated = await createIsolatedLocation(async (context) => {
-      if (this.closing) return async () => {}
-      const cleanup = await this.register(context)
-      const registration = async () => {
-        if (!registrations.delete(registration)) return
-        await cleanup()
-      }
-      registrations.add(registration)
-      if (this.closing) await registration()
-      return registration
-    })
+    const isolated = await createIsolatedLocation(
+      async (context) => {
+        if (this.closing) return async () => {}
+        const cleanup = await this.register(context)
+        const registration = async () => {
+          if (!registrations.delete(registration)) return
+          await cleanup()
+        }
+        registrations.add(registration)
+        if (this.closing) await registration()
+        return registration
+      },
+      this.config.isolation?.excludePlugins,
+    )
     try {
       const signal = AbortSignal.any([this.locationAbort.signal, AbortSignal.timeout(15_000)])
       await waitForIsolationActive(client, isolated.directory, isolated.pluginID, signal)

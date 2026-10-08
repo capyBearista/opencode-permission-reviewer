@@ -153,6 +153,7 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "auditPath",
   "model",
   "escalationReviewer",
+  "isolation",
   "policy",
   "repositoryTrust",
   "actorProfiles",
@@ -436,6 +437,7 @@ function mergeWithTrustBoundary(
   // silenced retention must not be selectable from a repository.
   delete clamped.model
   delete clamped.escalationReviewer
+  delete clamped.isolation
   delete clamped.policy
   delete clamped.variant
   delete clamped.outputFormat

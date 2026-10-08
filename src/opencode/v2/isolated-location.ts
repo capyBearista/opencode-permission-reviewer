@@ -26,6 +26,7 @@ process.once("exit", () => {
 /** A host-loaded bootstrap registers only this backend's isolated hooks. */
 export async function createIsolatedLocation(
   activate: Activate,
+  excludePlugins: readonly string[] = [],
 ): Promise<{ directory: string; pluginID: string; release(): void }> {
   const directory = await mkdtemp(join(tmpdir(), "opencode-reviewer-"))
   const key = randomUUID()
@@ -56,7 +57,9 @@ export async function createIsolatedLocation(
     )
     await writeFile(
       join(directory, "opencode.json"),
-      JSON.stringify({ plugins: ["-opencode.config.mcp", directory] }),
+      JSON.stringify({
+        plugins: ["-opencode.config.mcp", ...excludePlugins.map((id) => `-${id}`), directory],
+      }),
       { flag: "wx", mode: 0o600 },
     )
     directories.add(directory)

@@ -136,6 +136,8 @@ export interface ReviewerConfig {
   /** Optional reasoning reviewer for valid System One decisions that remain
    *  uncertain or conflict with deterministic review gates. */
   escalationReviewer?: EscalationReviewerConfig
+  /** Trusted plugin IDs excluded from the isolated V2 reviewer location. */
+  isolation?: { excludePlugins: string[] }
   /** Calibrated outcome-confidence floor for System One decisions. */
   systemOneConfidenceThreshold: number
   /** Minimum combined non-escalate probability for routing an explicit

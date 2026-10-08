@@ -297,6 +297,24 @@ function isClosedSetMemberArray(value: unknown, valid: ReadonlySet<string>): val
   )
 }
 
+function resolveIsolation(value: unknown): ReviewerConfig["isolation"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return
+  const ids = (value as Record<string, unknown>).excludePlugins
+  if (!Array.isArray(ids)) return
+  const excludePlugins = new Set<string>()
+  for (const id of ids) {
+    if (
+      typeof id !== "string" ||
+      !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id) ||
+      id.startsWith("opencode.") ||
+      id === "opencode-permission-reviewer"
+    )
+      continue
+    excludePlugins.add(id)
+  }
+  return excludePlugins.size > 0 ? { excludePlugins: [...excludePlugins] } : undefined
+}
+
 export function resolveConfig(options: Record<string, unknown> | undefined): ReviewerConfig {
   const source = options ?? {}
   const model =
@@ -309,6 +327,7 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
       : DEFAULT_CONFIG.variant
   const outputFormat = source.outputFormat === "text" ? "text" : "json_schema"
   const escalationReviewer = resolveEscalationReviewer(source.escalationReviewer)
+  const isolation = resolveIsolation(source.isolation)
   const policy =
     typeof source.policy === "string" && source.policy.trim().length > 0
       ? source.policy.trim()
@@ -323,6 +342,7 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
     variant,
     outputFormat,
     ...(escalationReviewer === undefined ? {} : { escalationReviewer }),
+    ...(isolation === undefined ? {} : { isolation }),
     timeoutMs: boundedInteger(source.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5_000, 600_000),
     ...(source.reviewBudgetMs === undefined
       ? {}

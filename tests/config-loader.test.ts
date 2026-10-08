@@ -89,6 +89,42 @@ describe("config loader — trust boundary", () => {
     expect(loaded.configDegraded).toBeUndefined()
   })
 
+  test("only trusted configuration can exclude reviewer plugins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reviewer-cfg-"))
+    try {
+      mkdirSync(join(dir, ".opencode"), { recursive: true })
+      writeFileSync(
+        projectConfigPath(dir),
+        JSON.stringify({ isolation: { excludePlugins: ["untrusted-plugin"] } }),
+      )
+      const loaded = loadResolvedConfig(
+        { isolation: { excludePlugins: ["trusted-plugin", "trusted-plugin"] } },
+        dir,
+      )
+      expect(loaded.isolation?.excludePlugins).toEqual(["trusted-plugin"])
+      expect(loadResolvedConfig(undefined, dir).isolation).toBeUndefined()
+      expect(
+        loadResolvedConfig({ isolation: { excludePlugins: ["unknown-origin"] } }, dir, "unknown")
+          .isolation,
+      ).toBeUndefined()
+      expect(
+        resolveConfig({
+          isolation: {
+            excludePlugins: [
+              "safe-plugin",
+              "*",
+              "-opencode.config.mcp",
+              "opencode.config.mcp",
+              "opencode-permission-reviewer",
+            ],
+          },
+        }).isolation?.excludePlugins,
+      ).toEqual(["safe-plugin"])
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
+  })
+
   test("project config cannot install a reasoning escalation reviewer", () => {
     const dir = mkdtempSync(join(tmpdir(), "reviewer-cfg-"))
     try {

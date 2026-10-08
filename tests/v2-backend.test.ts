@@ -37,6 +37,7 @@ function fixture(
     activationDelayed?: boolean
     activationRepresentation?: "directory-slash" | "file-url" | "id-only" | "id-new-path"
     mcpServers?: boolean | "after-first"
+    excludedPlugins?: string[]
   } = {},
 ) {
   let tool!: Tool
@@ -239,6 +240,9 @@ function fixture(
       variant: options.variant ?? "max",
       outputFormat: options.format ?? "json_schema",
       retainReviewSessions: options.retain ?? false,
+      ...(options.excludedPlugins
+        ? { isolation: { excludePlugins: options.excludedPlugins } }
+        : {}),
     }),
   )
   const envelope: ReviewEnvelope = {
@@ -454,6 +458,34 @@ test("review sessions share one MCP-free location without mixing concurrent evid
     expect(harness.state().disposed).toBe(3)
     expect(existsSync(state.directory + "/opencode.json")).toBe(true)
     expect(() => harness.run()).toThrow("shutting down")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("trusted plugin exclusions affect only reviewer location configuration", async () => {
+  const harness = fixture({ excludedPlugins: ["oh-my-opencode-slim"] })
+  try {
+    expect((await harness.run()).kind).toBe("allow")
+    const isolated = JSON.parse(
+      await readFile(harness.state().directory + "/opencode.json", "utf8"),
+    )
+    expect(isolated.plugins).toEqual([
+      "-opencode.config.mcp",
+      "-oh-my-opencode-slim",
+      harness.state().directory,
+    ])
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("plugin exclusions never bypass the MCP inventory fail-closed gate", async () => {
+  const harness = fixture({ excludedPlugins: ["oh-my-opencode-slim"], mcpServers: true })
+  try {
+    const result = await harness.run()
+    expect(result.kind).toBe("escalate")
+    expect(result.reason).toContain("contains MCP servers")
   } finally {
     await harness.cleanup()
   }

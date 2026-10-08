@@ -279,6 +279,29 @@ the chat-reviewer `confidenceThreshold`.
 Jev escalations. Raising it sends fewer cases to the reasoning reviewer; project
 configuration may raise this value but cannot lower a trusted threshold.
 
+### Isolated V2 reviewer plugin exclusions
+
+OpenCode V2 locations may inherit globally configured plugins. If one registers
+MCP servers in the temporary reviewer location, the reviewer refuses to run.
+Trusted global configuration may exclude specific third-party plugin IDs:
+
+```jsonc
+// ~/.config/opencode/permission-reviewer.jsonc
+{
+  "isolation": {
+    "excludePlugins": ["oh-my-opencode-slim"]
+  }
+}
+```
+
+These exclusions apply **only** to the temporary V2 reviewer location, not
+to normal coding sessions. Project-level configuration cannot set this option.
+Built-in `opencode.*` plugin IDs, wildcard selectors, and the reviewer itself
+are not accepted. The reviewer still checks the MCP inventory and refuses
+to run if any MCP servers remain. This setting affects chat-model reviewer
+sessions, including reasoning escalation; direct Jev System One calls do not
+create a reviewer location.
+
 ### Reviewer models without structured-output support
 
 Some models (for example `opencode-go/deepseek-v4-flash`) do not support
@@ -324,6 +347,7 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `variant`                      | `medium`                                                  | non-empty string                    | Reasoning variant passed to OpenCode                                                          |
 | `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`              | How the reviewer returns its decision (`text` for models without structured output)           |
 | `escalationReviewer`           | unset                                                     | trusted object                      | Optional reasoning reviewer for valid but difficult Jev decisions                             |
+| `isolation`                    | unset                                                     | trusted object                      | V2-only: exclude external plugins from isolated reviewer locations                            |
 | `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                     | Review timeout; put shared V1 settings in the global config                                   |
 | `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                           | Minimum confidence to auto-act; below it escalates                                            |
 | `systemOneConfidenceThreshold` | `0.4`                                                     | `0.3`–`1`                           | Calibrated Jev outcome-confidence floor; below it escalates                                   |
