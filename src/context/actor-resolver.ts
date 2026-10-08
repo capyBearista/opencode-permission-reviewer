@@ -580,8 +580,11 @@ function assessCompleteness(
     Boolean,
   ).length
   const sufficient = actorOk && lineageOk && directOk && (humanRoot || (delegated && delegatedOk))
-  const overall: EvidenceCompleteness["overall"] =
-    sufficient ? "sufficient" : score >= 2 ? "partial" : "insufficient"
+  const overall: EvidenceCompleteness["overall"] = sufficient
+    ? "sufficient"
+    : score >= 2
+      ? "partial"
+      : "insufficient"
   // purpose is filled later by the evidence assembler; default false here so
   // callers that only run the resolver still see an explicit flag.
   const purposeOk = false
