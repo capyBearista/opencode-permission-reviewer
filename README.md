@@ -289,8 +289,8 @@ Trusted global configuration may exclude specific third-party plugin IDs:
 // ~/.config/opencode/permission-reviewer.jsonc
 {
   "isolation": {
-    "excludePlugins": ["oh-my-opencode-slim"]
-  }
+    "excludePlugins": ["oh-my-opencode-slim"],
+  },
 }
 ```
 
