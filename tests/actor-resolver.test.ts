@@ -212,6 +212,52 @@ describe("actor resolver — lineage walk", () => {
     expect(res.completeness.lineage).toBe(false)
   })
 
+  test("verified root with direct intent has sufficient evidence without a parent", async () => {
+    const messages = [
+      userMessage("msg_user", "Run date -u"),
+      {
+        info: { id: "msg_assistant", role: "assistant", agent: "codex", mode: "default" },
+        parts: [{ type: "tool", callID: "call_1", tool: "bash" }],
+      },
+    ] as MessageWithParts[]
+    const client = buildClient({
+      sessions: { ses_current: { meta: { id: "ses_current" }, messages } },
+    })
+    const res = await resolveActorContext(
+      request("ses_current", { messageID: "msg_assistant", callID: "call_1" }),
+      messages,
+      client,
+      "/repo",
+      cfg,
+    )
+    expect(res.lineage.origin).toBe("human-root")
+    expect(res.completeness.overall).toBe("sufficient")
+    expect(res.completeness.lineage).toBe(true)
+    expect(res.completeness.delegatedTask).toBe(false)
+    expect(res.completeness.reasons).not.toContain("no parent lineage resolved")
+  })
+
+  test("verified root without direct user intent cannot be sufficient", async () => {
+    const messages = [
+      {
+        info: { id: "msg_assistant", role: "assistant", agent: "codex", mode: "default" },
+        parts: [{ type: "tool", callID: "call_1", tool: "bash" }],
+      },
+    ] as MessageWithParts[]
+    const client = buildClient({
+      sessions: { ses_current: { meta: { id: "ses_current" }, messages } },
+    })
+    const res = await resolveActorContext(
+      request("ses_current", { messageID: "msg_assistant", callID: "call_1" }),
+      messages,
+      client,
+      "/repo",
+      cfg,
+    )
+    expect(res.completeness.overall).not.toBe("sufficient")
+    expect(res.completeness.reasons).toContain("no direct user intent recovered")
+  })
+
   test("root session (no parentID): depth 0, root is self", async () => {
     const client = buildClient({ sessions: { ses_current: { meta: { id: "ses_current" } } } })
     const res = await resolveActorContext(request("ses_current"), [], client, "/repo", cfg)

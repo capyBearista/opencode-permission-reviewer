@@ -554,25 +554,37 @@ function assessCompleteness(
   lineage: SessionLineage,
   intent: IntentContext,
 ): EvidenceCompleteness {
-  const reasons: string[] = []
-  if (actor.identityCompleteness === "unknown") reasons.push("actor identity unavailable")
-  if (lineage.depth === 0) reasons.push("no parent lineage resolved")
-  if (lineage.missingParents.length > 0)
-    reasons.push(`missing parents: ${lineage.missingParents.join(", ")}`)
-  if (intent.directUserIntent.length === 0) reasons.push("no direct user intent recovered")
-  if (intent.delegatedTask.length === 0 && lineage.depth > 0)
-    reasons.push("no delegation task located")
-
+  const humanRoot = lineage.origin === "human-root"
+  const delegated = lineage.origin === "delegated"
   const actorOk = actor.identityCompleteness !== "unknown"
-  const lineageOk = lineage.depth > 0
   const directOk = intent.directUserIntent.length > 0
   const delegatedOk = intent.delegatedTask.length > 0
+  // A verified root has no parent by design; delegated sessions require intact ancestry.
+  const lineageOk =
+    (humanRoot || (delegated && lineage.depth > 0)) &&
+    !lineage.cycleDetected &&
+    !lineage.truncated &&
+    lineage.missingParents.length === 0
+
+  const reasons: string[] = []
+  if (!actorOk) reasons.push("actor identity unavailable")
+  if (!lineageOk)
+    reasons.push(humanRoot ? "root session lineage is inconsistent" : "parent lineage unavailable")
+  if (lineage.missingParents.length > 0)
+    reasons.push(`missing parents: ${lineage.missingParents.join(", ")}`)
+  if (!directOk) reasons.push("no direct user intent recovered")
+  if (delegated && !delegatedOk) reasons.push("no delegation task located")
+
+  // Do not count nonexistent delegation as missing evidence for a root.
+  const score = [true, actorOk, lineageOk, directOk, ...(delegated ? [delegatedOk] : [])].filter(
+    Boolean,
+  ).length
+  const sufficient = actorOk && lineageOk && directOk && (humanRoot || (delegated && delegatedOk))
+  const overall: EvidenceCompleteness["overall"] =
+    sufficient ? "sufficient" : score >= 2 ? "partial" : "insufficient"
   // purpose is filled later by the evidence assembler; default false here so
   // callers that only run the resolver still see an explicit flag.
   const purposeOk = false
-  const score = [true, actorOk, lineageOk, directOk, delegatedOk].filter(Boolean).length
-  const overall: EvidenceCompleteness["overall"] =
-    score >= 4 ? "sufficient" : score >= 2 ? "partial" : "insufficient"
 
   return {
     permission: true,
