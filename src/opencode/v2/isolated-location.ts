@@ -56,7 +56,9 @@ export async function createIsolatedLocation(
     )
     await writeFile(
       join(directory, "opencode.json"),
-      JSON.stringify({ plugins: ["-opencode.config.mcp", directory] }),
+      JSON.stringify({
+        plugins: ["-opencode.config.mcp", "-oh-my-opencode-slim", directory],
+      }),
       { flag: "wx", mode: 0o600 },
     )
     directories.add(directory)
