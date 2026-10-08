@@ -549,30 +549,82 @@ function assembleActorContext(
   }
 }
 
+
 function assessCompleteness(
   actor: ActorContext,
   lineage: SessionLineage,
   intent: IntentContext,
 ): EvidenceCompleteness {
   const reasons: string[] = []
-  if (actor.identityCompleteness === "unknown") reasons.push("actor identity unavailable")
-  if (lineage.depth === 0) reasons.push("no parent lineage resolved")
-  if (lineage.missingParents.length > 0)
-    reasons.push(`missing parents: ${lineage.missingParents.join(", ")}`)
-  if (intent.directUserIntent.length === 0) reasons.push("no direct user intent recovered")
-  if (intent.delegatedTask.length === 0 && lineage.depth > 0)
-    reasons.push("no delegation task located")
+
+  const humanRoot = lineage.origin === "human-root"
+  const delegated = lineage.origin === "delegated"
 
   const actorOk = actor.identityCompleteness !== "unknown"
-  const lineageOk = lineage.depth > 0
   const directOk = intent.directUserIntent.length > 0
   const delegatedOk = intent.delegatedTask.length > 0
-  // purpose is filled later by the evidence assembler; default false here so
-  // callers that only run the resolver still see an explicit flag.
-  const purposeOk = false
-  const score = [true, actorOk, lineageOk, directOk, delegatedOk].filter(Boolean).length
+
+  // A root session legitimately has no parent. Delegated sessions
+  // require a resolved, intact parent chain.
+  const lineageHealthy =
+    !lineage.cycleDetected &&
+    !lineage.truncated &&
+    lineage.missingParents.length === 0
+
+  const lineageOk =
+    lineageHealthy &&
+    ((humanRoot && lineage.depth === 0) ||
+      (delegated && lineage.depth > 0))
+
+  // Record genuine deficiencies, not inapplicable requirements.
+  if (!actorOk) {
+    reasons.push("actor identity unavailable")
+  }
+
+  if (!lineageOk) {
+    reasons.push(
+      lineage.origin === "unknown"
+        ? "session origin could not be verified"
+        : humanRoot
+          ? "root session lineage is inconsistent"
+          : "delegated parent lineage incomplete",
+    )
+  }
+
+  if (lineage.missingParents.length > 0) {
+    reasons.push(
+      `missing parents: ${lineage.missingParents.join(", ")}`,
+    )
+  }
+
+  if (!directOk) {
+    reasons.push("no direct user intent recovered")
+  }
+
+  if (delegated && !delegatedOk) {
+    reasons.push("no delegation task located")
+  }
+
+  // A human-root session does not need delegation evidence.
+  // A delegated session requires both ancestry and delegation.
+  // Unknown-origin sessions can never be classified sufficient.
+  const sufficient =
+    actorOk &&
+    lineageOk &&
+    directOk &&
+    (humanRoot || (delegated && delegatedOk))
+
+  const partial =
+    actorOk ||
+    directOk ||
+    (delegated && (lineageOk || delegatedOk))
+
   const overall: EvidenceCompleteness["overall"] =
-    score >= 4 ? "sufficient" : score >= 2 ? "partial" : "insufficient"
+    sufficient
+      ? "sufficient"
+      : partial
+        ? "partial"
+        : "insufficient"
 
   return {
     permission: true,
@@ -580,9 +632,10 @@ function assessCompleteness(
     lineage: lineageOk,
     directUserIntent: directOk,
     delegatedTask: delegatedOk,
-    purpose: purposeOk,
-    capability: false, // no provider produces capability facts yet
-    repositoryState: false, // git evidence exists only as enrichment text today
+    // Filled later by the evidence assembler.
+    purpose: false,
+    capability: false,
+    repositoryState: false,
     referencedCode: false,
     reasons,
     overall,
