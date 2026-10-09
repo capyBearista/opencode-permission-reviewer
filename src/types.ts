@@ -404,6 +404,11 @@ export interface ReviewExecutionResult {
   reviewerModel?: string
   /** Primary model and routing reason when a second reviewer was used. */
   reviewerEscalatedFrom?: { model: string; reason: string }
+  /** Transport fallback, distinct from the optional reasoning reviewer. */
+  fallbackFrom?: string
+  fallbackReason?: string
+  /** Number of primary requests attempted before the paid route. */
+  fallbackAttempts?: number
   /**
    * Structured outcome from the reviewer LLM before gates/disposition.
    * Absent when no valid structured decision was produced.
