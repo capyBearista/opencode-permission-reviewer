@@ -76,7 +76,7 @@ function classifyFreeFailure(error: unknown): FreeFailure {
   }
   if (error instanceof APIUserAbortError)
     return { reason: "cancelled", retry: false, fallback: false }
-  if (error instanceof APITimeoutError || (error instanceof Error && error.name === "TimeoutError"))
+  if (error instanceof APITimeoutError || (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)))
     return { reason: "request-timeout", retry: true, fallback: true }
   if (error instanceof APIConnectionError || error instanceof TypeError)
     return { reason: "network-error", retry: true, fallback: true }
