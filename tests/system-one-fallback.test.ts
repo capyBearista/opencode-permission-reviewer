@@ -154,8 +154,14 @@ describe("System One paid transport fallback", () => {
     let free = 0
     let paid = 0
     const backend = create(
-      async () => { free++; throw http(503) },
-      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+      async () => {
+        free++
+        throw http(503)
+      },
+      async () => {
+        paid++
+        return answer("typesafe/jev-1.13-20260917")
+      },
     )
     const attempt = new ReviewAttempt("g", 8000)
     try {
@@ -165,7 +171,9 @@ describe("System One paid transport fallback", () => {
       expect(result.fallbackAttempts).toBe(1)
       expect(result.fallbackReason).toBe("server-error")
       expect(result.kind).toBe("allow")
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("access and unavailable-endpoint failures fall back immediately", async () => {
