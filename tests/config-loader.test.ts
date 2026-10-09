@@ -429,10 +429,7 @@ describe("config loader — trust boundary", () => {
         projectConfigPath(dir),
         JSON.stringify({ systemOneFallback: { model: "openrouter/typesafe/jev-1.13" } }),
       )
-      const untrusted = loadResolvedConfig(
-        { model: "opencode/jev-1.13-free" },
-        dir,
-      )
+      const untrusted = loadResolvedConfig({ model: "opencode/jev-1.13-free" }, dir)
       expect(untrusted.systemOneFallback).toBeUndefined()
 
       const trusted = loadResolvedConfig(
@@ -463,10 +460,13 @@ describe("config loader — trust boundary", () => {
     const global = join(dir, "global.jsonc")
     setGlobalConfigPathForTests(global)
     try {
-      writeFileSync(global, JSON.stringify({
-        model: "opencode/jev-1.13-free",
-        systemOneFallback: { model: "unknown/provider" },
-      }))
+      writeFileSync(
+        global,
+        JSON.stringify({
+          model: "opencode/jev-1.13-free",
+          systemOneFallback: { model: "unknown/provider" },
+        }),
+      )
       const loaded = loadResolvedConfig(undefined)
       expect(loaded.systemOneFallback).toBeUndefined()
       expect(loaded.configDegraded).toContain(

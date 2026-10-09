@@ -320,12 +320,11 @@ export async function setupWithServices(
               result.kind === "allow" ? "approved" : result.kind === "deny" ? "denied" : "manual",
               {
                 model: result.reviewerModel ?? config.model,
-                variant:
-                  result.reviewerEscalatedFrom
-                    ? (config.escalationReviewer?.variant ?? config.variant)
-                    : isSystemOneReviewerModel(config.model)
-                      ? "system-one"
-                      : config.variant,
+                variant: result.reviewerEscalatedFrom
+                  ? (config.escalationReviewer?.variant ?? config.variant)
+                  : isSystemOneReviewerModel(config.model)
+                    ? "system-one"
+                    : config.variant,
                 timeoutMs: budget,
                 reason: result.reason,
                 ...(result.decision ? { decision: result.decision } : {}),

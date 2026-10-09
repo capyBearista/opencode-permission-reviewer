@@ -42,7 +42,10 @@ export function createV2ReviewerBackend(context: Context, config: ReviewerConfig
   const fallback: SystemOneFallbackRoute | undefined = config.systemOneFallback
     ? {
         model: config.systemOneFallback.model,
-        invoke: async (state: Parameters<ReturnType<typeof createSystemOneInvoker>>[0], signal: AbortSignal) => {
+        invoke: async (
+          state: Parameters<ReturnType<typeof createSystemOneInvoker>>[0],
+          signal: AbortSignal,
+        ) => {
           // Resolve the active credential only when a paid request is required.
           // Never read arbitrary environment keys or expose credential material to audit.
           const connection = await context.integration.connection.active("openrouter")

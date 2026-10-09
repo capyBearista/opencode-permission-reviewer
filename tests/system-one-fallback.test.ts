@@ -48,7 +48,13 @@ function answer(model = "jev-1.13-free", outcome = "allow", outcomeConfidence = 
   const answers = Object.fromEntries(
     Object.entries(SYSTEM_ONE_QUESTIONS).map(([name, question]) => {
       if (question.type === "noul") {
-        return [name, { type: "noul", noul: ["material_authorization", "within_intent_scope"].includes(name) ? 1 : 0 }]
+        return [
+          name,
+          {
+            type: "noul",
+            noul: ["material_authorization", "within_intent_scope"].includes(name) ? 1 : 0,
+          },
+        ]
       }
       const criteria = Object.keys(question.criteria)
       const choice = picks[name] ?? criteria[0]!
@@ -98,8 +104,14 @@ describe("System One paid transport fallback", () => {
       let free = 0
       let paid = 0
       const backend = create(
-        async () => { free++; return answer("jev-1.13-free", outcome) },
-        async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+        async () => {
+          free++
+          return answer("jev-1.13-free", outcome)
+        },
+        async () => {
+          paid++
+          return answer("typesafe/jev-1.13-20260917")
+        },
       )
       const attempt = new ReviewAttempt("g", 8000)
       try {
@@ -109,7 +121,9 @@ describe("System One paid transport fallback", () => {
         expect(result.reviewerModel).toBe(FREE)
         expect(result.fallbackFrom).toBeUndefined()
         expect(result.decisionSource).toBe("system-one-reviewer")
-      } finally { attempt.close("finished") }
+      } finally {
+        attempt.close("finished")
+      }
     }
   })
 
@@ -117,8 +131,14 @@ describe("System One paid transport fallback", () => {
     let free = 0
     let paid = 0
     const backend = create(
-      async () => { if (++free < 3) throw http(503); return answer() },
-      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+      async () => {
+        if (++free < 3) throw http(503)
+        return answer()
+      },
+      async () => {
+        paid++
+        return answer("typesafe/jev-1.13-20260917")
+      },
     )
     const attempt = new ReviewAttempt("g", 30000)
     try {
@@ -126,15 +146,23 @@ describe("System One paid transport fallback", () => {
       expect(free).toBe(3)
       expect(paid).toBe(0)
       expect(result.kind).toBe("allow")
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("exhausted rate limits fall back once with correct model attribution", async () => {
     let free = 0
     let paid = 0
     const backend = create(
-      async () => { free++; throw http(429) },
-      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+      async () => {
+        free++
+        throw http(429)
+      },
+      async () => {
+        paid++
+        return answer("typesafe/jev-1.13-20260917")
+      },
     )
     const attempt = new ReviewAttempt("g", 30000)
     try {
@@ -147,7 +175,9 @@ describe("System One paid transport fallback", () => {
       expect(result.fallbackReason).toBe("rate-limited")
       expect(result.fallbackAttempts).toBe(3)
       expect(result.reviewerEscalatedFrom).toBeUndefined()
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("short budgets preserve time for paid fallback instead of exhausting free retries", async () => {
@@ -181,8 +211,14 @@ describe("System One paid transport fallback", () => {
       let free = 0
       let paid = 0
       const backend = create(
-        async () => { free++; throw http(status) },
-        async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+        async () => {
+          free++
+          throw http(status)
+        },
+        async () => {
+          paid++
+          return answer("typesafe/jev-1.13-20260917")
+        },
       )
       const attempt = new ReviewAttempt("g", 8000)
       try {
@@ -191,7 +227,9 @@ describe("System One paid transport fallback", () => {
         expect(paid).toBe(1)
         expect(result.fallbackAttempts).toBe(1)
         expect(result.kind).toBe("allow")
-      } finally { attempt.close("finished") }
+      } finally {
+        attempt.close("finished")
+      }
     }
   })
 
@@ -199,8 +237,13 @@ describe("System One paid transport fallback", () => {
     for (const status of [400, 413, 422]) {
       let paid = 0
       const backend = create(
-        async () => { throw http(status) },
-        async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+        async () => {
+          throw http(status)
+        },
+        async () => {
+          paid++
+          return answer("typesafe/jev-1.13-20260917")
+        },
       )
       const attempt = new ReviewAttempt("g", 8000)
       try {
@@ -209,15 +252,23 @@ describe("System One paid transport fallback", () => {
         expect(result.decisionSource).toBe("failure-safe")
         expect(result.kind).toBe("escalate")
         expect(result.reviewerModel).toBeUndefined()
-      } finally { attempt.close("finished") }
+      } finally {
+        attempt.close("finished")
+      }
     }
   })
 
   test("malformed and wrong-identity free responses retry and fall back", async () => {
-    for (const invalid of [{ model: "other-model", answers: {} }, { ...answer(), answers: {} }]) {
+    for (const invalid of [
+      { model: "other-model", answers: {} },
+      { ...answer(), answers: {} },
+    ]) {
       let free = 0
       const backend = create(
-        async () => { free++; return invalid },
+        async () => {
+          free++
+          return invalid
+        },
         async () => answer("typesafe/jev-1.13-20260917"),
       )
       const attempt = new ReviewAttempt("g", 30000)
@@ -226,13 +277,17 @@ describe("System One paid transport fallback", () => {
         expect(free).toBe(3)
         expect(result.reviewerModel).toBe(PAID)
         expect(result.fallbackReason).toBe("invalid-response")
-      } finally { attempt.close("finished") }
+      } finally {
+        attempt.close("finished")
+      }
     }
   })
 
   test("a malformed paid result cannot auto-approve; fallback provenance remains", async () => {
     const backend = create(
-      async () => { throw http(401) },
+      async () => {
+        throw http(401)
+      },
       async () => ({ model: "wrong", answers: {} }),
     )
     const attempt = new ReviewAttempt("g", 8000)
@@ -242,16 +297,25 @@ describe("System One paid transport fallback", () => {
       expect(result.decisionSource).toBe("failure-safe")
       expect(result.reviewerModel).toBeUndefined()
       expect(result.fallbackReason).toBe("access-unavailable")
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("missing paid credentials fail safely without calling Luna", async () => {
     let luna = 0
     const backend = create(
-      async () => { throw http(403) },
-      async () => { throw new Error("No active OpenRouter connection") },
+      async () => {
+        throw http(403)
+      },
+      async () => {
+        throw new Error("No active OpenRouter connection")
+      },
       config(),
-      async () => { luna++; return { kind: "allow", reason: "unexpected" } },
+      async () => {
+        luna++
+        return { kind: "allow", reason: "unexpected" }
+      },
     )
     const attempt = new ReviewAttempt("g", 8000)
     try {
@@ -260,16 +324,23 @@ describe("System One paid transport fallback", () => {
       expect(result.kind).toBe("escalate")
       expect(luna).toBe(0)
       expect(result.fallbackFrom).toBe(FREE)
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("a clear paid escalation stays manual without invoking Luna", async () => {
     let luna = 0
     const backend = create(
-      async () => { throw http(401) },
+      async () => {
+        throw http(401)
+      },
       async () => answer("typesafe/jev-1.13-20260917", "escalate"),
       config(),
-      async () => { luna++; return { kind: "deny", reason: "Reasoning denial", decisionSource: "llm-reviewer" } },
+      async () => {
+        luna++
+        return { kind: "deny", reason: "Reasoning denial", decisionSource: "llm-reviewer" }
+      },
     )
     const attempt = new ReviewAttempt("g", 8000)
     try {
@@ -279,13 +350,17 @@ describe("System One paid transport fallback", () => {
       expect(result.reviewerModel).toBe(PAID)
       expect(result.fallbackFrom).toBe(FREE)
       expect(luna).toBe(0)
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("paid uncertain outcomes use Luna without losing paid fallback provenance", async () => {
     let luna = 0
     const backend = create(
-      async () => { throw http(401) },
+      async () => {
+        throw http(401)
+      },
       async () => answer("typesafe/jev-1.13-20260917", "escalate", 0.6),
       config(),
       async () => {
@@ -303,15 +378,23 @@ describe("System One paid transport fallback", () => {
       expect(result.fallbackFrom).toBe(FREE)
       expect(result.fallbackReason).toBe("access-unavailable")
       expect(result.fallbackAttempts).toBe(1)
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 
   test("cancellation during retry backoff prevents paid requests", async () => {
     let free = 0
     let paid = 0
     const backend = create(
-      async () => { free++; throw http(503) },
-      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+      async () => {
+        free++
+        throw http(503)
+      },
+      async () => {
+        paid++
+        return answer("typesafe/jev-1.13-20260917")
+      },
     )
     const attempt = new ReviewAttempt("g", 30000)
     const pending = backend.review(envelope(), attempt)
@@ -327,8 +410,13 @@ describe("System One paid transport fallback", () => {
   test("no trusted fallback preserves primary-only failure-safe behavior", async () => {
     let paid = 0
     const backend = create(
-      async () => { throw http(503) },
-      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+      async () => {
+        throw http(503)
+      },
+      async () => {
+        paid++
+        return answer("typesafe/jev-1.13-20260917")
+      },
       resolveConfig({ model: FREE }),
     )
     const attempt = new ReviewAttempt("g", 8000)
@@ -336,6 +424,8 @@ describe("System One paid transport fallback", () => {
       const result = await backend.review(envelope(), attempt)
       expect(paid).toBe(0)
       expect(result.decisionSource).toBe("failure-safe")
-    } finally { attempt.close("finished") }
+    } finally {
+      attempt.close("finished")
+    }
   })
 })

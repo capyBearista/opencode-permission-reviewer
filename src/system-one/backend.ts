@@ -64,7 +64,8 @@ function classifyFreeFailure(error: unknown): FreeFailure {
       return { reason: "endpoint-unavailable", retry: false, fallback: true }
     if (status === 408 || status === 429 || status >= 500) {
       return {
-        reason: status === 429 ? "rate-limited" : status === 408 ? "request-timeout" : "server-error",
+        reason:
+          status === 429 ? "rate-limited" : status === 408 ? "request-timeout" : "server-error",
         retry: true,
         fallback: true,
         ...(error instanceof RateLimitError && error.retryAfterMs !== undefined

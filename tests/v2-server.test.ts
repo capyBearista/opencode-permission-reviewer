@@ -95,12 +95,13 @@ async function fixture(
     },
   } as unknown as OpenCodeClient
   const dispose = await setupWithServices(ctx, {
-    loadConfig: () => config({
-      audit: true,
-      auditPath,
-      reviewBudgetMs: options.budget ?? 5000,
-      ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
-    }),
+    loadConfig: () =>
+      config({
+        audit: true,
+        auditPath,
+        reviewBudgetMs: options.budget ?? 5000,
+        ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
+      }),
     connect: async () => {
       if (options.connectionError) throw new Error("Connection identity mismatch")
       return client

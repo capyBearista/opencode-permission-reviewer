@@ -22,19 +22,27 @@ function decision(model: string) {
     answers: Object.fromEntries(
       Object.entries(SYSTEM_ONE_QUESTIONS).map(([name, question]) => {
         if (question.type === "noul") {
-          return [name, {
-            type: "noul",
-            noul: ["material_authorization", "within_intent_scope"].includes(name) ? 1 : 0,
-          }]
+          return [
+            name,
+            {
+              type: "noul",
+              noul: ["material_authorization", "within_intent_scope"].includes(name) ? 1 : 0,
+            },
+          ]
         }
         const values = Object.keys(question.criteria)
         const chosen = selected[name]!
-        return [name, {
-          type: "choice",
-          choice: chosen,
-          confidence: 1,
-          probabilities: Object.fromEntries(values.map((value) => [value, value === chosen ? 1 : 0])),
-        }]
+        return [
+          name,
+          {
+            type: "choice",
+            choice: chosen,
+            confidence: 1,
+            probabilities: Object.fromEntries(
+              values.map((value) => [value, value === chosen ? 1 : 0]),
+            ),
+          },
+        ]
       }),
     ),
   }
@@ -121,7 +129,10 @@ test("V2 factory does not resolve paid credentials for valid free decisions", as
   const context = {
     integration: {
       connection: {
-        active: async () => { connections++; return undefined },
+        active: async () => {
+          connections++
+          return undefined
+        },
       },
     },
   } as unknown as Parameters<Plugin.Plugin["setup"]>[0]
