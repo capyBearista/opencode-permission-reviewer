@@ -120,7 +120,7 @@ describe("System One paid transport fallback", () => {
       async () => { if (++free < 3) throw http(503); return answer() },
       async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
     )
-    const attempt = new ReviewAttempt("g", 8000)
+    const attempt = new ReviewAttempt("g", 30000)
     try {
       const result = await backend.review(envelope(), attempt)
       expect(free).toBe(3)
@@ -136,7 +136,7 @@ describe("System One paid transport fallback", () => {
       async () => { free++; throw http(429) },
       async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
     )
-    const attempt = new ReviewAttempt("g", 8000)
+    const attempt = new ReviewAttempt("g", 30000)
     try {
       const result = await backend.review(envelope(), attempt)
       expect(free).toBe(3)
@@ -147,6 +147,24 @@ describe("System One paid transport fallback", () => {
       expect(result.fallbackReason).toBe("rate-limited")
       expect(result.fallbackAttempts).toBe(3)
       expect(result.reviewerEscalatedFrom).toBeUndefined()
+    } finally { attempt.close("finished") }
+  })
+
+  test("short budgets preserve time for paid fallback instead of exhausting free retries", async () => {
+    let free = 0
+    let paid = 0
+    const backend = create(
+      async () => { free++; throw http(503) },
+      async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
+    )
+    const attempt = new ReviewAttempt("g", 8000)
+    try {
+      const result = await backend.review(envelope(), attempt)
+      expect(free).toBe(1)
+      expect(paid).toBe(1)
+      expect(result.fallbackAttempts).toBe(1)
+      expect(result.fallbackReason).toBe("server-error")
+      expect(result.kind).toBe("allow")
     } finally { attempt.close("finished") }
   })
 
@@ -194,7 +212,7 @@ describe("System One paid transport fallback", () => {
         async () => { free++; return invalid },
         async () => answer("typesafe/jev-1.13-20260917"),
       )
-      const attempt = new ReviewAttempt("g", 8000)
+      const attempt = new ReviewAttempt("g", 30000)
       try {
         const result = await backend.review(envelope(), attempt)
         expect(free).toBe(3)
@@ -287,7 +305,7 @@ describe("System One paid transport fallback", () => {
       async () => { free++; throw http(503) },
       async () => { paid++; return answer("typesafe/jev-1.13-20260917") },
     )
-    const attempt = new ReviewAttempt("g", 8000)
+    const attempt = new ReviewAttempt("g", 30000)
     const pending = backend.review(envelope(), attempt)
     await new Promise((resolve) => setTimeout(resolve, 30))
     attempt.close("cancelled")

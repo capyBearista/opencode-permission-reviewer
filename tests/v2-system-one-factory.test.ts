@@ -91,7 +91,7 @@ test("V2 factory retrieves saved OpenRouter credentials only after free access f
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer synthetic-saved-key")
     expect(JSON.parse(String(init?.body)).model).toBe("jev-1.13")
     return Response.json(decision("typesafe/jev-1.13-20260917"))
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const config = resolveConfig({
     model: "opencode/jev-1.13-free",
@@ -129,7 +129,7 @@ test("V2 factory does not resolve paid credentials for valid free decisions", as
   globalThis.fetch = (async () => {
     paid++
     return Response.json(decision("jev-1.13-free"))
-  }) as typeof fetch
+  }) as unknown as typeof fetch
 
   const backend = createV2ReviewerBackend(
     context,

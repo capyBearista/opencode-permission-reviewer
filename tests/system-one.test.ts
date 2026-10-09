@@ -209,7 +209,7 @@ describe("System One reviewer", () => {
     )
     expect(JSON.parse(String(calls[0]?.init.body)).model).toBe("jev-1.13")
     expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
-    expect(parseSystemOneReview({ ...raw, model: "jev-1.13-free" }, config)).toBeUndefined()
+    expect(parseSystemOneReview({ ...(raw as Record<string, unknown>), model: "jev-1.13-free" }, config)).toBeUndefined()
   })
 
   test("rejects an unexpected returned model from Command Code", () => {
