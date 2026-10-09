@@ -37,11 +37,11 @@
         "solid-js": ">=1.9.12",
       },
       "optionalPeers": [
+        "@opencode-ai/plugin",
+        "@opencode/plugin",
         "@opentui/core",
         "@opentui/solid",
         "solid-js",
-        "@opencode-ai/plugin",
-        "@opencode/plugin",
       ],
     },
   },
