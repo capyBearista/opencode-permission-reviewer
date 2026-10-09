@@ -58,7 +58,7 @@ function response(overrides: Record<string, unknown> = {}) {
     absolute_policy_deny: { type: "noul", noul: 0 },
     ...overrides,
   }
-  return { model: "jev-1.13.0", answers, usage: { input_tokens: 10, output_tokens: 0 } }
+  return { model: "jev-1.13-free", answers, usage: { input_tokens: 10, output_tokens: 0 } }
 }
 
 function envelope(): ReviewEnvelope {
@@ -95,6 +95,7 @@ describe("System One reviewer", () => {
   test("selects only known Jev providers and model IDs", () => {
     expect(isSystemOneReviewerModel("opencode/jev-1.13-free")).toBe(true)
     expect(isSystemOneReviewerModel("typesafe-ai/jev-latest")).toBe(true)
+    expect(isSystemOneReviewerModel("openrouter/typesafe/jev-1.13")).toBe(false)
     expect(isSystemOneReviewerModel("commandcode/typesafe/jev")).toBe(true)
     expect(isSystemOneReviewerModel("commandcode/jev-1.13")).toBe(false)
     expect(isSystemOneReviewerModel("commandcode/typesafe/other")).toBe(false)
@@ -161,6 +162,54 @@ describe("System One reviewer", () => {
       if (previousBaseURL === undefined) delete process.env.TYPESAFE_BASE_URL
       else process.env.TYPESAFE_BASE_URL = previousBaseURL
     }
+  })
+
+  test("routes the free Zen promotion anonymously with no API key", async () => {
+    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const invoke = createSystemOneInvoker(config, async (url, init) => {
+      calls.push({ url: String(url), init: init ?? {} })
+      return Response.json(response())
+    })
+    const state = {
+      trustedPolicy: { reviewer: "trusted", tenant: "tenant" },
+      untrustedEvidence: "read README",
+    }
+    const raw = await invoke(state, new AbortController().signal)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe("https://opencode.ai/zen/v1/systemone")
+    expect(new Headers(calls[0]?.init.headers).has("authorization")).toBe(false)
+    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
+      model: "jev-1.13-free",
+      state,
+      questions: SYSTEM_ONE_QUESTIONS,
+    })
+    expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
+  })
+
+  test("paid OpenRouter uses the supplied native key and precise model ID", async () => {
+    const config = resolveConfig({ model: "openrouter/typesafe/jev-1.13" })
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const invoke = createSystemOneInvoker(
+      config,
+      async (url, init) => {
+        calls.push({ url: String(url), init: init ?? {} })
+        return Response.json({ ...response(), model: "typesafe/jev-1.13-20260917" })
+      },
+      { apiKey: "synthetic-native-openrouter-key", disableRetries: true },
+    )
+    const raw = await invoke(
+      { trustedPolicy: { reviewer: "trusted", tenant: "tenant" }, untrustedEvidence: "read" },
+      new AbortController().signal,
+    )
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.url).toBe("https://openrouter.ai/api/v1/systemone")
+    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe(
+      "Bearer synthetic-native-openrouter-key",
+    )
+    expect(JSON.parse(String(calls[0]?.init.body)).model).toBe("jev-1.13")
+    expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
+    expect(parseSystemOneReview({ ...raw, model: "jev-1.13-free" }, config)).toBeUndefined()
   })
 
   test("rejects an unexpected returned model from Command Code", () => {
