@@ -313,8 +313,9 @@ describe("npm install host-owned TUI runtime", () => {
           visit(child, entry.name)
           continue
         }
-        if (scope !== undefined || dir.endsWith("node_modules"))
+        if (scope !== undefined || dir.endsWith("node_modules")) {
           installed.add(scope ? `${scope}/${entry.name}` : entry.name)
+        }
         visit(child)
       }
     }
@@ -326,7 +327,9 @@ describe("npm install host-owned TUI runtime", () => {
       "seroval",
       "seroval-plugins",
       "@babel/core",
-    ]) expect(installed.has(name)).toBe(false)
+    ]) {
+      expect(installed.has(name)).toBe(false)
+    }
     expect(existsSync(join(pluginDir, "dist", "tui", "tui.tsx"))).toBe(true)
   }, 240_000)
 
@@ -402,9 +405,7 @@ describe("npm install host-owned TUI runtime", () => {
       "@msgpackr-extract/msgpackr-extract-linux-x64",
       "@msgpackr-extract/msgpackr-extract-win32-x64",
     ])
-    const unexpected = natives.filter(
-      (name) => !msgpackrPlatforms.has(name),
-    )
+    const unexpected = natives.filter((name) => !msgpackrPlatforms.has(name))
     if (unexpected.length > 0) console.log("consumer native set:", natives)
     expect(unexpected).toEqual([])
 
