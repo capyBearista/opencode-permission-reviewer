@@ -18,6 +18,7 @@ import {
   enforceParsedSystemOneReview,
   parseSystemOneReview,
   SYSTEM_ONE_QUESTIONS,
+  type ParsedSystemOneReview,
   type SystemOneState,
 } from "./review.ts"
 
@@ -38,7 +39,6 @@ const SYSTEM_ONE_RETRY = {
   apiConnectionError: false,
   apiTimeoutError: false,
 }
-
 
 const FREE_MODEL = "opencode/jev-1.13-free"
 const FREE_MAX_ATTEMPTS = 3
@@ -76,7 +76,10 @@ function classifyFreeFailure(error: unknown): FreeFailure {
   }
   if (error instanceof APIUserAbortError)
     return { reason: "cancelled", retry: false, fallback: false }
-  if (error instanceof APITimeoutError || (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)))
+  if (
+    error instanceof APITimeoutError ||
+    (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name))
+  )
     return { reason: "request-timeout", retry: true, fallback: true }
   if (error instanceof APIConnectionError || error instanceof TypeError)
     return { reason: "network-error", retry: true, fallback: true }
@@ -243,7 +246,7 @@ export class SystemOneReviewerBackend {
       const primary = this.invoke ?? createSystemOneInvoker(this.config)
       let decidingModel = this.config.model
       let response: unknown
-      let parsed
+      let parsed: ParsedSystemOneReview | undefined
 
       // An explicit, trusted fallback enables bounded retries; all other
       // reviewer configurations retain their existing single-invocation path.
@@ -260,10 +263,7 @@ export class SystemOneReviewerBackend {
           const timeout = Math.min(FREE_TIMEOUT_MS, attempt.remainingMs())
           try {
             response = await attempt.wait(
-              primary(
-                state,
-                AbortSignal.any([attempt.signal, AbortSignal.timeout(timeout)]),
-              ),
+              primary(state, AbortSignal.any([attempt.signal, AbortSignal.timeout(timeout)])),
             )
             parsed = parseSystemOneReview(response, this.config)
             if (parsed) break
@@ -353,7 +353,10 @@ export class SystemOneReviewerBackend {
       return applyEscalationDisposition(
         {
           kind: "escalate",
-          reason: formatFailureReason("System One reviewer", error),
+          reason:
+            error instanceof APIError
+              ? `System One reviewer failed (HTTP ${error.status}).`
+              : formatFailureReason("System One reviewer", error),
           decisionSource: "failure-safe",
           ...fallbackInfo,
         },
@@ -366,5 +369,4 @@ export class SystemOneReviewerBackend {
       this.recordReviewerMs?.(envelope, elapsed)
     }
   }
-
 }
