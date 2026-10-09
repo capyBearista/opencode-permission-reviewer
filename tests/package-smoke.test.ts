@@ -206,17 +206,17 @@ describe("supply-chain surface", () => {
     // change: update this frozen list in the same commit that adds it.
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
       "@opencode/client",
-      "@opentui/core",
-      "@opentui/solid",
       "@typesafe-ai/sdk",
       "jsonc-parser",
       "semver",
-      "solid-js",
       "zod",
     ])
     expect(Object.keys(pkg.peerDependencies).sort()).toEqual([
       "@opencode-ai/plugin",
       "@opencode/plugin",
+      "@opentui/core",
+      "@opentui/solid",
+      "solid-js",
     ])
     // The effect runtime reaches users through the host's plugin SDK, never
     // through a direct dependency of ours.
@@ -243,37 +243,35 @@ describe("supply-chain surface", () => {
   }, 120_000)
 })
 
-// The TUI overlay is raw TSX that the host compiles against ITS @opentui/solid
-// and renders through the Solid runtime resolved from OUR dependency tree.
-// OpenCode installs npm plugins with npm/arborist hoisting: if our solid-js pin
-// differs from @opentui/solid's exact peer pin, arborist places TWO solid-js
-// copies in the tree (one nested in our package, one hoisted). The overlay's
-// reactivity then lives in a runtime the JSX renderer never sees and the panel
-// silently renders nothing while the server side keeps working. These guards
-// keep the shipped dependency pins compatible with that install shape.
-describe("npm install dedupe shape", () => {
-  test("shipped solid-js and @opentui pins match @opentui/solid's exact requirements", async () => {
+// The TUI is compiled from raw TSX against the host-owned Solid/OpenTUI
+// runtime. The published plugin must not install a second renderer or the
+// Seroval/Babel tree through optional rendering peer dependencies.
+describe("npm install host-owned TUI runtime", () => {
+  test("optional peers match development renderer requirements", async () => {
     const pkg = JSON.parse(await readFromTarball(packOnce(), "package.json")) as {
       dependencies: Record<string, string>
+      devDependencies: Record<string, string>
+      peerDependencies: Record<string, string>
+      peerDependenciesMeta: Record<string, { optional: boolean }>
     }
     const opentui = JSON.parse(
       await Bun.file(join(CWD, "node_modules/@opentui/solid/package.json")).text(),
     ) as {
       version: string
       peerDependencies: Record<string, string>
-      dependencies: Record<string, string>
     }
-
-    // Exact string equality: a "compatible" range is not enough. Arborist only
-    // dedupes to a single copy when the pins resolve to the same version.
-    expect(pkg.dependencies["solid-js"]).toBe(opentui.peerDependencies["solid-js"])
-    expect(pkg.dependencies["@opentui/core"]).toBe(opentui.dependencies["@opentui/core"])
-    expect(pkg.dependencies["@opentui/solid"]).toBe(opentui.version)
+    for (const name of ["@opentui/core", "@opentui/solid", "solid-js"]) {
+      expect(pkg.dependencies[name]).toBeUndefined()
+      expect(pkg.peerDependenciesMeta[name]).toEqual({ optional: true })
+      expect(pkg.devDependencies[name]).toBeDefined()
+    }
+    expect(pkg.devDependencies["solid-js"]).toBe(opentui.peerDependencies["solid-js"])
+    expect(pkg.devDependencies["@opentui/solid"]).toBe(opentui.version)
+    expect(pkg.devDependencies["@opentui/core"]).toBe(opentui.version)
   }, 120_000)
 
-  test("an npm install of the tarball keeps a single solid-js runtime in the tree", async () => {
+  test("a standalone npm consumer imports the server without installing TUI libraries", async () => {
     installDir = mkdtempSync(join(tmpdir(), "reviewer-install-"))
-    // Mirror opencode's installer (arborist reify with ignoreScripts).
     const install = Bun.spawnSync({
       cmd: [
         "npm",
@@ -290,11 +288,9 @@ describe("npm install dedupe shape", () => {
       stderr: "pipe",
     })
     expect(install.exitCode).toBe(0)
-
     const pluginDir = join(installDir, "node_modules", "opencode-permission-reviewer")
     expect(existsSync(pluginDir)).toBe(true)
 
-    // Host SDK dependencies may be nested; only the rendering runtime must be shared.
     const imported = Bun.spawnSync({
       cmd: [
         "bun",
@@ -307,32 +303,31 @@ describe("npm install dedupe shape", () => {
     })
     expect(imported.exitCode).toBe(0)
 
-    // Tree-wide scan: exactly one solid-js package directory anywhere.
-    const solidDirs: string[] = []
-    const walk = (dir: string) => {
+    const installed = new Set<string>()
+    const visit = (dir: string, scope?: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name === ".bin" || entry.name === ".package-lock.json")
           continue
-        const full = join(dir, entry.name)
-        if (dir.endsWith("node_modules") && entry.name === "solid-js") {
-          solidDirs.push(full)
-          continue // do not descend into the package's own internals
+        const child = join(dir, entry.name)
+        if (dir.endsWith("node_modules") && entry.name.startsWith("@")) {
+          visit(child, entry.name)
+          continue
         }
-        walk(full)
+        if (scope !== undefined || dir.endsWith("node_modules"))
+          installed.add(scope ? `${scope}/${entry.name}` : entry.name)
+        visit(child)
       }
     }
-    walk(join(installDir, "node_modules"))
-    expect(solidDirs).toHaveLength(1)
-
-    // The overlay entry and @opentui/solid must resolve solid-js to the same
-    // physical copy, i.e. one shared runtime for signals and rendering.
-    const fromEntry = Bun.resolveSync("solid-js", join(pluginDir, "dist", "tui"))
-    const fromOpentui = Bun.resolveSync(
+    visit(join(installDir, "node_modules"))
+    for (const name of [
+      "@opentui/core",
+      "@opentui/solid",
       "solid-js",
-      join(installDir, "node_modules", "@opentui", "solid"),
-    )
-    expect(fromEntry.startsWith(solidDirs[0]!)).toBe(true)
-    expect(fromOpentui.startsWith(solidDirs[0]!)).toBe(true)
+      "seroval",
+      "seroval-plugins",
+      "@babel/core",
+    ]) expect(installed.has(name)).toBe(false)
+    expect(existsSync(join(pluginDir, "dist", "tui", "tui.tsx"))).toBe(true)
   }, 240_000)
 
   test("consumer tree dependency and native surveillance", async () => {
@@ -360,21 +355,6 @@ describe("npm install dedupe shape", () => {
       })
       expect(install.exitCode).toBe(0)
     }
-
-    // @babel/core reaches the consumer tree through @opentui/solid, which
-    // pins it EXACTLY (7.28.0 at every published 0.5.x). GHSA-4x5r-pxfx-6jf8
-    // (arbitrary file read via a crafted sourceMappingURL comment) affects
-    // <= 7.29.0. The exposure is residual and DOCUMENTED, not fixed: in this
-    // package babel only compiles the TUI sources we ship, never
-    // attacker-influenced input. When @opentui/solid publishes a fixed pin,
-    // this assertion forces the conscious version bump and doc update.
-    const babelDir = existsSync(join(installDir, "node_modules", "@babel", "core"))
-      ? join(installDir, "node_modules", "@babel", "core")
-      : join(installDir, "node_modules", "@opentui", "solid", "node_modules", "@babel", "core")
-    const babelPkg = JSON.parse(readFileSync(join(babelDir, "package.json"), "utf8")) as {
-      version: string
-    }
-    expect(babelPkg.version).toBe("7.28.0")
 
     // The build toolchain must not follow the tarball: esbuild (and the
     // advisory it carries) is dev-only by design.
@@ -412,9 +392,8 @@ describe("npm install dedupe shape", () => {
       }
     }
     walkNatives(join(installDir, "node_modules"))
-    expect(natives.some((name) => name.startsWith("@opentui/core-"))).toBe(true)
-    // OpenTUI carries the renderer; the client's effect dependency carries
-    // optional msgpackr accelerators. Freeze both reviewed platform families.
+    // The host owns OpenTUI; only client-side optional msgpackr accelerators
+    // may appear in the plugin-only consumer installation.
     const msgpackrPlatforms = new Set([
       "@msgpackr-extract/msgpackr-extract-darwin-arm64",
       "@msgpackr-extract/msgpackr-extract-darwin-x64",
@@ -424,14 +403,14 @@ describe("npm install dedupe shape", () => {
       "@msgpackr-extract/msgpackr-extract-win32-x64",
     ])
     const unexpected = natives.filter(
-      (name) => !name.startsWith("@opentui/core-") && !msgpackrPlatforms.has(name),
+      (name) => !msgpackrPlatforms.has(name),
     )
     if (unexpected.length > 0) console.log("consumer native set:", natives)
     expect(unexpected).toEqual([])
 
     // npm audit over the CONSUMER tree (registry reachability required; the
     // repository's own overrides never apply here). No high or critical
-    // advisories; low ones are the documented residuals above.
+    // advisories may be introduced by this plugin.
     const audit = Bun.spawnSync({
       cmd: ["npm", "audit", "--prefix", installDir, "--audit-level=high", "--json"],
       cwd: installDir,
