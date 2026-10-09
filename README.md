@@ -263,8 +263,9 @@ compatibility.
 
 V2 uses the official authenticated client to manage an isolated reviewer
 session only when a reasoning review is configured and requested. It reuses one
-reviewer location per backend, excludes configured MCP servers there, and checks
-that the location has no MCP servers before each review. Primary Decisions
+reviewer location per backend, removes every MCP server there, including ones
+other plugins add from code, and checks that the location has no MCP servers
+before each review. Primary Decisions
 requests use the fixed endpoints above.
 The registered service is discovered without starting or stopping it. For an
 independent `serve`, configure `OPENCODE_PERMISSION_REVIEWER_HOST_URL` and the

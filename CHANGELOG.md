@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MCP servers that other plugins add from code, such as
+  `@upstash/context7-opencode`, are removed from the reviewer location. They
+  previously reached it and made every reasoning review fail closed.
+
 - Package script evidence starts from the shell command's `workdir`, resolving
   relative paths against the session directory, instead of always using the
   session directory. The `workdir` is followed to its real path, as package

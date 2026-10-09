@@ -416,6 +416,12 @@ test("factory uses only reasoningModels[0] and preserves its text format, varian
   const registration = () => ({ dispose: async () => void disposed++ })
   const isolatedContext = {
     location: { directory: "/workspace/operational" },
+    mcp: {
+      transform: async (callback: (editor: { list(): []; remove(): void }) => void) => {
+        callback({ list: () => [], remove: () => {} })
+        return registration()
+      },
+    },
     tool: {
       transform: async (
         callback: (editor: { add(value: typeof toolDefinition): void }) => void,
