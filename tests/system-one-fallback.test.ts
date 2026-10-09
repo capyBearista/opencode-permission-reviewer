@@ -36,7 +36,7 @@ function envelope(): ReviewEnvelope {
   }
 }
 
-function answer(model = "jev-1.13-free", outcome = "allow") {
+function answer(model = "jev-1.13-free", outcome = "allow", outcomeConfidence = 1) {
   const picks: Record<string, string> = {
     outcome,
     risk_level: "low",
@@ -52,13 +52,19 @@ function answer(model = "jev-1.13-free", outcome = "allow") {
       }
       const criteria = Object.keys(question.criteria)
       const choice = picks[name] ?? criteria[0]!
+      const confidence = name === "outcome" ? outcomeConfidence : 1
       return [
         name,
         {
           type: "choice",
           choice,
-          confidence: 1,
-          probabilities: Object.fromEntries(criteria.map((candidate) => [candidate, candidate === choice ? 1 : 0])),
+          confidence,
+          probabilities: Object.fromEntries(
+            criteria.map((candidate) => [
+              candidate,
+              candidate === choice ? confidence : (1 - confidence) / (criteria.length - 1),
+            ]),
+          ),
         },
       ]
     }),
@@ -231,7 +237,7 @@ describe("System One paid transport fallback", () => {
     } finally { attempt.close("finished") }
   })
 
-  test("valid difficult paid responses retain both fallback and Luna provenance", async () => {
+  test("a clear paid escalation stays manual without invoking Luna", async () => {
     let luna = 0
     const backend = create(
       async () => { throw http(401) },
@@ -247,6 +253,30 @@ describe("System One paid transport fallback", () => {
       expect(result.reviewerModel).toBe(PAID)
       expect(result.fallbackFrom).toBe(FREE)
       expect(luna).toBe(0)
+    } finally { attempt.close("finished") }
+  })
+
+  test("paid uncertain outcomes use Luna without losing paid fallback provenance", async () => {
+    let luna = 0
+    const backend = create(
+      async () => { throw http(401) },
+      async () => answer("typesafe/jev-1.13-20260917", "escalate", 0.6),
+      config(),
+      async () => {
+        luna++
+        return { kind: "deny", reason: "Luna denied", decisionSource: "llm-reviewer" }
+      },
+    )
+    const attempt = new ReviewAttempt("g", 8000)
+    try {
+      const result = await backend.review(envelope(), attempt)
+      expect(result.kind).toBe("deny")
+      expect(luna).toBe(1)
+      expect(result.reviewerModel).toBe("openrouter/openai/gpt-6-luna")
+      expect(result.reviewerEscalatedFrom?.model).toBe(PAID)
+      expect(result.fallbackFrom).toBe(FREE)
+      expect(result.fallbackReason).toBe("access-unavailable")
+      expect(result.fallbackAttempts).toBe(1)
     } finally { attempt.close("finished") }
   })
 
