@@ -84,6 +84,9 @@ export function applyEscalationDisposition(
     ...(result.reviewerEscalatedFrom === undefined
       ? {}
       : { reviewerEscalatedFrom: result.reviewerEscalatedFrom }),
+    ...(result.fallbackFrom === undefined ? {} : { fallbackFrom: result.fallbackFrom }),
+    ...(result.fallbackReason === undefined ? {} : { fallbackReason: result.fallbackReason }),
+    ...(result.fallbackAttempts === undefined ? {} : { fallbackAttempts: result.fallbackAttempts }),
     escalationDisposition: "deny",
   }
 }
