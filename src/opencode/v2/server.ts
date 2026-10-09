@@ -321,7 +321,7 @@ export async function setupWithServices(
               {
                 model: result.reviewerModel ?? config.model,
                 variant:
-                  result.reviewerModel && result.reviewerModel !== config.model
+                  result.reviewerEscalatedFrom
                     ? (config.escalationReviewer?.variant ?? config.variant)
                     : isSystemOneReviewerModel(config.model)
                       ? "system-one"
@@ -340,7 +340,12 @@ export async function setupWithServices(
             decisionSchemaVersion: 2,
             pluginVersion: packageInfo.version,
             promptVersion: REVIEWER_PROMPT_VERSION,
-            reviewerModel: result.reviewerModel ?? config.model,
+            ...(result.reviewerModel ? { reviewerModel: result.reviewerModel } : {}),
+            ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}),
+            ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+            ...(result.fallbackAttempts !== undefined
+              ? { fallbackAttempts: result.fallbackAttempts }
+              : {}),
             ...(result.reviewerEscalatedFrom
               ? { reviewerEscalatedFrom: result.reviewerEscalatedFrom }
               : {}),
