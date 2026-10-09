@@ -28,6 +28,7 @@ function escalationConfig(config: ReviewerConfig): ReviewerConfig | undefined {
   if (!escalation) return
   const base = { ...config }
   delete base.escalationReviewer
+  delete base.systemOneFallback
   return {
     ...base,
     ...escalation,
