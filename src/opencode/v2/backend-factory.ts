@@ -2,7 +2,11 @@ import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
 import type { ReviewAttempt } from "../../core/review-attempt.ts"
 import { isSystemOneReviewerModel } from "../../config.ts"
-import { createSystemOneInvoker, SystemOneReviewerBackend } from "../../system-one/backend.ts"
+import {
+  createSystemOneInvoker,
+  SystemOneReviewerBackend,
+  type SystemOneFallbackRoute,
+} from "../../system-one/backend.ts"
 import type { ReviewEnvelope, ReviewExecutionResult, ReviewerConfig } from "../../types.ts"
 import { V2ReviewerBackend } from "./reviewer-backend.ts"
 
@@ -34,7 +38,7 @@ export function createV2ReviewerBackend(context: Context, config: ReviewerConfig
   if (!isSystemOneReviewerModel(config.model)) return new V2ReviewerBackend(context, config)
   const secondaryConfig = escalationConfig(config)
   const secondary = secondaryConfig ? new V2ReviewerBackend(context, secondaryConfig) : undefined
-  const fallback = config.systemOneFallback
+  const fallback: SystemOneFallbackRoute | undefined = config.systemOneFallback
     ? {
         model: config.systemOneFallback.model,
         invoke: async (state: Parameters<ReturnType<typeof createSystemOneInvoker>>[0], signal: AbortSignal) => {
