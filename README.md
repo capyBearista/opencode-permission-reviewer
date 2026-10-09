@@ -212,15 +212,50 @@ the result.
 
 Set `model` in the trusted global `~/.config/opencode/permission-reviewer.jsonc`
 and put the matching key in the **OpenCode server process environment** before
-starting OpenCode. The Jev call uses the provider's System One endpoint directly;
-OpenCode's `/connect` credentials and the Command Code CLI login are not read by
-this call. The supported routes are:
+starting OpenCode for existing paid primary routes. The Jev call uses the
+provider's System One endpoint directly. For the new optional V2 OpenRouter
+fallback, the plugin reads the saved `/connect` credential on demand instead;
+Command Code CLI login credentials are not used. The supported routes are:
 
 | Reviewer `model`                                       | Required environment variable | System One API                                                                                |
 | ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------- |
-| `opencode/jev-1.13` (or `opencode/jev-1.13-free`)      | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
+| `opencode/jev-1.13`                                        | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
 | `typesafe-ai/jev-1.13.0` (or `typesafe-ai/jev-latest`) | `TYPESAFE_API_KEY`            | [TypeSafe AI](https://docs.typesafe.ai/sdk/javascript)                                        |
 | `commandcode/typesafe/jev`                             | `CMD_API_KEY`                 | [Command Code Provider API](https://commandcode.ai/docs/provider#decision-models-typesafejev) |
+
+For a **free-first V2 Jev reviewer**, the anonymous Zen promotion
+(`jev-1.13-free`) requires no API key. If the free route is unavailable or
+returns an invalid response, the plugin makes at most three free attempts
+before using the **saved active OpenRouter API-key connection** from OpenCode V2
+(`/connect`). The fallback is only attempted for transport or malformed
+response failures; valid Jev `allow`, `deny`, and `escalate` decisions never
+trigger it. SDK internal retries are disabled for the paid route, and all
+attempts share the existing total review deadline.
+
+```jsonc
+// ~/.config/opencode/permission-reviewer.jsonc (trusted global)
+{
+  "model": "opencode/jev-1.13-free",
+  "systemOneFallback": { "model": "openrouter/typesafe/jev-1.13" },
+  "systemOneConfidenceThreshold": 0.4,
+  "systemOneReasoningThreshold": 0.38,
+  "escalationReviewer": {
+    "model": "openrouter/openai/gpt-6-luna",
+    "variant": "low",
+    "outputFormat": "json_schema",
+    "timeoutMs": 120000,
+  },
+  "escalationMode": "manual",
+  "audit": true,
+}
+```
+
+Fallback and reasoning escalation are **independent**. A valid but difficult
+Jev judgment may be escalated to Luna; a broken transport is never treated as
+a difficult judgment. Without a saved OpenRouter key, paid fallback fails
+safely rather than reusing unrelated environment credentials. The free
+promotion may be discontinued; this configuration automatically uses the
+paid route when the free service becomes unavailable.
 
 For **Jev only**, omit `escalationReviewer`:
 
@@ -323,6 +358,7 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `model`                        | `openai/gpt-6-luna`                                       | `provider/model`                    | Reviewer model (override with any provider/model)                                             |
 | `variant`                      | `medium`                                                  | non-empty string                    | Reasoning variant passed to OpenCode                                                          |
 | `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`              | How the reviewer returns its decision (`text` for models without structured output)           |
+| `systemOneFallback`           | unset                                                     | trusted `{ model: string }`        | V2 only: free Zen transport fallback to saved OpenRouter Jev key                         |
 | `escalationReviewer`           | unset                                                     | trusted object                      | Optional reasoning reviewer for valid but difficult Jev decisions                             |
 | `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                     | Review timeout; put shared V1 settings in the global config                                   |
 | `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                           | Minimum confidence to auto-act; below it escalates                                            |
@@ -356,7 +392,7 @@ Config is layered: built-in defaults ← trusted global
 The project layer crosses a trust boundary: it can only **tighten**
 security-sensitive fields, and its hardening survives even when a trusted layer
 set the same field. The project layer cannot choose the reviewer `model`,
-`escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
+`systemOneFallback`, `escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
 (these decide where code/context travels and how the
 reviewer enforces and reports), cannot redirect `auditPath`, flip
 `retainReviewSessions`, `askDecisions`, or `debug`, grant `actorProfiles`, set
@@ -423,7 +459,8 @@ pre-existing audit file with looser permissions is tightened before it
 receives new records (`schemaVersion: 3`): outcome, decision source,
 rationale, risk, authorization, confidence, per-phase latency, reviewer model,
 optional `reviewerOutcome` / `escalationDisposition` (to distinguish an explicit
-deny from fail-closed escalate→deny), optional System One escalation origin,
+deny from fail-closed escalate→deny), optional System One reasoning origin,
+optional fallback route, reason class, and number of free requests,
 and a bounded SSH summary. Remote commands
 are stored as **SHA-256**, never in clear text. Set `audit: false` to disable.
 
