@@ -219,7 +219,7 @@ Command Code CLI login credentials are not used. The supported routes are:
 
 | Reviewer `model`                                       | Required environment variable | System One API                                                                                |
 | ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------- |
-| `opencode/jev-1.13`                                        | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
+| `opencode/jev-1.13`                                    | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
 | `typesafe-ai/jev-1.13.0` (or `typesafe-ai/jev-latest`) | `TYPESAFE_API_KEY`            | [TypeSafe AI](https://docs.typesafe.ai/sdk/javascript)                                        |
 | `commandcode/typesafe/jev`                             | `CMD_API_KEY`                 | [Command Code Provider API](https://commandcode.ai/docs/provider#decision-models-typesafejev) |
 
@@ -358,7 +358,7 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `model`                        | `openai/gpt-6-luna`                                       | `provider/model`                    | Reviewer model (override with any provider/model)                                             |
 | `variant`                      | `medium`                                                  | non-empty string                    | Reasoning variant passed to OpenCode                                                          |
 | `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`              | How the reviewer returns its decision (`text` for models without structured output)           |
-| `systemOneFallback`           | unset                                                     | trusted `{ model: string }`        | V2 only: free Zen transport fallback to saved OpenRouter Jev key                         |
+| `systemOneFallback`            | unset                                                     | trusted `{ model: string }`         | V2 only: free Zen transport fallback to saved OpenRouter Jev key                              |
 | `escalationReviewer`           | unset                                                     | trusted object                      | Optional reasoning reviewer for valid but difficult Jev decisions                             |
 | `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                     | Review timeout; put shared V1 settings in the global config                                   |
 | `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                           | Minimum confidence to auto-act; below it escalates                                            |
