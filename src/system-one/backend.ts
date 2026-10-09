@@ -126,6 +126,8 @@ export function createSystemOneInvoker(
   auth?: { apiKey: string; disableRetries?: boolean },
 ): SystemOneInvoke {
   const { providerID, modelID } = splitModel(config.model)
+  const requestModel =
+    providerID === "openrouter" && modelID === "typesafe/jev-1.13" ? "jev-1.13" : modelID
   if (config.model === FREE_MODEL) {
     // The TypeSafe SDK requires a key and always adds an Authorization header.
     // Zen's promotional endpoint is deliberately anonymous.
@@ -166,7 +168,7 @@ export function createSystemOneInvoker(
         : providerID === "openrouter"
           ? { baseURL: "https://openrouter.ai/api" }
           : {}),
-    defaultModel: modelID,
+    defaultModel: requestModel,
     logLevel: "off",
     timeout: config.timeoutMs,
     retry: auth?.disableRetries ? { maxRetries: 0 } : SYSTEM_ONE_RETRY,
@@ -177,7 +179,7 @@ export function createSystemOneInvoker(
     const boundedSignal = AbortSignal.any([signal, deadline])
     const { data } = await client
       .systemOne(
-        { model: modelID, state, questions: SYSTEM_ONE_QUESTIONS },
+        { model: requestModel, state, questions: SYSTEM_ONE_QUESTIONS },
         { signal: boundedSignal, timeout: config.timeoutMs },
       )
       .withResponse()
