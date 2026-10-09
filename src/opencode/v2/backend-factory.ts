@@ -45,7 +45,8 @@ export function createV2ReviewerBackend(context: Context, config: ReviewerConfig
           // Resolve the active credential only when a paid request is required.
           // Never read arbitrary environment keys or expose credential material to audit.
           const connection = await context.integration.connection.active("openrouter")
-          if (!connection) throw new Error("No active OpenRouter connection for System One fallback")
+          if (!connection || connection.type !== "credential")
+            throw new Error("No active saved OpenRouter connection for System One fallback")
           const credential = await context.integration.connection.resolve(connection)
           if (credential?.type !== "key" || !credential.key.trim())
             throw new Error("OpenRouter fallback requires an active API-key connection")
