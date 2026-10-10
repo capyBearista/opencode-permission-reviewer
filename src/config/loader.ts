@@ -8,6 +8,7 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_RISK_POLICY,
   isValidEscalationReviewer,
+  isValidSystemOneFallback,
 } from "../config.ts"
 import type { PolicyRule, ReviewerConfig } from "../types.ts"
 import type { InlineOptionsTrust } from "./sources.ts"
@@ -153,6 +154,7 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "auditPath",
   "model",
   "escalationReviewer",
+  "systemOneFallback",
   "policy",
   "repositoryTrust",
   "actorProfiles",
@@ -242,6 +244,15 @@ export function loadResolvedConfig(
         "permission-reviewer: global config escalationReviewer is invalid and was ignored; automatic approval stays disabled until it is fixed",
       )
     }
+    if (
+      globalLayer.raw.systemOneFallback !== undefined &&
+      !isValidSystemOneFallback(globalLayer.raw.systemOneFallback)
+    ) {
+      degraded.push("global config systemOneFallback is invalid and was ignored")
+      console.warn(
+        "permission-reviewer: global config systemOneFallback is invalid; automatic approval stays disabled until fixed",
+      )
+    }
     const invalidRules = countInvalidPolicyRules(globalLayer.raw.policyRules)
     if (invalidRules > 0) {
       degraded.push(
@@ -300,6 +311,12 @@ export function loadResolvedConfig(
     ) {
       degraded.push("inline config escalationReviewer is invalid and was ignored")
     }
+    if (
+      inlineOptions.systemOneFallback !== undefined &&
+      !isValidSystemOneFallback(inlineOptions.systemOneFallback)
+    ) {
+      degraded.push("inline config systemOneFallback is invalid and was ignored")
+    }
     const inlineEnforcement = inlineOptions.enforcementMode
     if (
       inlineEnforcement !== undefined &&
@@ -339,6 +356,13 @@ export function loadResolvedConfig(
     ...DEFAULT_CONFIG,
     ...globalLayer.raw,
     ...(inlineTrust === "trusted" ? (inlineOptions ?? {}) : {}),
+  }
+  if (
+    trusted.systemOneFallback !== undefined &&
+    isValidSystemOneFallback(trusted.systemOneFallback) &&
+    trusted.model !== "opencode/jev-1.13-free"
+  ) {
+    degraded.push("trusted systemOneFallback requires opencode/jev-1.13-free as primary model")
   }
   let merged = mergeWithTrustBoundary(trusted, projectLayer.raw)
   if (inlineTrust !== "trusted") {
@@ -436,6 +460,7 @@ function mergeWithTrustBoundary(
   // silenced retention must not be selectable from a repository.
   delete clamped.model
   delete clamped.escalationReviewer
+  delete clamped.systemOneFallback
   delete clamped.policy
   delete clamped.variant
   delete clamped.outputFormat

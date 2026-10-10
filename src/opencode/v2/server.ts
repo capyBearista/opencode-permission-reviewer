@@ -320,12 +320,11 @@ export async function setupWithServices(
               result.kind === "allow" ? "approved" : result.kind === "deny" ? "denied" : "manual",
               {
                 model: result.reviewerModel ?? config.model,
-                variant:
-                  result.reviewerModel && result.reviewerModel !== config.model
-                    ? (config.escalationReviewer?.variant ?? config.variant)
-                    : isSystemOneReviewerModel(config.model)
-                      ? "system-one"
-                      : config.variant,
+                variant: result.reviewerEscalatedFrom
+                  ? (config.escalationReviewer?.variant ?? config.variant)
+                  : isSystemOneReviewerModel(config.model)
+                    ? "system-one"
+                    : config.variant,
                 timeoutMs: budget,
                 reason: result.reason,
                 ...(result.decision ? { decision: result.decision } : {}),
@@ -340,7 +339,12 @@ export async function setupWithServices(
             decisionSchemaVersion: 2,
             pluginVersion: packageInfo.version,
             promptVersion: REVIEWER_PROMPT_VERSION,
-            reviewerModel: result.reviewerModel ?? config.model,
+            ...(result.reviewerModel ? { reviewerModel: result.reviewerModel } : {}),
+            ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}),
+            ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+            ...(result.fallbackAttempts !== undefined
+              ? { fallbackAttempts: result.fallbackAttempts }
+              : {}),
             ...(result.reviewerEscalatedFrom
               ? { reviewerEscalatedFrom: result.reviewerEscalatedFrom }
               : {}),

@@ -126,6 +126,11 @@ export interface EscalationReviewerConfig {
   timeoutMs: number
 }
 
+/** Trusted paid route used only after a free Jev transport/protocol failure. */
+export interface SystemOneFallbackConfig {
+  model: "openrouter/typesafe/jev-1.13"
+}
+
 export interface ReviewerConfig {
   model: string
   variant: string
@@ -136,6 +141,8 @@ export interface ReviewerConfig {
   /** Optional reasoning reviewer for valid System One decisions that remain
    *  uncertain or conflict with deterministic review gates. */
   escalationReviewer?: EscalationReviewerConfig
+  /** Optional trusted free-Zen fallback, distinct from reasoning escalation. */
+  systemOneFallback?: SystemOneFallbackConfig
   /** Calibrated outcome-confidence floor for System One decisions. */
   systemOneConfidenceThreshold: number
   /** Minimum combined non-escalate probability for routing an explicit
@@ -305,6 +312,12 @@ export interface ReviewAuditRecord {
   reviewerModel?: string
   /** Present when a System One result was handed to a reasoning reviewer. */
   reviewerEscalatedFrom?: { model: string; reason: string }
+  /** Transport fallback provenance, unrelated to reasoning escalation. */
+  fallbackFrom?: string
+  /** Closed-set failure classification; never raw provider error text. */
+  fallbackReason?: string
+  /** Number of primary HTTP requests before fallback. */
+  fallbackAttempts?: number
   /** Per-phase timings. Absent on legacy v1 records and on deterministic paths
    *  that never reach that phase. */
   timings?: { contextMs?: number; enrichmentMs?: number; reviewerMs?: number; replyMs?: number }
@@ -391,6 +404,11 @@ export interface ReviewExecutionResult {
   reviewerModel?: string
   /** Primary model and routing reason when a second reviewer was used. */
   reviewerEscalatedFrom?: { model: string; reason: string }
+  /** Transport fallback, distinct from the optional reasoning reviewer. */
+  fallbackFrom?: string
+  fallbackReason?: string
+  /** Number of primary requests attempted before the paid route. */
+  fallbackAttempts?: number
   /**
    * Structured outcome from the reviewer LLM before gates/disposition.
    * Absent when no valid structured decision was produced.

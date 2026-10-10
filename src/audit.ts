@@ -286,6 +286,9 @@ export function createAuditWriter(
     const sanitized: ReviewAuditRecord = {
       ...record,
       reason: redactSecrets(boundedReason(record.reason)),
+      ...(record.fallbackReason === undefined
+        ? {}
+        : { fallbackReason: redactSecrets(boundedReason(record.fallbackReason)) }),
       ...(record.warnings === undefined
         ? {}
         : { warnings: record.warnings.map((warning) => redactSecrets(warning)) }),

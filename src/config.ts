@@ -8,6 +8,7 @@ import type {
   RepositoryTrust,
   ReviewerConfig,
   EscalationReviewerConfig,
+  SystemOneFallbackConfig,
   UserAuthorization,
 } from "./types.ts"
 
@@ -309,6 +310,10 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
       : DEFAULT_CONFIG.variant
   const outputFormat = source.outputFormat === "text" ? "text" : "json_schema"
   const escalationReviewer = resolveEscalationReviewer(source.escalationReviewer)
+  const systemOneFallback =
+    model === "opencode/jev-1.13-free" && isValidSystemOneFallback(source.systemOneFallback)
+      ? (source.systemOneFallback as SystemOneFallbackConfig)
+      : undefined
   const policy =
     typeof source.policy === "string" && source.policy.trim().length > 0
       ? source.policy.trim()
@@ -323,6 +328,7 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
     variant,
     outputFormat,
     ...(escalationReviewer === undefined ? {} : { escalationReviewer }),
+    ...(systemOneFallback === undefined ? {} : { systemOneFallback }),
     timeoutMs: boundedInteger(source.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5_000, 600_000),
     ...(source.reviewBudgetMs === undefined
       ? {}
@@ -405,6 +411,17 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
       ? { configDegraded: source.configDegraded }
       : {}),
   }
+}
+
+/** Only this audited paid route is permitted; reject arbitrary endpoint overrides. */
+export function isValidSystemOneFallback(value: unknown): value is SystemOneFallbackConfig {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    (value as Record<string, unknown>).model === "openrouter/typesafe/jev-1.13"
+  )
 }
 
 function resolveEscalationReviewer(value: unknown): EscalationReviewerConfig | undefined {

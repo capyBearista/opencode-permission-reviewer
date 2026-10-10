@@ -549,7 +549,6 @@ function assembleActorContext(
   }
 }
 
-
 function assessCompleteness(
   actor: ActorContext,
   lineage: SessionLineage,
@@ -567,14 +566,10 @@ function assessCompleteness(
   // A root session legitimately has no parent. Delegated sessions
   // require a resolved, intact parent chain.
   const lineageHealthy =
-    !lineage.cycleDetected &&
-    !lineage.truncated &&
-    lineage.missingParents.length === 0
+    !lineage.cycleDetected && !lineage.truncated && lineage.missingParents.length === 0
 
   const lineageOk =
-    lineageHealthy &&
-    ((humanRoot && lineage.depth === 0) ||
-      (delegated && lineage.depth > 0))
+    lineageHealthy && ((humanRoot && lineage.depth === 0) || (delegated && lineage.depth > 0))
 
   // Record genuine deficiencies, not inapplicable requirements.
   if (!actorOk) {
@@ -592,9 +587,7 @@ function assessCompleteness(
   }
 
   if (lineage.missingParents.length > 0) {
-    reasons.push(
-      `missing parents: ${lineage.missingParents.join(", ")}`,
-    )
+    reasons.push(`missing parents: ${lineage.missingParents.join(", ")}`)
   }
 
   if (!directOk) {
@@ -608,23 +601,15 @@ function assessCompleteness(
   // A human-root session does not need delegation evidence.
   // A delegated session requires both ancestry and delegation.
   // Unknown-origin sessions can never be classified sufficient.
-  const sufficient =
-    actorOk &&
-    lineageOk &&
-    directOk &&
-    (humanRoot || (delegated && delegatedOk))
+  const sufficient = actorOk && lineageOk && directOk && (humanRoot || (delegated && delegatedOk))
 
-  const partial =
-    actorOk ||
-    directOk ||
-    (delegated && (lineageOk || delegatedOk))
+  const partial = actorOk || directOk || (delegated && (lineageOk || delegatedOk))
 
-  const overall: EvidenceCompleteness["overall"] =
-    sufficient
-      ? "sufficient"
-      : partial
-        ? "partial"
-        : "insufficient"
+  const overall: EvidenceCompleteness["overall"] = sufficient
+    ? "sufficient"
+    : partial
+      ? "partial"
+      : "insufficient"
 
   return {
     permission: true,

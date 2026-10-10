@@ -212,15 +212,50 @@ the result.
 
 Set `model` in the trusted global `~/.config/opencode/permission-reviewer.jsonc`
 and put the matching key in the **OpenCode server process environment** before
-starting OpenCode. The Jev call uses the provider's System One endpoint directly;
-OpenCode's `/connect` credentials and the Command Code CLI login are not read by
-this call. The supported routes are:
+starting OpenCode for existing paid primary routes. The Jev call uses the
+provider's System One endpoint directly. For the new optional V2 OpenRouter
+fallback, the plugin reads the saved `/connect` credential on demand instead;
+Command Code CLI login credentials are not used. The supported routes are:
 
 | Reviewer `model`                                       | Required environment variable | System One API                                                                                |
 | ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------- |
-| `opencode/jev-1.13` (or `opencode/jev-1.13-free`)      | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
+| `opencode/jev-1.13`                                    | `OPENCODE_API_KEY`            | [OpenCode Zen](https://opencode.ai/docs/en/zen/#jev)                                          |
 | `typesafe-ai/jev-1.13.0` (or `typesafe-ai/jev-latest`) | `TYPESAFE_API_KEY`            | [TypeSafe AI](https://docs.typesafe.ai/sdk/javascript)                                        |
 | `commandcode/typesafe/jev`                             | `CMD_API_KEY`                 | [Command Code Provider API](https://commandcode.ai/docs/provider#decision-models-typesafejev) |
+
+For a **free-first V2 Jev reviewer**, the anonymous Zen promotion
+(`jev-1.13-free`) requires no API key. If the free route is unavailable or
+returns an invalid response, the plugin makes at most three free attempts
+before using the **saved active OpenRouter API-key connection** from OpenCode V2
+(`/connect`). The fallback is only attempted for transport or malformed
+response failures; valid Jev `allow`, `deny`, and `escalate` decisions never
+trigger it. SDK internal retries are disabled for the paid route, and all
+attempts share the existing total review deadline.
+
+```jsonc
+// ~/.config/opencode/permission-reviewer.jsonc (trusted global)
+{
+  "model": "opencode/jev-1.13-free",
+  "systemOneFallback": { "model": "openrouter/typesafe/jev-1.13" },
+  "systemOneConfidenceThreshold": 0.4,
+  "systemOneReasoningThreshold": 0.38,
+  "escalationReviewer": {
+    "model": "openrouter/openai/gpt-6-luna",
+    "variant": "low",
+    "outputFormat": "json_schema",
+    "timeoutMs": 120000,
+  },
+  "escalationMode": "manual",
+  "audit": true,
+}
+```
+
+Fallback and reasoning escalation are **independent**. A valid but difficult
+Jev judgment may be escalated to Luna; a broken transport is never treated as
+a difficult judgment. Without a saved OpenRouter key, paid fallback fails
+safely rather than reusing unrelated environment credentials. The free
+promotion may be discontinued; this configuration automatically uses the
+paid route when the free service becomes unavailable.
 
 For **Jev only**, omit `escalationReviewer`:
 
@@ -323,6 +358,7 @@ Every option is optional. Numeric/string options are clamped to safe bounds.
 | `model`                        | `openai/gpt-6-luna`                                       | `provider/model`                    | Reviewer model (override with any provider/model)                                             |
 | `variant`                      | `medium`                                                  | non-empty string                    | Reasoning variant passed to OpenCode                                                          |
 | `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`              | How the reviewer returns its decision (`text` for models without structured output)           |
+| `systemOneFallback`            | unset                                                     | trusted `{ model: string }`         | V2 only: free Zen transport fallback to saved OpenRouter Jev key                              |
 | `escalationReviewer`           | unset                                                     | trusted object                      | Optional reasoning reviewer for valid but difficult Jev decisions                             |
 | `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                     | Review timeout; put shared V1 settings in the global config                                   |
 | `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                           | Minimum confidence to auto-act; below it escalates                                            |
@@ -356,7 +392,7 @@ Config is layered: built-in defaults ← trusted global
 The project layer crosses a trust boundary: it can only **tighten**
 security-sensitive fields, and its hardening survives even when a trusted layer
 set the same field. The project layer cannot choose the reviewer `model`,
-`escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
+`systemOneFallback`, `escalationReviewer`, `variant`, `outputFormat`, or replace the `policy` text
 (these decide where code/context travels and how the
 reviewer enforces and reports), cannot redirect `auditPath`, flip
 `retainReviewSessions`, `askDecisions`, or `debug`, grant `actorProfiles`, set
@@ -423,7 +459,8 @@ pre-existing audit file with looser permissions is tightened before it
 receives new records (`schemaVersion: 3`): outcome, decision source,
 rationale, risk, authorization, confidence, per-phase latency, reviewer model,
 optional `reviewerOutcome` / `escalationDisposition` (to distinguish an explicit
-deny from fail-closed escalate→deny), optional System One escalation origin,
+deny from fail-closed escalate→deny), optional System One reasoning origin,
+optional fallback route, reason class, and number of free requests,
 and a bounded SSH summary. Remote commands
 are stored as **SHA-256**, never in clear text. Set `audit: false` to disable.
 
@@ -661,11 +698,9 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   not a supported install method: `dist/` is gitignored, so those installs
   yield a package without bundles. Use the npm registry; building from source
   is an explicit `bun install && bun run build`.
-- **The tarball ships no native code.** `@opentui/core` (the host TUI
-  pipeline's renderer) declares optional platform-specific native packages
-  (for example `@opentui/core-linux-x64` on Linux) that npm resolves into the
-  install tree on your machine. Those renderer packages are used by the TUI.
-  The `@opencode/client` dependency also reaches optional
+- **The tarball ships no native code.** The OpenCode host owns the native
+  OpenTUI renderer; installing this plugin does not install renderer binaries.
+  The `@opencode/client` dependency can still reach optional
   `@msgpackr-extract/*` native accelerators through `effect` and `msgpackr`;
   the consumer install test tracks their platform package names too. The
   published tarball itself contains only JavaScript, raw TSX sources, and documentation;
@@ -677,29 +712,30 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   dependency (native or not) is a reviewed change: the package smoke test
   fails until its allowlist is updated in the same commit. The same suite
   installs the published tarball in an isolated tree and freezes what a
-  consumer actually gets: the platform-specific packages under `@opentui`
-  (rendering only), the optional `@msgpackr-extract` accelerators, the exact
-  `@babel/core` version documented below, and an `npm audit` gate that fails
+  consumer actually gets: no extra renderer/Seroval/Babel packages, only
+  reviewed optional native accelerators, and an `npm audit` gate that fails
   on any high or critical advisory. Root
   `overrides` in this repository protect the development tree only; npm never
   applies a dependency's overrides to the installing application, which is
   why consumer-side guarantees live in tests against the installed tree
   itself.
-- **Known residual exposure, documented, not fixed.** `@opentui/solid` pins
-  `@babel/core@7.28.0` exactly (every published 0.5.x does), and
-  GHSA-4x5r-pxfx-6jf8 (arbitrary file read via a crafted `sourceMappingURL`
-  comment, low severity) affects `@babel/core <= 7.29.0`. In this package
-  that copy of babel only compiles the TUI sources we ship in the tarball,
-  never repository- or attacker-influenced input, so the advisory's
-  conditions are not met by our usage; it is still reachable in the consumer
-  tree and therefore tracked: the consumer surveillance test pins the
-  installed version, and moving off 7.28.0 is a conscious bump (an
-  `@opentui/solid` release with a fixed pin, or dropping the exact-pin
-  constraint) together with this note. The development tree overrides Babel to
-  7.29.7, but that override cannot reach an npm consumer. Separately, `esbuild`
-  (a build-time dependency here, never shipped) is root-overridden past
-  GHSA-g7r4-m6w7-qqqr; that override intentionally does not reach consumers
-  because consumers never install `esbuild` from this package at all.
+- **Renderer dependencies belong to the host, not this plugin.** OpenTUI
+  (`@opentui/core` and `@opentui/solid`) and `solid-js` are optional peers,
+  with development-only pins for typechecking. OpenCode V2 compiles the raw
+  TSX overlay against its own single rendering runtime; V1 also requires
+  its host TUI runtime. Installing this package alone must not pull a second
+  OpenTUI, Solid or Seroval tree into a consumer project.
+- **Seroval and Babel advisories are host-owned.** Older Solid/OpenTUI
+  combinations may reach vulnerable Seroval (GHSA-p6vx-979v-rg4c,
+  GHSA-jp82-f5mq-hwhp) and Babel (GHSA-4x5r-pxfx-6jf8). Our consumer
+  security test rejects those packages appearing through this plugin's
+  dependency graph, but it does not audit or repair dependencies already
+  present in the OpenCode host. The host's resolved versions must be
+  assessed separately. Root `overrides` only affect development installs;
+  they never fix the dependencies of downstream consumers.
+- **Development-only tools.** `esbuild` remains a build dependency, not part
+  of the tarball's runtime graph. The root override addresses
+  GHSA-g7r4-m6w7-qqqr in the development tree, not downstream hosts.
 - **The `effect` runtime stays external.** `@opencode-ai/plugin` resolves
   `effect@4.0.0-beta.83` from the host's own dependency chain for OpenCode V1
   hosts. It is externalized from our bundles, not shipped or vendored by this

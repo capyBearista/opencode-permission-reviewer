@@ -245,7 +245,11 @@ export function parseSystemOneReview(
     typeof raw.model !== "string" ||
     (config.model === "commandcode/typesafe/jev"
       ? raw.model !== "typesafe/jev"
-      : !/^jev(?:-|$)/.test(raw.model))
+      : config.model === "openrouter/typesafe/jev-1.13"
+        ? raw.model !== "typesafe/jev-1.13-20260917"
+        : config.model === "opencode/jev-1.13-free"
+          ? raw.model !== "jev-1.13-free"
+          : !/^jev(?:-|$)/.test(raw.model))
   )
     return
   if (typeof raw.answers !== "object" || raw.answers === null || Array.isArray(raw.answers)) return

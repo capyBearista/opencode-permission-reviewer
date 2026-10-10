@@ -61,6 +61,24 @@ describe("escalation disposition helper", () => {
     expect(result.reviewerEscalatedFrom?.model).toBe("opencode/jev-1.13-free")
   })
 
+  test("deny escalation disposition preserves independent fallback metadata", () => {
+    const result = applyEscalationDisposition(
+      escalate({
+        reviewerModel: "openrouter/typesafe/jev-1.13",
+        fallbackFrom: "opencode/jev-1.13-free",
+        fallbackReason: "rate-limited",
+        fallbackAttempts: 3,
+      }),
+      cfg({ escalationMode: "deny" }),
+    )
+    expect(result.kind).toBe("deny")
+    expect(result.reviewerModel).toBe("openrouter/typesafe/jev-1.13")
+    expect(result.fallbackFrom).toBe("opencode/jev-1.13-free")
+    expect(result.fallbackReason).toBe("rate-limited")
+    expect(result.fallbackAttempts).toBe(3)
+    expect(result.reviewerEscalatedFrom).toBeUndefined()
+  })
+
   test("LLM escalate→deny keeps original decision.outcome escalate", () => {
     const llmEscalate = escalate({
       reason: "Ambiguous scope needs a human.",

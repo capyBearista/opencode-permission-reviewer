@@ -446,7 +446,11 @@ test("review sessions share one MCP-free location without mixing concurrent evid
     })
     expect(new Set(markers)).toEqual(new Set(commands))
     const isolatedConfig = JSON.parse(await readFile(state.directory + "/opencode.json", "utf8"))
-    expect(isolatedConfig.plugins).toEqual(["-opencode.config.mcp", state.directory])
+    expect(isolatedConfig.plugins).toEqual([
+      "-opencode.config.mcp",
+      "-oh-my-opencode-slim",
+      state.directory,
+    ])
     expect((await harness.run("Review one more unique marker")).kind).toBe("allow")
     expect(harness.state().directory).toBe(state.directory)
     expect(harness.state().setups).toBe(1)

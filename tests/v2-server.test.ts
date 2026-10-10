@@ -17,6 +17,7 @@ async function fixture(
     connectionError?: boolean
     budget?: number
     hostVersion?: string
+    reviewerModel?: string
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "reviewer-server-contract-"))
@@ -94,7 +95,13 @@ async function fixture(
     },
   } as unknown as OpenCodeClient
   const dispose = await setupWithServices(ctx, {
-    loadConfig: () => config({ audit: true, auditPath, reviewBudgetMs: options.budget ?? 5000 }),
+    loadConfig: () =>
+      config({
+        audit: true,
+        auditPath,
+        reviewBudgetMs: options.budget ?? 5000,
+        ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
+      }),
     connect: async () => {
       if (options.connectionError) throw new Error("Connection identity mismatch")
       return client
@@ -156,6 +163,42 @@ async function fixture(
     },
   }
 }
+
+test("v2 audit and UI distinguish paid Jev fallback from Luna escalation", async () => {
+  const harness = await fixture({
+    reviewerModel: "opencode/jev-1.13-free",
+    result: {
+      kind: "allow",
+      reason: "Valid paid Jev decision",
+      decision: decision("allow"),
+      decisionSource: "system-one-reviewer",
+      reviewerModel: "openrouter/typesafe/jev-1.13",
+      fallbackFrom: "opencode/jev-1.13-free",
+      fallbackReason: "rate-limited",
+      fallbackAttempts: 3,
+    },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("allow")
+    const reviews = (await harness.rpc.snapshot()).reviews as Array<{
+      model: string
+      variant: string
+    }>
+    expect(reviews.at(-1)?.model).toBe("openrouter/typesafe/jev-1.13")
+    expect(reviews.at(-1)?.variant).toBe("system-one")
+    await harness.dispose()
+    const record = (await harness.records())[0]
+    expect(record?.reviewerModel).toBe("openrouter/typesafe/jev-1.13")
+    expect(record?.fallbackFrom).toBe("opencode/jev-1.13-free")
+    expect(record?.fallbackReason).toBe("rate-limited")
+    expect(record?.fallbackAttempts).toBe(3)
+    expect(record?.reviewerEscalatedFrom).toBeUndefined()
+  } finally {
+    await harness.cleanup()
+  }
+})
 
 test("server maps decisions without elevating existing allow or deny and reports application independently", async () => {
   for (const kind of ["allow", "deny", "escalate"] as const) {
