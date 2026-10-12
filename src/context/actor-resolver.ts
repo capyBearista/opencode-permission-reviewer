@@ -331,15 +331,14 @@ function extractDelegatedTasks(
                 ? input.description
                 : undefined
       if (!text?.trim()) continue
+      const createdAt = messageCreatedAt(message)
       blocks.push({
         sessionID,
         messageID: typeof message.info.id === "string" ? message.info.id : "",
         actor: "assistant",
         text,
         synthetic: false,
-        ...(messageCreatedAt(message) === undefined
-          ? {}
-          : { createdAt: messageCreatedAt(message) }),
+        ...(createdAt === undefined ? {} : { createdAt }),
         provenance: prov<"intent">("intent", "parent-session", "high"),
       })
     }
