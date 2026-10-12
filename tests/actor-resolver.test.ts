@@ -303,7 +303,10 @@ describe("actor resolver — intent separation", () => {
 
 describe("actor resolver — OpenCode V2 native delegation", () => {
   test("running subagent uses current child instruction with verified parent", async () => {
-    const child = userMessage("msg_child", "You are a subagent spawned by another session.\\nReview documentation only")
+    const child = userMessage(
+      "msg_child",
+      "You are a subagent spawned by another session.\nReview documentation only",
+    )
     const client = buildClient({
       sessions: {
         ses_current: { meta: { id: "ses_current", parentID: "ses_parent" }, messages: [child] },
@@ -313,10 +316,18 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
             userMessage("msg_user", "Please review the project docs"),
             {
               info: { id: "msg_call", role: "assistant" },
-              parts: [{
-                type: "tool", tool: "subagent", callID: "call_a",
-                state: { status: "running", input: { agent: "explorer", prompt: "Review documentation only" }, metadata: {} },
-              }],
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  callID: "call_a",
+                  state: {
+                    status: "running",
+                    input: { agent: "explorer", prompt: "Review documentation only" },
+                    metadata: {},
+                  },
+                },
+              ],
             },
           ],
         },
@@ -337,19 +348,31 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
         ses_current: { meta: { id: "ses_current", parentID: "ses_parent" } },
         ses_parent: {
           meta: { id: "ses_parent" },
-          messages: [{
-            info: { id: "msg_call", role: "assistant" },
-            parts: [
-              { type: "tool", tool: "subagent", state: {
-                status: "completed", input: { prompt: "Wrong sibling task" },
-                metadata: { sessionID: "ses_other" },
-              } },
-              { type: "tool", tool: "subagent", state: {
-                status: "completed", input: { prompt: "Actual child task" },
-                metadata: { sessionID: "ses_current" },
-              } },
-            ],
-          }],
+          messages: [
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { prompt: "Wrong sibling task" },
+                    metadata: { sessionID: "ses_other" },
+                  },
+                },
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { prompt: "Actual child task" },
+                    metadata: { sessionID: "ses_current" },
+                  },
+                },
+              ],
+            },
+          ],
         },
       },
     })
@@ -363,12 +386,22 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
         ses_current: { meta: { id: "ses_current", parentID: "ses_parent" } },
         ses_parent: {
           meta: { id: "ses_parent" },
-          messages: [{
-            info: { id: "msg_call", role: "assistant" },
-            parts: [{ type: "tool", tool: "subagent", state: {
-              status: "running", input: { prompt: "Unbound task" }, metadata: {},
-            } }],
-          }],
+          messages: [
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "running",
+                    input: { prompt: "Unbound task" },
+                    metadata: {},
+                  },
+                },
+              ],
+            },
+          ],
         },
       },
     })
@@ -378,15 +411,24 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
   })
 
   test("resumed child uses the latest agent-authored instruction", async () => {
-    const first = userMessage("msg_initial", "You are a subagent spawned by another session.\\nRead only")
+    const first = userMessage(
+      "msg_initial",
+      "You are a subagent spawned by another session.\nRead only",
+    )
     const next = userMessage("msg_resume", "Now check the test results")
     const client = buildClient({
       sessions: {
-        ses_current: { meta: { id: "ses_current", parentID: "ses_parent" }, messages: [first, next] },
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_parent" },
+          messages: [first, next],
+        },
         ses_parent: { meta: { id: "ses_parent" }, messages: [] },
       },
     })
-    const res = await resolveActorContext(request(), [first, next], client, "/repo", cfg, [first, next])
+    const res = await resolveActorContext(request(), [first, next], client, "/repo", cfg, [
+      first,
+      next,
+    ])
     expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Now check the test results"])
     expect(res.intent.directUserIntent).toHaveLength(0)
   })
@@ -395,7 +437,10 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
     const child = userMessage("msg_child", "A purported delegated instruction")
     const client = buildClient({
       sessions: {
-        ses_current: { meta: { id: "ses_current", parentID: "ses_missing" }, messages: [child] },
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_missing" },
+          messages: [child],
+        },
       },
     })
     const res = await resolveActorContext(request(), [child], client, "/repo", cfg, [child])
