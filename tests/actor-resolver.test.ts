@@ -300,7 +300,6 @@ describe("actor resolver — intent separation", () => {
   })
 })
 
-
 describe("actor resolver — OpenCode V2 native delegation", () => {
   test("running subagent uses current child instruction with verified parent", async () => {
     const child = userMessage(
