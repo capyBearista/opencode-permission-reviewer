@@ -313,8 +313,9 @@ function extractDelegatedTasks(
           typeof state?.input === "object" && state.input !== null
             ? (state.input as Record<string, unknown>)
             : undefined
-        const ids = [metadata?.sessionID, metadata?.sessionId, input?.sessionID]
-          .filter((id): id is string => typeof id === "string")
+        const ids = [metadata?.sessionID, metadata?.sessionId, input?.sessionID].filter(
+          (id): id is string => typeof id === "string",
+        )
         // Native V2 requires a bound child ID; never assign a sibling's task
         // (or a not-yet-attributable running call) to this child.
         if (nativeSubagent && ids.length === 0) continue
