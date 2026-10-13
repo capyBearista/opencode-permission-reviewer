@@ -282,13 +282,13 @@ function userTextOf(message: MessageWithParts): string | undefined {
   return undefined
 }
 
-/** A delegation recorded as a subtask/task tool part in a parent session.
- *  Task-tool parts carry the spawned child session id in
- *  `state.metadata.sessionId`; when present, only the delegation that created
- *  THIS session is recorded, so sibling subagent briefs are not attributed to
- *  the request under review. The task text is read from `part.prompt` /
- *  `part.description` and, for the normal tool-part shape, from the persisted
- *  call arguments in `state.input`. */
+/** Recover a delegation from a parent tool call ONLY when it identifies this
+ * child. V2 subagents have tool name "subagent", with the child ID stored in
+ * state.metadata.sessionID after settlement, or state.input.sessionID when
+ * resuming. A running new subagent may have neither; resolveIntent then uses
+ * the verified child's own agent-authored instructions instead.
+ *
+ * Legacy V1 task/subtask parts remain supported. */
 function extractDelegatedTasks(
   messages: MessageWithParts[],
   sessionID: string,
@@ -297,46 +297,49 @@ function extractDelegatedTasks(
   const blocks: IntentBlock[] = []
   for (const message of messages) {
     for (const part of message.parts as Array<Record<string, unknown>>) {
-      const isSubtask = part.type === "subtask"
-      const isTaskTool = part.type === "tool" && part.tool === "task"
-      if (!isSubtask && !isTaskTool) continue
+      const legacySubtask = part.type === "subtask"
+      const nativeSubagent = part.type === "tool" && part.tool === "subagent"
+      const legacyTask = part.type === "tool" && part.tool === "task"
+      if (!legacySubtask && !nativeSubagent && !legacyTask) continue
+
       let input: Record<string, unknown> | undefined
-      if (isTaskTool) {
+      if (nativeSubagent || legacyTask) {
         const state = part.state as Record<string, unknown> | undefined
-        const metadata = state?.metadata as Record<string, unknown> | undefined
-        if (typeof metadata?.sessionId === "string" && metadata.sessionId !== childSessionID) {
-          continue
-        }
+        const metadata =
+          typeof state?.metadata === "object" && state.metadata !== null
+            ? (state.metadata as Record<string, unknown>)
+            : undefined
         input =
-          typeof state?.input === "object" && state?.input !== null
+          typeof state?.input === "object" && state.input !== null
             ? (state.input as Record<string, unknown>)
             : undefined
+        const ids = [metadata?.sessionID, metadata?.sessionId, input?.sessionID].filter(
+          (id): id is string => typeof id === "string",
+        )
+        // Native V2 requires a bound child ID; never assign a sibling's task
+        // (or a not-yet-attributable running call) to this child.
+        if (nativeSubagent && ids.length === 0) continue
+        if (ids.some((id) => id !== childSessionID)) continue
       }
-      const fromInput =
+      const text =
         typeof input?.prompt === "string"
           ? input.prompt
-          : typeof input?.description === "string"
-            ? input.description
-            : undefined
-      const text =
-        typeof part.prompt === "string"
-          ? part.prompt
-          : typeof part.description === "string"
-            ? part.description
-            : fromInput
-      if (!text || !text.trim()) continue
+          : typeof part.prompt === "string"
+            ? part.prompt
+            : typeof part.description === "string"
+              ? part.description
+              : typeof input?.description === "string"
+                ? input.description
+                : undefined
+      if (!text?.trim()) continue
+      const createdAt = messageCreatedAt(message)
       blocks.push({
         sessionID,
         messageID: typeof message.info.id === "string" ? message.info.id : "",
         actor: "assistant",
         text,
         synthetic: false,
-        ...(typeof part.time === "object" &&
-        part.time !== null &&
-        "start" in part.time &&
-        typeof (part.time as Record<string, unknown>).start === "number"
-          ? { createdAt: (part.time as Record<string, unknown>).start as number }
-          : {}),
+        ...(createdAt === undefined ? {} : { createdAt }),
         provenance: prov<"intent">("intent", "parent-session", "high"),
       })
     }
@@ -412,9 +415,24 @@ async function resolveIntent(
       fetchMessagesBounded(client, parent.sessionID, directory, limit),
       fetchMessagesBounded(client, parent.sessionID, directory, limit, true),
     ])
-    delegatedTask.push(
-      ...extractDelegatedTasks(parentMessages, parent.sessionID, request.sessionID),
+    const parentToolTasks = extractDelegatedTasks(
+      parentMessages,
+      parent.sessionID,
+      request.sessionID,
     )
+    // A session-bound parent tool call is the authoritative delegation
+    // record. Keep child follow-ups in LOCAL_SESSION_CONTEXT so they cannot
+    // replace or be mistaken for the original task (or human authorization).
+    // Running V2 subagents often lack the child ID in parent tool metadata;
+    // their own agent-authored instruction is then the fallback task evidence.
+    if (parentToolTasks.length > 0) {
+      delegatedTask.push(...parentToolTasks)
+    } else if (lineage.origin === "delegated" && localSessionIntent.length > 0) {
+      delegatedTask.push({
+        ...localSessionIntent[localSessionIntent.length - 1]!,
+        provenance: prov<"intent">("intent", "session-api", "high"),
+      })
+    }
     directUserIntent.push(
       ...extractSessionUserBlocks(
         parentIntent,

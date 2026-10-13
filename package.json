@@ -72,16 +72,12 @@
     "opencode": ">=1.18.29 <2 || >=2.0.3 <3"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.18.29 <2",
     "@opencode/plugin": ">=2.0.3 <3",
     "@opentui/core": ">=0.5.11",
     "@opentui/solid": ">=0.5.11",
     "solid-js": ">=1.9.12"
   },
   "peerDependenciesMeta": {
-    "@opencode-ai/plugin": {
-      "optional": true
-    },
     "@opencode/plugin": {
       "optional": true
     },

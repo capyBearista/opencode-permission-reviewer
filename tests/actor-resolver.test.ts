@@ -300,6 +300,203 @@ describe("actor resolver — intent separation", () => {
   })
 })
 
+describe("actor resolver — OpenCode V2 native delegation", () => {
+  test("running subagent uses current child instruction with verified parent", async () => {
+    const child = userMessage(
+      "msg_child",
+      "You are a subagent spawned by another session.\nReview documentation only",
+    )
+    const client = buildClient({
+      sessions: {
+        ses_current: { meta: { id: "ses_current", parentID: "ses_parent" }, messages: [child] },
+        ses_parent: {
+          meta: { id: "ses_parent" },
+          messages: [
+            userMessage("msg_user", "Please review the project docs"),
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  callID: "call_a",
+                  state: {
+                    status: "running",
+                    input: { agent: "explorer", prompt: "Review documentation only" },
+                    metadata: {},
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [child], client, "/repo", cfg, [child])
+    expect(res.intent.delegatedTask).toHaveLength(1)
+    expect(res.intent.delegatedTask[0]?.actor).toBe("assistant")
+    expect(res.intent.delegatedTask[0]?.text).toContain("Review documentation only")
+    expect(res.intent.directUserIntent.some((x) => x.text.includes("Please review"))).toBe(true)
+    expect(res.completeness.delegatedTask).toBe(true)
+    expect(res.intent.completeness).toBe("complete")
+  })
+
+  test("completed native V2 subagent tool is matched by exact child sessionID", async () => {
+    const client = buildClient({
+      sessions: {
+        ses_current: { meta: { id: "ses_current", parentID: "ses_parent" } },
+        ses_parent: {
+          meta: { id: "ses_parent" },
+          messages: [
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { prompt: "Wrong sibling task" },
+                    metadata: { sessionID: "ses_other" },
+                  },
+                },
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { prompt: "Actual child task" },
+                    metadata: { sessionID: "ses_current" },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [], client, "/repo", cfg)
+    expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Actual child task"])
+  })
+
+  test("verified V2 parent task survives child follow-up", async () => {
+    const initial = userMessage(
+      "msg_initial",
+      "You are a subagent spawned by another session.\nRead only",
+    )
+    const followUp = userMessage("msg_followup", "Now inspect the test results")
+    const client = buildClient({
+      sessions: {
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_parent" },
+          messages: [initial, followUp],
+        },
+        ses_parent: {
+          meta: { id: "ses_parent" },
+          messages: [
+            userMessage("msg_human", "Please perform a read-only investigation"),
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { agent: "explorer", prompt: "Read only" },
+                    metadata: { sessionID: "ses_current" },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [initial, followUp], client, "/repo", cfg, [
+      initial,
+      followUp,
+    ])
+    expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Read only"])
+    expect(res.intent.localSessionIntent.map((x) => x.text)).toContain(
+      "Now inspect the test results",
+    )
+    expect(res.intent.localSessionIntent.every((x) => x.actor === "assistant")).toBe(true)
+    expect(res.intent.directUserIntent.map((x) => x.text)).toEqual([
+      "Please perform a read-only investigation",
+    ])
+    expect(res.intent.completeness).toBe("complete")
+  })
+
+  test("unidentified native V2 calls never become sibling evidence", async () => {
+    const client = buildClient({
+      sessions: {
+        ses_current: { meta: { id: "ses_current", parentID: "ses_parent" } },
+        ses_parent: {
+          meta: { id: "ses_parent" },
+          messages: [
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "running",
+                    input: { prompt: "Unbound task" },
+                    metadata: {},
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [], client, "/repo", cfg)
+    expect(res.intent.delegatedTask).toHaveLength(0)
+    expect(res.completeness.delegatedTask).toBe(false)
+  })
+
+  test("resumed child uses the latest agent-authored instruction", async () => {
+    const first = userMessage(
+      "msg_initial",
+      "You are a subagent spawned by another session.\nRead only",
+    )
+    const next = userMessage("msg_resume", "Now check the test results")
+    const client = buildClient({
+      sessions: {
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_parent" },
+          messages: [first, next],
+        },
+        ses_parent: { meta: { id: "ses_parent" }, messages: [] },
+      },
+    })
+    const res = await resolveActorContext(request(), [first, next], client, "/repo", cfg, [
+      first,
+      next,
+    ])
+    expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Now check the test results"])
+    expect(res.intent.directUserIntent).toHaveLength(0)
+  })
+
+  test("missing parent never upgrades a child instruction to verified delegation", async () => {
+    const child = userMessage("msg_child", "A purported delegated instruction")
+    const client = buildClient({
+      sessions: {
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_missing" },
+          messages: [child],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [child], client, "/repo", cfg, [child])
+    expect(res.intent.delegatedTask).toHaveLength(0)
+    expect(res.completeness.overall).not.toBe("sufficient")
+  })
+})
+
 describe("actor resolver — resilience", () => {
   test("resolver failure yields unknown actor and review still proceeds", async () => {
     const client: OpenCodeClientLike = {

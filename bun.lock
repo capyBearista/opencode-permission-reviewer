@@ -30,14 +30,12 @@
         "typescript-eslint": "^8.0.0",
       },
       "peerDependencies": {
-        "@opencode-ai/plugin": ">=1.18.29 <2",
         "@opencode/plugin": ">=2.0.3 <3",
         "@opentui/core": ">=0.5.11",
         "@opentui/solid": ">=0.5.11",
         "solid-js": ">=1.9.12",
       },
       "optionalPeers": [
-        "@opencode-ai/plugin",
         "@opencode/plugin",
         "@opentui/core",
         "@opentui/solid",
