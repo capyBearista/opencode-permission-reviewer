@@ -211,8 +211,9 @@ describe("supply-chain surface", () => {
       "semver",
       "zod",
     ])
+    // V1 plugin types are a dev-only tool: avoid npm resolving their unrelated
+    // optional OpenTUI peers when installing the standalone package.
     expect(Object.keys(pkg.peerDependencies).sort()).toEqual([
-      "@opencode-ai/plugin",
       "@opencode/plugin",
       "@opentui/core",
       "@opentui/solid",
