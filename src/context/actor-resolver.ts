@@ -420,22 +420,18 @@ async function resolveIntent(
       parent.sessionID,
       request.sessionID,
     )
-    // In V2, the subagent receives its instructions as a user-role message
-    // inside the CHILD session. The host authors that message from the parent
-    // tool call; it must not be mistaken for human authorization. Using the
-    // newest child instruction also handles resumed subagents and running
-    // calls whose parent tool metadata has not settled yet.
-    const currentChildTask =
-      lineage.origin === "delegated" && localSessionIntent.length > 0
-        ? localSessionIntent[localSessionIntent.length - 1]
-        : undefined
-    if (currentChildTask) {
+    // A session-bound parent tool call is the authoritative delegation
+    // record. Keep child follow-ups in LOCAL_SESSION_CONTEXT so they cannot
+    // replace or be mistaken for the original task (or human authorization).
+    // Running V2 subagents often lack the child ID in parent tool metadata;
+    // their own agent-authored instruction is then the fallback task evidence.
+    if (parentToolTasks.length > 0) {
+      delegatedTask.push(...parentToolTasks)
+    } else if (lineage.origin === "delegated" && localSessionIntent.length > 0) {
       delegatedTask.push({
-        ...currentChildTask,
+        ...localSessionIntent[localSessionIntent.length - 1]!,
         provenance: prov<"intent">("intent", "session-api", "high"),
       })
-    } else {
-      delegatedTask.push(...parentToolTasks)
     }
     directUserIntent.push(
       ...extractSessionUserBlocks(
