@@ -379,8 +379,11 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
     expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Actual child task"])
   })
 
-  test("verified V2 delegation survives later child follow-up without elevating it to human intent", async () => {
-    const initial = userMessage("msg_initial", "You are a subagent spawned by another session.\nRead only")
+  test("verified V2 parent task survives child follow-up", async () => {
+    const initial = userMessage(
+      "msg_initial",
+      "You are a subagent spawned by another session.\nRead only",
+    )
     const followUp = userMessage("msg_followup", "Now inspect the test results")
     const client = buildClient({
       sessions: {
