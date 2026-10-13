@@ -379,6 +379,52 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
     expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Actual child task"])
   })
 
+  test("verified V2 delegation survives later child follow-up without elevating it to human intent", async () => {
+    const initial = userMessage("msg_initial", "You are a subagent spawned by another session.\nRead only")
+    const followUp = userMessage("msg_followup", "Now inspect the test results")
+    const client = buildClient({
+      sessions: {
+        ses_current: {
+          meta: { id: "ses_current", parentID: "ses_parent" },
+          messages: [initial, followUp],
+        },
+        ses_parent: {
+          meta: { id: "ses_parent" },
+          messages: [
+            userMessage("msg_human", "Please perform a read-only investigation"),
+            {
+              info: { id: "msg_call", role: "assistant" },
+              parts: [
+                {
+                  type: "tool",
+                  tool: "subagent",
+                  state: {
+                    status: "completed",
+                    input: { agent: "explorer", prompt: "Read only" },
+                    metadata: { sessionID: "ses_current" },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    })
+    const res = await resolveActorContext(request(), [initial, followUp], client, "/repo", cfg, [
+      initial,
+      followUp,
+    ])
+    expect(res.intent.delegatedTask.map((x) => x.text)).toEqual(["Read only"])
+    expect(res.intent.localSessionIntent.map((x) => x.text)).toContain(
+      "Now inspect the test results",
+    )
+    expect(res.intent.localSessionIntent.every((x) => x.actor === "assistant")).toBe(true)
+    expect(res.intent.directUserIntent.map((x) => x.text)).toEqual([
+      "Please perform a read-only investigation",
+    ])
+    expect(res.intent.completeness).toBe("complete")
+  })
+
   test("unidentified native V2 calls never become sibling evidence", async () => {
     const client = buildClient({
       sessions: {
