@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The reasoning reviewer uses the model's own default when it does not offer
+  the built-in `medium` variant, instead of failing every review closed. Any
+  other explicitly configured variant the model lacks still fails closed, and
+  the error lists the variants the model offers; an explicit `medium` cannot be
+  told apart from the default and falls back too.
+
 - MCP servers that other plugins add from code, such as
   `@upstash/context7-opencode`, are removed from the reviewer location. They
   previously reached it and made every reasoning review fail closed.
