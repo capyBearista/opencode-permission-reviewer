@@ -28,12 +28,51 @@ uses the selected `--binary`; absence or contradictory config stops the write.
 preserved, and changed files receive exclusive backups. Other permission rules
 are not converted or reordered.
 
-For both host generations, place model, variant, policy, and retention settings
-in the trusted global `permission-reviewer.jsonc`. Repository config and
-unknown-origin inline options cannot redirect the reviewer model or weaken
-trusted restrictions.
-The reviewer model must be configured globally in OpenCode so its isolated
-location can resolve it without loading project providers or instructions.
+Put shared policy and retention settings in the trusted global
+`~/.config/opencode/permission-reviewer.jsonc`. V1 keeps its root-level
+`model`, `variant`, and `outputFormat` settings. V2 configures its primary
+Decisions routes with `decisionModels` and its isolated reasoning reviewer with
+`reasoningModels`; see [V2 ordered Decisions](./README.md#ordered-decisions-routing)
+for the settings and routing behavior. Repository config and unknown-origin
+inline options cannot redirect V2 routes or change their attempt limits.
+
+V2 calls Decisions models through fixed native endpoints, so those route IDs do
+not need to be available in OpenCode's model catalog. A reasoning model must be
+configured in OpenCode for the isolated reviewer to use it. V2 ignores the
+legacy root-level `model`, `systemOneFallback`, and `escalationReviewer` route
+fields; no migration to those fields is required. V1 configuration remains
+unchanged.
+
+V2 defaults `decisionModels` to `opencode/jev-1.13-free` and
+`reasoningModels` to `openai/gpt-6-luna` with `medium`, `json_schema`, and a
+120,000 ms timeout. Each list accepts 1–8 distinct valid entries. Only the first
+reasoning entry is used; later entries are validated but are not failover
+reviewers. `decisionMaxAttempts` defaults to 2 total attempts per model,
+including the initial request, and accepts 1–5. `decisionAttemptTimeoutMs`
+defaults to 10,000 ms and accepts 1,000–60,000 ms per attempt.
+
+V2 validates each route list as a whole. Missing arrays use their defaults;
+empty or invalid trusted arrays become empty and mark the config degraded rather
+than silently falling back to defaults. Invalid trusted attempt controls use
+their safe defaults and also mark the config degraded. Automatic approval stays
+disabled while the trusted config is degraded.
+
+`decisionModels` are tried in order. The first structurally valid response
+ends routing, including a deny, escalation, low-confidence result, or
+contradictory result; none causes a search for a more permissive model. Invalid
+responses, network failures, timeouts, and HTTP 408/429/5xx retry the current
+model before routing advances. Missing credentials, 401/402/403, 404/410, and
+an explicit model-not-found 400 move to the next route, including another route
+at the same provider. Generic 400, 413, 422, and unexpected failures stop
+routing. Cancellation and the existing total review deadline also stop it.
+Routing availability failures do not invoke the reasoning reviewer; reasoning
+uses only `reasoningModels[0]` when the existing review rules request it.
+
+Zen's free Decisions route is anonymous. An OpenRouter route uses the active
+saved OpenRouter API-key connection in V2, resolved only when that route is
+needed. OAuth credentials and environment-key fallback are not used, and there
+is no configurable endpoint. Each provider that receives review evidence must
+be listed in the trusted global route or reasoning configuration.
 
 V2 service discovery reads OpenCode's local authenticated service registration
 instead of probing version-specific health endpoints. The registration must
@@ -59,17 +98,24 @@ credentials; use HTTPS for non-loopback connections.
 
 ## Review behavior
 
-Both formats use the same decision parser and policy gates. Structured mode
-uses a validated result tool, while all operational and MCP tools are denied.
-Text mode parses the complete response and rejects ambiguous JSON. A missing
-model or unsupported variant is an explicit failure, never a silent fallback.
+V2 Decisions results pass through the existing System One parser and policy
+gates. If a selected result requests reasoning, V2 uses the first configured
+reasoning model in an isolated location. Structured reasoning uses a validated
+result tool; text reasoning parses the complete response, rejects ambiguous
+JSON, and keeps the existing corrective re-prompt for an invalid response.
+Operational and MCP tools remain denied in that session. A missing model or
+unsupported variant is a reviewer failure, not a silent model fallback.
 Validated low-confidence denials remain denials.
 
-V2 isolates each reviewer in a temporary location with only its owned hooks.
+V2 isolates a reasoning reviewer in a temporary location with only its owned hooks.
 The total `reviewBudgetMs` includes context and retries; its default is
 `2 * timeoutMs + 60000`. Cancellation and unload close the attempt, interrupt
-the auxiliary session, and discard late results. Retention keeps sessions for
-inspection; otherwise the authenticated client removes them.
+the auxiliary session when one is active, and discard late results. Retention
+keeps reasoning sessions for inspection; otherwise the authenticated client
+removes them.
+The per-model `decisionMaxAttempts` and per-attempt
+`decisionAttemptTimeoutMs` settings do not extend this overall deadline, so it
+may stop routing before all configured attempts run.
 Deletion is verified after bounded retries. If cleanup cannot be confirmed,
 the review fails safely and its isolation guards remain active. Further reviews
 are refused if unresolved auxiliary sessions exhaust the cleanup capacity.
@@ -83,6 +129,12 @@ V1 preserves the published permission ID in `hostRequestID` and `requestID`;
 If a V1 reply cannot be acknowledged, the UI reports an unknown application
 instead of claiming that a human permission request is still pending.
 Historical audit records remain readable without destructive migration.
+V2 audit records can include up to 40 sanitized `decisionAttempts` entries with
+model, route index, attempt, request-sent status, outcome, HTTP status, and
+duration. `responseModel` is recorded only for a verified Decisions identity;
+`reviewerModel` changes to the reasoning model only when it returns a
+successful, conclusive decision. Failed or inconclusive reasoning retains the
+selected Decisions model.
 
 The TUI subscribes before loading a snapshot, filters by location and generation,
 and uses monotonic revisions. A watchdog or disconnection shows unknown status;
@@ -103,6 +155,9 @@ status, use `doctor --endpoint <server-url>` with server authentication in the
 environment. `explain` reads effective reviewer config; `--defaults` requests
 the legacy default-only calculation. It accepts V1 requests and V2 action/resource
 inputs, with exact execution input where available.
+
+Pass `--generation v2` to `doctor`, `config print-effective`, or `explain` to
+inspect V2 routing settings. These CLI commands default to V1 for compatibility.
 
 Keep exact host and plugin versions and the configuration backups. To return
 to V1, restore a V1 host and the matching `plugin`/`tui.json` configuration.
