@@ -397,6 +397,154 @@ test("V2 audit requires selected-primary and successful-reasoning evidence for a
   }
 })
 
+test("V2 audit attributes reasoning escalation only to the active first configured reasoning model", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "permission-reviewer-v2-audit-active-reasoning-"))
+  const auditPath = join(directory, "audit.jsonl")
+  const activeReasoningModel = "openai/gpt-6-luna"
+  const inactiveReasoningModel = "openai/gpt-6-rhea"
+  const attempts = [
+    {
+      model,
+      modelIndex: 0,
+      attempt: 1,
+      requestSent: true,
+      outcome: "valid-decision",
+      durationMs: 12,
+      responseModel,
+    },
+  ] as unknown as NonNullable<ReviewAuditRecord["decisionAttempts"]>
+  try {
+    const writer = createAuditWriter({
+      ...DEFAULT_CONFIG,
+      auditPath,
+      decisionModels: [model],
+      reasoningModels: [
+        {
+          model: activeReasoningModel,
+          variant: "medium",
+          outputFormat: "json_schema",
+          timeoutMs: 120_000,
+        },
+        {
+          model: inactiveReasoningModel,
+          variant: "medium",
+          outputFormat: "json_schema",
+          timeoutMs: 120_000,
+        },
+      ],
+    })!
+    await writer(
+      record({
+        reviewerModel: inactiveReasoningModel,
+        reviewerEscalatedFrom: { model, reason: "inactive reasoning route" },
+        decisionAttempts: attempts,
+      }),
+    )
+    await writer(
+      record({
+        reviewerModel: activeReasoningModel,
+        reviewerEscalatedFrom: { model, reason: "active reasoning route" },
+        decisionAttempts: attempts,
+      }),
+    )
+    const lines = (await readFile(auditPath, "utf8")).trim().split("\n")
+    const inactive = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(inactive.reviewerModel).toBeUndefined()
+    expect(inactive.reviewerEscalatedFrom).toBeUndefined()
+    const active = JSON.parse(lines[1]!) as Record<string, unknown>
+    expect(active.reviewerModel).toBe(activeReasoningModel)
+    expect(active.reviewerEscalatedFrom).toMatchObject({ model })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("V2 audit keeps primary attribution when no reasoning model is configured", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "permission-reviewer-v2-audit-no-reasoning-"))
+  const auditPath = join(directory, "audit.jsonl")
+  const attempts = [
+    {
+      model,
+      modelIndex: 0,
+      attempt: 1,
+      requestSent: true,
+      outcome: "valid-decision",
+      durationMs: 12,
+      responseModel,
+    },
+  ] as unknown as NonNullable<ReviewAuditRecord["decisionAttempts"]>
+  try {
+    const writer = createAuditWriter({
+      ...DEFAULT_CONFIG,
+      auditPath,
+      decisionModels: [model],
+      reasoningModels: [],
+    })!
+    await writer(record({ reviewerModel: model, decisionAttempts: attempts }))
+    await writer(
+      record({
+        reviewerModel: "openai/gpt-6-luna",
+        reviewerEscalatedFrom: { model, reason: "unconfigured reasoning route" },
+        decisionAttempts: attempts,
+      }),
+    )
+    const lines = (await readFile(auditPath, "utf8")).trim().split("\n")
+    const primary = JSON.parse(lines[0]!) as Record<string, unknown>
+    expect(primary.reviewerModel).toBe(model)
+    const unconfigured = JSON.parse(lines[1]!) as Record<string, unknown>
+    expect(unconfigured.reviewerModel).toBeUndefined()
+    expect(unconfigured.reviewerEscalatedFrom).toBeUndefined()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test("V2 audit keeps primary attribution for a model also listed as inactive reasoning", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "permission-reviewer-v2-audit-overlap-"))
+  const auditPath = join(directory, "audit.jsonl")
+  const attempts = [
+    {
+      model,
+      modelIndex: 0,
+      attempt: 1,
+      requestSent: true,
+      outcome: "valid-decision",
+      durationMs: 12,
+      responseModel,
+    },
+  ] as unknown as NonNullable<ReviewAuditRecord["decisionAttempts"]>
+  try {
+    const writer = createAuditWriter({
+      ...DEFAULT_CONFIG,
+      auditPath,
+      decisionModels: [model],
+      reasoningModels: [
+        {
+          model: "openai/gpt-6-luna",
+          variant: "medium",
+          outputFormat: "json_schema",
+          timeoutMs: 120_000,
+        },
+        {
+          // Same string doubles as an inactive reasoning entry; the primary
+          // Decisions branch must still attribute it as the selected route.
+          model,
+          variant: "medium",
+          outputFormat: "json_schema",
+          timeoutMs: 120_000,
+        },
+      ],
+    })!
+    await writer(record({ reviewerModel: model, decisionAttempts: attempts }))
+    const persisted = JSON.parse(
+      (await readFile(auditPath, "utf8")).trim().split("\n")[0]!,
+    ) as Record<string, unknown>
+    expect(persisted.reviewerModel).toBe(model)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test("V2 audit accepts the exact maximum native response identity lengths", async () => {
   const directory = await mkdtemp(join(tmpdir(), "permission-reviewer-v2-audit-lengths-"))
   const auditPath = join(directory, "audit.jsonl")

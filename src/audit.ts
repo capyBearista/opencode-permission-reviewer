@@ -144,9 +144,14 @@ export function sanitizeDecisionMetadata(
           reason: redactSecrets(boundedReason(provenance.reason)),
         }
       : undefined
+  // Only the first configured reasoning entry ever executes in the V2
+  // backend (the factory builds its reasoning reviewer from
+  // reasoningModels[0]); later entries are inactive and must never be
+  // attributed as the reviewer.
+  const activeReasoningModel = config.reasoningModels?.[0]?.model
   const configuredReviewerModels = new Set([
     ...config.decisionModels,
-    ...(config.reasoningModels ?? []).map((entry) => entry.model),
+    ...(activeReasoningModel === undefined ? [] : [activeReasoningModel]),
   ])
   const safeReviewerModel =
     typeof reviewerModel === "string" &&
@@ -156,8 +161,7 @@ export function sanitizeDecisionMetadata(
       attempts?.some(
         (attempt) => attempt.model === reviewerModel && attempt.outcome === "valid-decision",
       )) ||
-      ((config.reasoningModels ?? []).some((entry) => entry.model === reviewerModel) &&
-        safeProvenance !== undefined))
+      (reviewerModel === activeReasoningModel && safeProvenance !== undefined))
       ? reviewerModel
       : undefined
   const responseModel = trace === undefined ? fallback?.responseModel : trace.responseModel
@@ -172,8 +176,7 @@ export function sanitizeDecisionMetadata(
       ? responseModel
       : undefined
   const safeReviewerEscalatedFrom =
-    safeReviewerModel !== undefined &&
-    (config.reasoningModels ?? []).some((entry) => entry.model === safeReviewerModel)
+    safeReviewerModel !== undefined && safeReviewerModel === activeReasoningModel
       ? safeProvenance
       : undefined
   return {
