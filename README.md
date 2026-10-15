@@ -77,10 +77,12 @@ bun install && bun run build
 What ships in `dist/`:
 
 - **Server** — `main` / `./server` → `dist/index.js` (bundled).
-- **TUI overlay** — `./tui` → `dist/tui/tui.tsx` (**raw TSX**, not a JS bundle).
-  OpenCode's host compiles that entry with its own Solid/OpenTUI pipeline and
-  rewrites `solid-js` / `@opentui/*` onto the host runtime. A prebundled
-  `dist/tui.js` loads but **never paints** the overlay.
+- **TUI overlay** — `./tui` → `dist/tui/tui.tsx` (unbundled JavaScript kept at
+  `.ts`/`.tsx` paths, not a JS bundle). `scripts/copy-tui.ts` precompiles the
+  existing 11-file TS/JSX graph and maps `solid-js` / `@opentui/*` onto the
+  host OpenTUI runtime IDs. No Solid/OpenTUI runtime is bundled and no new
+  dependencies are added. A prebundled `dist/tui.js` loads but **never
+  paints** the overlay.
 - **CLI** — `./cli` / `bin` → `dist/explain.js`.
 
 The CLI can register the plugin for you (`--tui` writes V1 `tui.json` or V2 global `cli.json`;
@@ -703,7 +705,8 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   The `@opencode/client` dependency can still reach optional
   `@msgpackr-extract/*` native accelerators through `effect` and `msgpackr`;
   the consumer install test tracks their platform package names too. The
-  published tarball itself contains only JavaScript, raw TSX sources, and documentation;
+  published tarball itself contains only JavaScript (including precompiled
+  unbundled TUI JavaScript kept at `.ts`/`.tsx` paths) and documentation;
   `tests/package-smoke.test.ts` rejects native addons and shared libraries,
   `prebuilds/` directories, platform packages, and bundled-dependency payloads
   in the ship set, and every release publishes a CycloneDX SBOM of the
@@ -721,9 +724,10 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   itself.
 - **Renderer dependencies belong to the host, not this plugin.** OpenTUI
   (`@opentui/core` and `@opentui/solid`) and `solid-js` are optional peers,
-  with development-only pins for typechecking. OpenCode V2 compiles the raw
-  TSX overlay against its own single rendering runtime; V1 also requires
-  its host TUI runtime. Installing this package alone must not pull a second
+  with development-only pins for typechecking. The build precompiles the TUI
+  graph to unbundled JavaScript that imports the host's single rendering
+  runtime via OpenTUI runtime IDs; raw TSX under `node_modules` misses the
+  host transform. Installing this package alone must not pull a second
   OpenTUI, Solid or Seroval tree into a consumer project.
 - **Seroval and Babel advisories are host-owned.** Older Solid/OpenTUI
   combinations may reach vulnerable Seroval (GHSA-p6vx-979v-rg4c,
@@ -751,11 +755,12 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | OpenCode V2           | `>=2.0.3 <3`       | Compatibility layer; verified with **2.0.21**              |
 | `@opencode-ai/plugin` | `>=1.18.29 <2`     | Optional V1 peer dependency                                |
 | Bun                   | `>=1.3.0`          | Declared in `engines.bun`; CI runs **1.3.0** and **1.3.5** |
-| TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared raw TSX presentation        |
+| TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared unbundled presentation      |
 | OS                    | Linux (verified)   | Other operating systems require equivalent live validation |
 
-- **TUI overlay** ships as **raw TSX** (`dist/tui/tui.tsx`). The host compiles
-  it against its embedded Solid/OpenTUI runtime. A prebundled TUI entry loads
+- **TUI overlay** ships as **precompiled unbundled JavaScript** kept at
+  `.ts`/`.tsx` paths (`dist/tui/tui.tsx`). The build maps `solid-js` /
+  `@opentui/*` onto the host runtime IDs. A prebundled TUI entry loads
   but never paints. The server half does not depend on the overlay.
 - **Server half** replies through an isolated transport chosen once at startup:
   public SDK reply with feedback `message` → public reply plus a separate
@@ -784,17 +789,17 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 
 ## Troubleshooting
 
-| Symptom                                       | Likely cause                                                                      | Fix                                                                                                                                                                         |
-| --------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                |
-| Plugin does nothing                           | No `ask` rule in the host permission policy                                       | Set a V1 `"bash": "ask"` rule or a V2 shell permission with `effect: "ask"`                                                                                                 |
-| TUI overlay never appears                     | Wrong TUI config; stale process; or host without Solid/OpenTUI pipeline           | Check V1 `tui.json` or V2 global `cli.json`. The overlay is raw TSX (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
-| Startup error: "authenticated SDK transport…" | OpenCode V1 outside `>=1.18.29 <2`, or an SDK change that hides the raw transport | Upgrade OpenCode and `@opencode-ai/plugin` into the supported range; report the version in an issue                                                                         |
-| Reviewer host connection unavailable          | Independent V2 server without a registered endpoint                               | Configure the trusted server URL and authentication, then restart                                                                                                           |
-| Reviews always time out                       | `timeoutMs` too low for the model                                                 | Raise `timeoutMs` (up to 600000)                                                                                                                                            |
-| `GIT_STATE_ANALYSIS` shows `spawn git ENOENT` | `git` not on `PATH`                                                               | Install `git`; Git enrichment degrades safely until then                                                                                                                    |
-| Want a version check                          | Host/SDK outside the supported range                                              | Run `opencode --version` and `opencode-permission-reviewer doctor`                                                                                                          |
-| Want to turn it off                           | -                                                                                 | Remove the plugin from the host config and, if installed, V1 `tui.json` or V2 global `cli.json`                                                                             |
+| Symptom                                       | Likely cause                                                                      | Fix                                                                                                                                                                                                                             |
+| --------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                                                                    |
+| Plugin does nothing                           | No `ask` rule in the host permission policy                                       | Set a V1 `"bash": "ask"` rule or a V2 shell permission with `effect: "ask"`                                                                                                                                                     |
+| TUI overlay never appears                     | Wrong TUI config; stale process; or host without Solid/OpenTUI pipeline           | Check V1 `tui.json` or V2 global `cli.json`. The overlay is precompiled unbundled JavaScript kept at `.ts`/`.tsx` paths (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
+| Startup error: "authenticated SDK transport…" | OpenCode V1 outside `>=1.18.29 <2`, or an SDK change that hides the raw transport | Upgrade OpenCode and `@opencode-ai/plugin` into the supported range; report the version in an issue                                                                                                                             |
+| Reviewer host connection unavailable          | Independent V2 server without a registered endpoint                               | Configure the trusted server URL and authentication, then restart                                                                                                                                                               |
+| Reviews always time out                       | `timeoutMs` too low for the model                                                 | Raise `timeoutMs` (up to 600000)                                                                                                                                                                                                |
+| `GIT_STATE_ANALYSIS` shows `spawn git ENOENT` | `git` not on `PATH`                                                               | Install `git`; Git enrichment degrades safely until then                                                                                                                                                                        |
+| Want a version check                          | Host/SDK outside the supported range                                              | Run `opencode --version` and `opencode-permission-reviewer doctor`                                                                                                                                                              |
+| Want to turn it off                           | -                                                                                 | Remove the plugin from the host config and, if installed, V1 `tui.json` or V2 global `cli.json`                                                                                                                                 |
 
 Enable `"debug": true` for verbose stderr logs while investigating. TUI load
 errors (`[tui.plugin] …`) are printed on the **TUI process console**, not in
@@ -806,11 +811,12 @@ errors (`[tui.plugin] …`) are printed on the **TUI process console**, not in
 bun install
 bun run check          # format + lint + typecheck + tests + build (must pass before any push)
 bun run test:stress    # stress suite only
-bun run test:package   # npm pack ship-set smoke (raw TUI + server bundle)
+bun run test:package   # npm pack ship-set smoke (TUI + server bundle)
 ```
 
-`bun run build` bundles the server/CLI with tsup, then copies the slim TUI
-source graph into `dist/tui/` as raw TSX (`scripts/copy-tui.ts`). Do not add a
+`bun run build` bundles the server/CLI with tsup, then precompiles the slim TUI
+source graph into `dist/tui/` as unbundled JavaScript kept at `.ts`/`.tsx`
+paths (`scripts/copy-tui.ts`). Do not add a
 prebundled TUI entry — it will not render on the host.
 
 The live end-to-end harness in `tests/live-harness.ts` runs against a real

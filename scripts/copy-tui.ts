@@ -1,18 +1,19 @@
 /**
- * Ship the TUI entry as raw TypeScript/TSX (not a prebundled JS file).
+ * Precompile the TUI graph's TypeScript/JSX without bundling it.
  *
- * OpenCode's host compiles plugin `.tsx` with its own babel-preset-solid
- * pipeline and rewrites `solid-js` / `@opentui/*` imports onto the single
- * embedded runtime. A tsup/esbuild bundle of the same sources produces JSX
- * shapes the host renderer does not consume, so the overlay never paints
- * even though the module loads cleanly. Working TUI plugins ship raw TSX
- * for this reason.
- *
- * Only the TUI graph is copied, including the shared config loader but not
- * the server engine.
+ * Mapping Solid/OpenTUI imports to the host runtime IDs keeps one renderer
+ * when OpenCode loads this package from node_modules. Keep the relative module
+ * graph intact; only the TUI graph is copied, not the server engine.
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
+import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
+
+// OpenTUI 0.5.11 ships the transform helper but does not export its subpath.
+const solidEntry = import.meta.resolve("@opentui/solid")
+const { transformSolidSource } = await import(
+  new URL("./scripts/solid-transform.js", solidEntry).href
+)
 
 const root = join(import.meta.dir, "..")
 const out = join(root, "dist", "tui")
@@ -39,15 +40,38 @@ for (const [from, to] of files) {
   cpSync(join(root, from), dest)
 }
 
-// Fail the build when the curated graph omits a runtime dependency. The host
-// compiles these sources at runtime, so a missing file would otherwise escape
-// the build and surface only when OpenCode starts. Bun's scanner deliberately
-// excludes type-only imports, which do not need a shipped runtime module.
-const ts = new Bun.Transpiler({ loader: "ts" })
-const tsx = new Bun.Transpiler({ loader: "tsx" })
+const runtimeSpecifiers = [
+  "solid-js",
+  "solid-js/store",
+  "@opentui/solid",
+  "@opentui/solid/components",
+  "@opentui/solid/jsx-runtime",
+  "@opentui/solid/jsx-dev-runtime",
+] as const
+const runtimeModuleIds = new Map<string, string>(
+  runtimeSpecifiers.map(
+    (specifier) => [specifier, runtimeModuleIdForSpecifier(specifier)] as const,
+  ),
+)
+const moduleName = runtimeModuleIdForSpecifier("@opentui/solid")
+
+for (const [, to] of files) {
+  const path = join(out, to)
+  const source = readFileSync(path, "utf8")
+  const compiled = await transformSolidSource(source, {
+    filename: path,
+    moduleName,
+    resolvePath: (specifier) => runtimeModuleIds.get(specifier) ?? null,
+  })
+  writeFileSync(path, compiled)
+}
+
+// Validate the compiled JavaScript graph. Bun's scanner excludes type-only
+// imports, which do not need a shipped runtime module.
+const js = new Bun.Transpiler({ loader: "js" })
 for (const [, to] of files) {
   const source = readFileSync(join(out, to), "utf8")
-  const imports = (to.endsWith(".tsx") ? tsx : ts).scan(source).imports
+  const imports = js.scan(source).imports
   for (const imported of imports) {
     if (!imported.path.startsWith(".")) continue
     const dependency = resolve(dirname(join(out, to)), imported.path)
