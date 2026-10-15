@@ -7,6 +7,8 @@ export type EvidenceSufficiency = "sufficient" | "partial" | "insufficient" | "u
 export type EscalationMode = "manual" | "deny"
 /** Effective disposition applied to an internal escalate result. */
 export type EscalationDisposition = "manual" | "deny"
+/** Host/plugin generation selecting the corresponding config contract. */
+export type HostGeneration = "v1" | "v2"
 
 export interface ReviewDecision {
   /** Structured-decision schema version. Always 2 for the current schema. */
@@ -143,6 +145,14 @@ export interface ReviewerConfig {
   escalationReviewer?: EscalationReviewerConfig
   /** Optional trusted free-Zen fallback, distinct from reasoning escalation. */
   systemOneFallback?: SystemOneFallbackConfig
+  /** Ordered V2 Decisions routes. Absent from V1-resolved configuration. */
+  decisionModels?: string[]
+  /** V2 reasoning routes; only the first configured entry is active. */
+  reasoningModels?: EscalationReviewerConfig[]
+  /** Total attempts allowed per configured Decisions model (V2 only). */
+  decisionMaxAttempts?: number
+  /** Per-attempt timeout in milliseconds (V2 only). */
+  decisionAttemptTimeoutMs?: number
   /** Calibrated outcome-confidence floor for System One decisions. */
   systemOneConfidenceThreshold: number
   /** Minimum combined non-escalate probability for routing an explicit
@@ -237,6 +247,41 @@ export interface ReviewEnvelope {
    *  captured live from question events. Observe-only: flows into the reviewer
    *  prompt (USER_ASK_DECISIONS) and audit, never into enforcement. */
   askDecisions?: AskDecision[]
+  /** Mutable, envelope-owned provenance for V2 ordered Decisions routing. */
+  decisionTrace?: DecisionRoutingTrace
+}
+
+/** Closed classification for one V2 Decisions request attempt. */
+export type DecisionAttemptOutcome =
+  | "valid-decision"
+  | "invalid-decision"
+  | "network-error"
+  | "timeout"
+  | "internal-error"
+  | "http-error"
+  | "missing-credentials"
+  | "cancelled"
+  | "deadline"
+
+/** Bounded, provider-safe metadata for one routed request. */
+export interface DecisionAttempt {
+  model: string
+  modelIndex: number
+  attempt: number
+  requestSent: boolean
+  outcome: DecisionAttemptOutcome
+  httpStatus?: number
+  durationMs: number
+  responseModel?: string
+}
+
+/** Envelope-owned routing trace survives replacement of the review result. */
+export interface DecisionRoutingTrace {
+  /** Router must cap this list at 40 records. */
+  attempts: DecisionAttempt[]
+  reviewerModel?: string
+  reviewerEscalatedFrom?: ReviewExecutionResult["reviewerEscalatedFrom"]
+  responseModel?: string
 }
 
 /** Which layer produced the final decision for a request. Threaded into the
@@ -318,6 +363,10 @@ export interface ReviewAuditRecord {
   fallbackReason?: string
   /** Number of primary HTTP requests before fallback. */
   fallbackAttempts?: number
+  /** Bounded V2 Decisions request history; legacy fallback fields are unchanged. */
+  decisionAttempts?: DecisionAttempt[]
+  /** Verified native model identity returned by the selected Decisions route. */
+  responseModel?: string
   /** Per-phase timings. Absent on legacy v1 records and on deterministic paths
    *  that never reach that phase. */
   timings?: { contextMs?: number; enrichmentMs?: number; reviewerMs?: number; replyMs?: number }
@@ -409,6 +458,10 @@ export interface ReviewExecutionResult {
   fallbackReason?: string
   /** Number of primary requests attempted before the paid route. */
   fallbackAttempts?: number
+  /** Bounded V2 Decisions request history; legacy fallback fields are unchanged. */
+  decisionAttempts?: DecisionAttempt[]
+  /** Verified native model identity returned by the selected Decisions route. */
+  responseModel?: string
   /**
    * Structured outcome from the reviewer LLM before gates/disposition.
    * Absent when no valid structured decision was produced.

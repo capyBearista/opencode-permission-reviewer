@@ -170,6 +170,10 @@ export interface ParsedSystemOneReview {
   returnedModel: string
 }
 
+export interface SystemOneReviewIdentityOptions {
+  identityMode: "decisions"
+}
+
 function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const keys = Object.keys(value).sort()
   return (
@@ -180,6 +184,49 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[]):
 
 function finiteProbability(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+function isCalendarDate(value: string): boolean {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  if (year < 1 || month < 1 || month > 12 || day < 1) return false
+  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return day <= days[month - 1]!
+}
+
+function hasEightDigitDateSuffix(model: string): boolean {
+  return /-\d{8}$/.test(model)
+}
+
+function matchesOpenRouterIdentity(expected: string, returned: string): boolean {
+  if (returned === expected) return true
+  if (hasEightDigitDateSuffix(expected)) return false
+  // Only unmapped base identifiers expand to an anchored calendar-valid
+  // revision. A requested colon suffix (`:free`, `:other`, …) is exact-only
+  // unless it is the one explicitly observed Mercury alias handled below.
+  if (expected.includes(":")) return false
+  const revision = returned.startsWith(`${expected}-`) ? returned.slice(expected.length + 1) : ""
+  return revision.length === 8 && isCalendarDate(revision)
+}
+
+function matchesDecisionsIdentity(configuredModel: string, returnedModel: string): boolean {
+  const slash = configuredModel.indexOf("/")
+  if (slash <= 0 || slash === configuredModel.length - 1) return false
+  const provider = configuredModel.slice(0, slash)
+  const nativeModel = configuredModel.slice(slash + 1)
+  if (provider === "opencode") return returnedModel === nativeModel
+  if (provider !== "openrouter") return false
+
+  if (matchesOpenRouterIdentity(nativeModel, returnedModel)) return true
+  const mercuryFree = "inception/mercury-decide:free"
+  return (
+    nativeModel === mercuryFree &&
+    matchesOpenRouterIdentity("inception/mercury-decide", returnedModel)
+  )
 }
 
 function parseChoice<T extends readonly string[]>(
@@ -238,18 +285,21 @@ const SAFE_BASES = new Set<(typeof BASES)[number]>([
 export function parseSystemOneReview(
   response: SystemOneResult<typeof SYSTEM_ONE_QUESTIONS> | unknown,
   config: ReviewerConfig,
+  identity?: SystemOneReviewIdentityOptions,
 ): ParsedSystemOneReview | undefined {
   if (typeof response !== "object" || response === null || Array.isArray(response)) return
   const raw = response as Record<string, unknown>
   if (
     typeof raw.model !== "string" ||
-    (config.model === "commandcode/typesafe/jev"
-      ? raw.model !== "typesafe/jev"
-      : config.model === "openrouter/typesafe/jev-1.13"
-        ? raw.model !== "typesafe/jev-1.13-20260917"
-        : config.model === "opencode/jev-1.13-free"
-          ? raw.model !== "jev-1.13-free"
-          : !/^jev(?:-|$)/.test(raw.model))
+    (identity?.identityMode === "decisions"
+      ? !matchesDecisionsIdentity(config.model, raw.model)
+      : config.model === "commandcode/typesafe/jev"
+        ? raw.model !== "typesafe/jev"
+        : config.model === "openrouter/typesafe/jev-1.13"
+          ? raw.model !== "typesafe/jev-1.13-20260917"
+          : config.model === "opencode/jev-1.13-free"
+            ? raw.model !== "jev-1.13-free"
+            : !/^jev(?:-|$)/.test(raw.model))
   )
     return
   if (typeof raw.answers !== "object" || raw.answers === null || Array.isArray(raw.answers)) return

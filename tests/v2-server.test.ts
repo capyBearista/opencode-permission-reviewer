@@ -4,11 +4,78 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client"
 import { setupWithServices } from "../src/opencode/v2/server.ts"
+import type { V2ReviewBackend } from "../src/opencode/v2/backend-factory.ts"
 import { normalizeV2Permission } from "../src/opencode/v2/permission-codec.ts"
-import type { ReviewExecutionResult } from "../src/types.ts"
+import { resolveConfig } from "../src/config.ts"
+import { DecisionsReviewerBackend } from "../src/system-one/decisions-backend.ts"
+import { SYSTEM_ONE_QUESTIONS } from "../src/system-one/review.ts"
+import type { DecisionRoutingTrace, ReviewExecutionResult, ReviewerConfig } from "../src/types.ts"
 import { config, decision } from "./helpers.ts"
 
 type Input = Parameters<typeof normalizeV2Permission>[0] & { message?: string }
+
+function systemOneResponse(model: string) {
+  const selected: Record<string, string> = {
+    outcome: "allow",
+    risk_level: "low",
+    user_authorization: "high",
+    scope_alignment: "aligned",
+    evidence_completeness: "sufficient",
+    primary_basis: "destructive_effect",
+  }
+  return {
+    model,
+    usage: { input_tokens: 20, output_tokens: 0 },
+    answers: Object.fromEntries(
+      Object.entries(SYSTEM_ONE_QUESTIONS).map(([name, question]) => {
+        if (question.type === "noul")
+          return [
+            name,
+            {
+              type: "noul",
+              noul: ["material_authorization", "within_intent_scope"].includes(name) ? 1 : 0,
+            },
+          ]
+        const values = Object.keys(question.criteria)
+        const chosen = selected[name]!
+        return [
+          name,
+          {
+            type: "choice",
+            choice: chosen,
+            confidence: 1,
+            probabilities: Object.fromEntries(
+              values.map((value) => [value, value === chosen ? 1 : 0]),
+            ),
+          },
+        ]
+      }),
+    ),
+  }
+}
+
+function decisionsBackend(
+  resolvedConfig: ReviewerConfig,
+  reasoningReview: () => Promise<ReviewExecutionResult>,
+): V2ReviewBackend {
+  const reviewer = new DecisionsReviewerBackend({
+    config: resolvedConfig,
+    transport: async ({ onRequestSent }) => {
+      onRequestSent()
+      return systemOneResponse("acme/jev-primary-20261013")
+    },
+    reasoning: {
+      model: resolvedConfig.reasoningModels![0]!.model,
+      review: async () => reasoningReview(),
+    },
+  })
+  return {
+    owns: () => false,
+    review: (envelope, attempt, client) => reviewer.review(envelope, attempt, client),
+    waitForIdle: () => reviewer.waitForIdle(),
+    dispose: () => reviewer.waitForIdle(),
+  }
+}
 
 async function fixture(
   options: {
@@ -18,6 +85,15 @@ async function fixture(
     budget?: number
     hostVersion?: string
     reviewerModel?: string
+    decisionModels?: string[]
+    reasoningModels?: ReviewerConfig["reasoningModels"]
+    resolvedConfig?: ReviewerConfig
+    decisionTrace?: DecisionRoutingTrace
+    finalizeTraceOnAbort?: boolean
+    configDegraded?: string[]
+    escalationMode?: ReviewerConfig["escalationMode"]
+    reviewError?: Error
+    createBackend?: (config: ReviewerConfig) => V2ReviewBackend
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "reviewer-server-contract-"))
@@ -32,6 +108,7 @@ async function fixture(
   const events: OpenCodeEvent[] = []
   let ended = false
   let reviews = 0
+  let loadedGeneration: unknown
   let registrationDisposals = 0
   const toolHooks = new Map<string, (event: unknown) => void>()
   const registration = () => ({
@@ -95,34 +172,78 @@ async function fixture(
     },
   } as unknown as OpenCodeClient
   const dispose = await setupWithServices(ctx, {
-    loadConfig: () =>
-      config({
-        audit: true,
-        auditPath,
-        reviewBudgetMs: options.budget ?? 5000,
-        ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
-      }),
+    loadConfig: (_options, _directory, _inlineTrust, hostGeneration) => {
+      loadedGeneration = hostGeneration
+      return (
+        options.resolvedConfig ??
+        config({
+          audit: true,
+          auditPath,
+          reviewBudgetMs: options.budget ?? 5000,
+          decisionModels: options.decisionModels ?? ["opencode/jev-1.13-free"],
+          reasoningModels: options.reasoningModels ?? [
+            {
+              model: "openai/gpt-6-luna",
+              variant: "medium",
+              outputFormat: "json_schema",
+              timeoutMs: 120_000,
+            },
+          ],
+          ...(options.configDegraded ? { configDegraded: options.configDegraded } : {}),
+          ...(options.escalationMode ? { escalationMode: options.escalationMode } : {}),
+          ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
+        })
+      )
+    },
     connect: async () => {
       if (options.connectionError) throw new Error("Connection identity mismatch")
       return client
     },
-    createBackend: () => ({
-      owns: () => false,
-      waitForIdle: async () => {},
-      dispose: async () => {},
-      review: async () => {
-        reviews++
-        await options.delay
-        return (
-          options.result ?? {
-            kind: "allow",
-            reason: "Fixture decision",
-            decision: decision("allow"),
-            decisionSource: "llm-reviewer",
+    createBackend: (_context, resolvedConfig) => {
+      if (options.createBackend) {
+        const backend = options.createBackend(resolvedConfig)
+        return {
+          owns: (sessionID) => backend.owns(sessionID),
+          waitForIdle: () => backend.waitForIdle(),
+          dispose: () => backend.dispose(),
+          review: async (envelope, attempt, client) => {
+            reviews++
+            return backend.review(envelope, attempt, client)
+          },
+        }
+      }
+      return {
+        owns: () => false,
+        waitForIdle: async () => {},
+        dispose: async () => {},
+        review: async (envelope, attempt) => {
+          reviews++
+          if (options.decisionTrace) {
+            envelope.decisionTrace = options.decisionTrace
+            if (options.finalizeTraceOnAbort) {
+              attempt.signal.addEventListener(
+                "abort",
+                () => {
+                  const last = options.decisionTrace!.attempts.at(-1)
+                  if (last) last.outcome = attempt.state === "expired" ? "deadline" : "cancelled"
+                },
+                { once: true },
+              )
+            }
           }
-        )
-      },
-    }),
+          await options.delay
+          if (options.reviewError) throw options.reviewError
+          return (
+            options.result ?? {
+              kind: "allow",
+              reason: "Fixture decision",
+              decision: decision("allow"),
+              decisionSource: "llm-reviewer",
+            }
+          )
+        },
+      }
+    },
   })
   const input = (sessionID = "ses_main"): Input => ({
     action: "shell",
@@ -137,6 +258,7 @@ async function fixture(
     rpc,
     directory,
     reviews: () => reviews,
+    loadedGeneration: () => loadedGeneration,
     registrationDisposals: () => registrationDisposals,
     endEvents: () => {
       ended = true
@@ -164,18 +286,41 @@ async function fixture(
   }
 }
 
-test("v2 audit and UI distinguish paid Jev fallback from Luna escalation", async () => {
+test("V2 audit and UI preserve ordered Decisions-to-reasoning attribution", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  const reasoningModel = "openai/gpt-6-luna"
   const harness = await fixture({
-    reviewerModel: "opencode/jev-1.13-free",
+    decisionModels: [model],
+    reasoningModels: [
+      {
+        model: reasoningModel,
+        variant: "medium",
+        outputFormat: "json_schema",
+        timeoutMs: 120_000,
+      },
+    ],
+    decisionTrace: {
+      attempts: [
+        {
+          model,
+          modelIndex: 0,
+          attempt: 1,
+          requestSent: true,
+          outcome: "valid-decision",
+          durationMs: 19,
+          responseModel,
+        },
+      ],
+      reviewerModel: reasoningModel,
+      reviewerEscalatedFrom: { model, reason: "System One requested reasoning" },
+      responseModel,
+    },
     result: {
       kind: "allow",
-      reason: "Valid paid Jev decision",
+      reason: "Reasoning decision",
       decision: decision("allow"),
-      decisionSource: "system-one-reviewer",
-      reviewerModel: "openrouter/typesafe/jev-1.13",
-      fallbackFrom: "opencode/jev-1.13-free",
-      fallbackReason: "rate-limited",
-      fallbackAttempts: 3,
+      decisionSource: "llm-reviewer",
     },
   })
   try {
@@ -186,15 +331,49 @@ test("v2 audit and UI distinguish paid Jev fallback from Luna escalation", async
       model: string
       variant: string
     }>
-    expect(reviews.at(-1)?.model).toBe("openrouter/typesafe/jev-1.13")
+    expect(reviews.at(-1)?.model).toBe(reasoningModel)
+    expect(reviews.at(-1)?.variant).toBe("medium")
+    await harness.dispose()
+    const record = (await harness.records())[0]
+    expect(record).toMatchObject({
+      reviewerModel: reasoningModel,
+      reviewerEscalatedFrom: { model, reason: "System One requested reasoning" },
+      responseModel,
+      decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+    })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("V2 UI and audit cannot infer paid Jev from default Free-only fallback metadata", async () => {
+  const harness = await fixture({
+    reviewerModel: "opencode/jev-1.13-free",
+    result: {
+      kind: "allow",
+      reason: "Legacy fallback metadata must not choose a V2 reviewer",
+      decision: decision("allow"),
+      decisionSource: "system-one-reviewer",
+      reviewerModel: "openrouter/typesafe/jev-1.13",
+      fallbackFrom: "opencode/jev-1.13-free",
+      fallbackReason: "rate-limited",
+      fallbackAttempts: 3,
+    },
+  })
+  try {
+    await harness.evaluate(harness.input())
+    const reviews = (await harness.rpc.snapshot()).reviews as Array<{
+      model: string
+      variant: string
+    }>
+    expect(reviews.at(-1)?.model).toBe("opencode/jev-1.13-free")
     expect(reviews.at(-1)?.variant).toBe("system-one")
     await harness.dispose()
     const record = (await harness.records())[0]
-    expect(record?.reviewerModel).toBe("openrouter/typesafe/jev-1.13")
+    expect(record?.reviewerModel).toBeUndefined()
     expect(record?.fallbackFrom).toBe("opencode/jev-1.13-free")
     expect(record?.fallbackReason).toBe("rate-limited")
     expect(record?.fallbackAttempts).toBe(3)
-    expect(record?.reviewerEscalatedFrom).toBeUndefined()
   } finally {
     await harness.cleanup()
   }
@@ -325,6 +504,536 @@ test("v2 host setup enforces the supported range and reports it", async () => {
     await expect(setupWithServices(ctx, services)).rejects.toThrow(
       `Unsupported OpenCode V2 host ${version}; supported range is >=2.0.3 <3`,
     )
+  }
+})
+
+test("V2 status and config hash describe decision and reasoning routes, not legacy model fields", async () => {
+  const decisionModels = ["openrouter/acme/jev-primary", "opencode/jev-1.13-free"]
+  const reasoningModels = [
+    {
+      model: "openai/gpt-6-luna",
+      variant: "low",
+      outputFormat: "text" as const,
+      timeoutMs: 30_000,
+    },
+  ]
+  const resolvedConfig = resolveConfig(
+    {
+      model: "openai/ignored-legacy-model",
+      variant: "ignored-legacy-variant",
+      outputFormat: "json_schema",
+      decisionModels,
+      reasoningModels,
+    },
+    "v2",
+  )
+  const harness = await fixture({ resolvedConfig })
+  try {
+    const status = await harness.rpc.status()
+    expect(harness.loadedGeneration()).toBe("v2")
+    expect(status).toMatchObject({
+      host: "v2",
+      model: decisionModels[0],
+      decisionModels,
+      reasoningModels,
+      variant: "low",
+      outputFormat: "text",
+    })
+
+    const legacyChanged = await fixture({
+      resolvedConfig: { ...resolvedConfig, model: "typesafe-ai/jev-legacy", variant: "other" },
+    })
+    try {
+      expect((await legacyChanged.rpc.status()).effectiveConfigHash).toBe(
+        status.effectiveConfigHash,
+      )
+    } finally {
+      await legacyChanged.cleanup()
+    }
+
+    const routeChanged = await fixture({
+      resolvedConfig: {
+        ...resolvedConfig,
+        decisionModels: ["openrouter/acme/jev-secondary"],
+      },
+    })
+    try {
+      expect((await routeChanged.rpc.status()).effectiveConfigHash).not.toBe(
+        status.effectiveConfigHash,
+      )
+    } finally {
+      await routeChanged.cleanup()
+    }
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("V2 final audit attributes the selected route across allow, deny, and escalation", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  for (const kind of ["allow", "deny", "escalate"] as const) {
+    const harness = await fixture({
+      decisionModels: [model],
+      decisionTrace: {
+        attempts: [
+          {
+            model,
+            modelIndex: 0,
+            attempt: 1,
+            requestSent: true,
+            outcome: "valid-decision",
+            durationMs: 19,
+            responseModel,
+          },
+        ],
+        reviewerModel: model,
+        responseModel,
+      },
+      result: {
+        kind,
+        reason: "Fixture outcome",
+        decision: decision(kind),
+        decisionSource: "llm-reviewer",
+      },
+    })
+    try {
+      const input = harness.input()
+      await harness.evaluate(input)
+      expect(input.effect).toBe(kind === "escalate" ? "ask" : kind)
+      await harness.dispose()
+      expect(await harness.records()).toMatchObject([
+        {
+          outcome: kind,
+          reviewerModel: model,
+          responseModel,
+          decisionAttempts: [
+            {
+              model,
+              modelIndex: 0,
+              attempt: 1,
+              requestSent: true,
+              outcome: "valid-decision",
+              responseModel,
+            },
+          ],
+        },
+      ])
+    } finally {
+      await harness.cleanup()
+    }
+  }
+})
+
+test("successful reasoning provenance survives the real degraded-config denial gate", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  const reasoningModel = "openai/gpt-6-luna"
+  const harness = await fixture({
+    decisionModels: [model],
+    configDegraded: ["trusted decision route config is invalid"],
+    escalationMode: "deny",
+    createBackend: (resolvedConfig) =>
+      decisionsBackend(resolvedConfig, async () => ({
+        kind: "allow",
+        reason: "Reasoning reviewer approved",
+        decision: decision("allow"),
+        decisionSource: "llm-reviewer",
+      })),
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    const reviews = (await harness.rpc.snapshot()).reviews as Array<{
+      model: string
+      variant: string
+    }>
+    expect(reviews.at(-1)).toMatchObject({ model: reasoningModel, variant: "medium" })
+    await harness.dispose()
+    const record = (await harness.records())[0]!
+    expect(record).toMatchObject({
+      outcome: "deny",
+      escalationDisposition: "deny",
+      reviewerModel: reasoningModel,
+      reviewerEscalatedFrom: { model, reason: expect.any(String) },
+      responseModel,
+      decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+    })
+    expect(Object.keys(record.reviewerEscalatedFrom as object).sort()).toEqual(["model", "reason"])
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("successful reasoning provenance survives the real incomplete-evidence gate", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  const reasoningModel = "openai/gpt-6-luna"
+  const harness = await fixture({
+    decisionModels: [model],
+    createBackend: (resolvedConfig) =>
+      decisionsBackend(resolvedConfig, async () => ({
+        kind: "allow",
+        reason: "Reasoning reviewer approved",
+        decision: decision("allow"),
+        decisionSource: "llm-reviewer",
+      })),
+  })
+  try {
+    const input = { ...harness.input(), action: "edit", metadata: {} }
+    await harness.evaluate(input)
+    expect(input.effect).toBe("ask")
+    const reviews = (await harness.rpc.snapshot()).reviews as Array<{
+      model: string
+      variant: string
+    }>
+    expect(reviews.at(-1)).toMatchObject({ model: reasoningModel, variant: "medium" })
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "escalate",
+        application: "human-pending",
+        reviewerModel: reasoningModel,
+        reviewerEscalatedFrom: { model, reason: expect.any(String) },
+        responseModel,
+        decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+      },
+    ])
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("successful reasoning provenance survives pending-action replacement", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  const reasoningModel = "openai/gpt-6-luna"
+  let release!: () => void
+  let markStarted!: () => void
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve
+  })
+  const reasoningPending = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const harness = await fixture({
+    decisionModels: [model],
+    createBackend: (resolvedConfig) =>
+      decisionsBackend(resolvedConfig, async () => {
+        markStarted()
+        await reasoningPending
+        return {
+          kind: "allow",
+          reason: "Reasoning reviewer approved",
+          decision: decision("allow"),
+          decisionSource: "llm-reviewer",
+        }
+      }),
+  })
+  try {
+    const input = harness.input()
+    const work = harness.evaluate(input)
+    await started
+    Reflect.set(input, "metadata", { command: "printf changed" })
+    release()
+    await work
+    expect(input.effect).toBe("deny")
+    expect(input.message).toContain("changed during")
+    const reviews = (await harness.rpc.snapshot()).reviews as Array<{
+      model: string
+      variant: string
+    }>
+    expect(reviews.at(-1)).toMatchObject({ model: reasoningModel, variant: "medium" })
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "deny",
+        reviewerModel: reasoningModel,
+        reviewerEscalatedFrom: { model, reason: expect.any(String) },
+        responseModel,
+        decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+      },
+    ])
+  } finally {
+    release()
+    await harness.cleanup()
+  }
+})
+
+test("V2 audit snapshots the synchronously finalized cancellation trace", async () => {
+  let release!: () => void
+  const model = "openrouter/acme/jev-primary"
+  const trace: DecisionRoutingTrace = {
+    attempts: [
+      {
+        model,
+        modelIndex: 0,
+        attempt: 1,
+        requestSent: true,
+        outcome: "network-error",
+        durationMs: 5,
+      },
+    ],
+  }
+  const harness = await fixture({
+    decisionModels: [model],
+    decisionTrace: trace,
+    finalizeTraceOnAbort: true,
+    delay: new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  })
+  try {
+    const input = harness.input()
+    const work = harness.evaluate(input)
+    while (harness.reviews() === 0) await Bun.sleep(1)
+    harness.event("ses_main")
+    await work
+    expect(input.effect).toBe("deny")
+    expect(harness.reviews()).toBe(1)
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "deny",
+        application: "cancelled",
+        decisionAttempts: [
+          {
+            model,
+            requestSent: true,
+            outcome: "cancelled",
+          },
+        ],
+      },
+    ])
+  } finally {
+    release()
+    await harness.cleanup()
+  }
+})
+
+test("V2 audit snapshots the in-flight attempt at the overall review deadline", async () => {
+  let release!: () => void
+  const model = "openrouter/acme/jev-primary"
+  const trace: DecisionRoutingTrace = {
+    attempts: [
+      {
+        model,
+        modelIndex: 0,
+        attempt: 1,
+        requestSent: true,
+        outcome: "network-error",
+        durationMs: 5,
+      },
+    ],
+  }
+  const harness = await fixture({
+    budget: 20,
+    decisionModels: [model],
+    decisionTrace: trace,
+    finalizeTraceOnAbort: true,
+    delay: new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  })
+  try {
+    const input = harness.input()
+    const work = harness.evaluate(input)
+    while (harness.reviews() === 0) await Bun.sleep(1)
+    await work
+    expect(input.effect).toBe("deny")
+    expect(harness.reviews()).toBe(1)
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "deny",
+        application: "cancelled",
+        decisionAttempts: [
+          {
+            model,
+            requestSent: true,
+            outcome: "deadline",
+          },
+        ],
+      },
+    ])
+  } finally {
+    release()
+    await harness.cleanup()
+  }
+})
+
+test("decision trace survives the server's pending-action fail-closed replacement", async () => {
+  let release!: () => void
+  const model = "opencode/jev-1.13-free"
+  const responseModel = "jev-1.13-free"
+  const harness = await fixture({
+    decisionModels: [model],
+    decisionTrace: {
+      attempts: [
+        {
+          model,
+          modelIndex: 0,
+          attempt: 1,
+          requestSent: true,
+          outcome: "valid-decision",
+          durationMs: 12,
+          responseModel,
+        },
+      ],
+      reviewerModel: model,
+      responseModel,
+    },
+    delay: new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  })
+  try {
+    const input = harness.input()
+    const work = harness.evaluate(input)
+    while (harness.reviews() === 0) await Bun.sleep(1)
+    Reflect.set(input, "metadata", { command: "printf changed" })
+    release()
+    await work
+    expect(input.effect).toBe("deny")
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "deny",
+        decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+        reviewerModel: model,
+        responseModel,
+      },
+    ])
+  } finally {
+    release()
+    await harness.cleanup()
+  }
+})
+
+test("V2 audit retains route metadata when a degraded-config gate replaces allow", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const responseModel = "acme/jev-primary-20261013"
+  const harness = await fixture({
+    decisionModels: [model],
+    configDegraded: ["trusted decision route config is invalid"],
+    escalationMode: "deny",
+    decisionTrace: {
+      attempts: [
+        {
+          model,
+          modelIndex: 0,
+          attempt: 1,
+          requestSent: true,
+          outcome: "valid-decision",
+          durationMs: 15,
+          responseModel,
+        },
+      ],
+      reviewerModel: model,
+      responseModel,
+    },
+    result: {
+      kind: "allow",
+      reason: "Fixture allow",
+      decision: decision("allow"),
+      decisionSource: "llm-reviewer",
+    },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    await harness.dispose()
+    expect(await harness.records()).toMatchObject([
+      {
+        outcome: "deny",
+        escalationDisposition: "deny",
+        decisionAttempts: [{ model, outcome: "valid-decision", responseModel }],
+        reviewerModel: model,
+        responseModel,
+      },
+    ])
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("reviewer failure metadata does not claim a successful reviewer model", async () => {
+  const model = "openrouter/acme/jev-primary"
+  const harness = await fixture({
+    decisionModels: [model],
+    decisionTrace: {
+      attempts: [
+        {
+          model,
+          modelIndex: 0,
+          attempt: 1,
+          requestSent: true,
+          outcome: "network-error",
+          durationMs: 11,
+        },
+      ],
+    },
+    reviewError: new Error("synthetic route failure"),
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("ask")
+    await harness.dispose()
+    const record = (await harness.records())[0]
+    expect(record).toMatchObject({
+      outcome: "escalate",
+      decisionAttempts: [{ model, outcome: "network-error", requestSent: true }],
+    })
+    expect(record?.reviewerModel).toBeUndefined()
+    expect(record?.responseModel).toBeUndefined()
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("invalid-decision disposition keeps its closed trace without reviewer attribution", async () => {
+  const model = "opencode/jev-1.13-free"
+  const harness = await fixture({
+    decisionModels: [model],
+    decisionTrace: {
+      attempts: [
+        {
+          model,
+          modelIndex: 0,
+          attempt: 2,
+          requestSent: true,
+          outcome: "invalid-decision",
+          durationMs: 21,
+          httpStatus: 200,
+        },
+      ],
+    },
+    result: {
+      kind: "deny",
+      reason: "Invalid reviewer decision under configured deny behavior",
+      decisionSource: "failure-safe",
+      escalationDisposition: "deny",
+    },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    await harness.dispose()
+    const record = (await harness.records())[0]
+    expect(record).toMatchObject({
+      outcome: "deny",
+      decisionAttempts: [
+        { model, attempt: 2, outcome: "invalid-decision", httpStatus: 200, requestSent: true },
+      ],
+    })
+    expect(record?.reviewerModel).toBeUndefined()
+    expect(record?.responseModel).toBeUndefined()
+  } finally {
+    await harness.cleanup()
   }
 })
 
