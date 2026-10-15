@@ -4,6 +4,11 @@ import { resolveConfig } from "../src/config.ts"
 import { ReviewAttempt } from "../src/core/review-attempt.ts"
 import { DecisionsReviewerBackend } from "../src/system-one/decisions-backend.ts"
 import { SYSTEM_ONE_QUESTIONS } from "../src/system-one/review.ts"
+import type {
+  DecisionAttemptRecord,
+  DecisionsRouteTrace,
+  DecisionsSelection,
+} from "../src/system-one/decisions-router.ts"
 import {
   DecisionsTransportError,
   type DecisionsTransport,
@@ -442,6 +447,88 @@ test("canonical trace preserves internal transport failure and reviewer-failure 
     })
     expect(result.decisionAttempts?.[0]?.httpStatus).toBeUndefined()
     expect(review.decisionTrace?.attempts).toEqual(result.decisionAttempts)
+  } finally {
+    attempt.close("finished")
+    await reviewer.waitForIdle()
+  }
+})
+
+function attemptRecord(
+  model: string,
+  modelIndex: number,
+  outcome: DecisionAttemptRecord["outcome"],
+  extra: { responseModel?: string } = {},
+): DecisionAttemptRecord {
+  return {
+    model,
+    modelIndex,
+    attempt: 1,
+    requestSent: true,
+    outcome,
+    durationMs: 5,
+    ...extra,
+  }
+}
+
+test("live trace slices stay plain arrays and never leak derived pushes into the envelope", async () => {
+  const reviewer = backend(config({ decisionModels: ["opencode/jev-1.13-free"] }), async () => {
+    throw new Error("the injected route must not reach the transport")
+  })
+  const injectable = reviewer as unknown as {
+    route: (
+      state: unknown,
+      attempt: ReviewAttempt,
+      trace: DecisionsRouteTrace,
+    ) => Promise<DecisionsSelection>
+  }
+  let live!: DecisionAttemptRecord[]
+  injectable.route = async (_state, _attempt, trace) => {
+    live = trace.attempts
+    return { kind: "failed", category: "reviewer-failure", reason: "captured", attempts: [] }
+  }
+  const attempt = new ReviewAttempt("generation", 8_000)
+  const review = envelope()
+
+  try {
+    await reviewer.review(review, attempt, {} as OpenCodeClient)
+    expect(live).toBeDefined()
+
+    live.push(
+      attemptRecord("opencode/jev-1.13-free", 0, "selected", {
+        responseModel: "jev-1.13-free",
+      }),
+    )
+    live.push(attemptRecord("openrouter/vendor/second", 1, "network-error"))
+    expect(review.decisionTrace?.attempts).toEqual([
+      {
+        model: "opencode/jev-1.13-free",
+        modelIndex: 0,
+        attempt: 1,
+        requestSent: true,
+        outcome: "valid-decision",
+        durationMs: 5,
+        responseModel: "jev-1.13-free",
+      },
+      {
+        model: "openrouter/vendor/second",
+        modelIndex: 1,
+        attempt: 1,
+        requestSent: true,
+        outcome: "network-error",
+        durationMs: 5,
+      },
+    ])
+
+    const derived = live.slice(0, 40)
+    expect(() =>
+      derived.push(attemptRecord("openrouter/vendor/third", 2, "internal-error")),
+    ).not.toThrow()
+    expect(derived).toHaveLength(3)
+    expect(Object.getPrototypeOf(derived)).toBe(Array.prototype)
+    expect(Array.isArray(derived)).toBe(true)
+    // The derived copy owns no destination: pushing to it must not touch the envelope trace.
+    expect(review.decisionTrace?.attempts).toHaveLength(2)
+    expect(live).toHaveLength(2)
   } finally {
     attempt.close("finished")
     await reviewer.waitForIdle()

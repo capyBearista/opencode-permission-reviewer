@@ -80,6 +80,14 @@ function canonicalAttempt(record: DecisionAttemptRecord): DecisionAttempt {
 
 /** Writes the router's richer local outcomes into the canonical envelope trace synchronously. */
 class EnvelopeAttemptRecords extends Array<DecisionAttemptRecord> {
+  /**
+   * Keep species-derived copies (`slice`, `map`, ...) plain: they carry no
+   * destination, so they must never inherit the mirroring `push`.
+   */
+  static get [Symbol.species](): ArrayConstructor {
+    return Array
+  }
+
   constructor(private readonly destination: DecisionRoutingTrace) {
     super()
   }
