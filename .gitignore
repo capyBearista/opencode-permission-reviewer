@@ -4,9 +4,6 @@ node_modules/
 # personal / machine-specific hardening helper — NOT part of the reusable plugin
 scripts/harden-opencode-v1.jq
 
-# local-only agent guardrails (private to this checkout, never publish)
-AGENTS.md
-
 # local reference docs (kept in the checkout, never published)
 /docs/
 

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    {
+      "action": "external_directory",
+      "resource": "/home/arjun/opencode-plugins/**",
+      "effect": "allow",
+    },
+    { "action": "read", "resource": "/home/arjun/opencode-plugins/**", "effect": "allow" },
+    { "action": "edit", "resource": "/home/arjun/opencode-plugins/**", "effect": "deny" },
+  ],
+}
