@@ -10,7 +10,7 @@
 > and genuinely risky ones still get blocked or surfaced.
 
 [![OpenCode](https://img.shields.io/badge/OpenCode-%E2%89%A51.18.29-6E56CF)](https://opencode.ai)
-[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.3.0-000000)](https://bun.sh)
+[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-000000)](https://bun.sh)
 [![npm](https://img.shields.io/npm/v/opencode-permission-reviewer?color=CB3837)](https://www.npmjs.com/package/opencode-permission-reviewer)
 [![Downloads](https://img.shields.io/npm/dw/opencode-permission-reviewer)](https://www.npmjs.org/package/opencode-permission-reviewer)
 [![License](https://img.shields.io/github/license/Warc0s/opencode-permission-reviewer?color=blue)](./LICENSE)
@@ -47,7 +47,7 @@ the host and configuration.
 
 ### Requirements
 
-- [Bun](https://bun.sh) ≥ 1.3.0 (CI runs 1.3.0 and 1.3.5)
+- [Bun](https://bun.sh) ≥ 1.4.2 (CI runs 1.4.2)
 - [OpenCode](https://opencode.ai) V1 `>=1.18.29 <2` (**tested with 1.18.34**), or V2 `>=2.0.3 <3` (**tested with 2.0.21**)
 - `git` on `PATH` (only used for read-only Git-state enrichment; missing git
   degrades gracefully)
@@ -750,7 +750,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | OpenCode V1           | `>=1.18.29 <2`     | Dual object entrypoint; verified with **1.18.34**          |
 | OpenCode V2           | `>=2.0.3 <3`       | Compatibility layer; verified with **2.0.21**              |
 | `@opencode-ai/plugin` | `>=1.18.29 <2`     | Optional V1 peer dependency                                |
-| Bun                   | `>=1.3.0`          | Declared in `engines.bun`; CI runs **1.3.0** and **1.3.5** |
+| Bun                   | `>=1.4.2`          | Declared in `engines.bun`; CI runs **1.4.2**              |
 | TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared raw TSX presentation        |
 | OS                    | Linux (verified)   | Other operating systems require equivalent live validation |
 
