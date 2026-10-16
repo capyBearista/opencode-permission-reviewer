@@ -844,7 +844,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | OpenCode V1           | `>=1.18.29 <2`     | Dual object entrypoint; verified with **1.18.34**          |
 | OpenCode V2           | `>=2.0.3 <3`       | Compatibility layer; verified with **2.0.21**              |
 | `@opencode-ai/plugin` | `>=1.18.29 <2`     | Optional V1 peer dependency                                |
-| Bun                   | `>=1.4.2`          | Declared in `engines.bun`; CI runs **1.4.2**              |
+| Bun                   | `>=1.4.2`          | Declared in `engines.bun`; CI runs **1.4.2**               |
 | TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared unbundled presentation      |
 | OS                    | Linux (verified)   | Other operating systems require equivalent live validation |
 
