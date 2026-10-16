@@ -8,6 +8,7 @@ import type {
   RepositoryTrust,
   ReviewerConfig,
   EscalationReviewerConfig,
+  HostGeneration,
   SystemOneFallbackConfig,
   UserAuthorization,
 } from "./types.ts"
@@ -55,6 +56,27 @@ export const DEFAULT_CONFIG: ReviewerConfig = {
   policyRules: [],
   askDecisions: true,
 }
+
+export const DEFAULT_DECISION_MODELS = ["opencode/jev-1.13-free"] as const
+export const DEFAULT_REASONING_MODELS: readonly EscalationReviewerConfig[] = [
+  {
+    model: "openai/gpt-6-luna",
+    variant: "medium",
+    outputFormat: "json_schema",
+    timeoutMs: 120_000,
+  },
+]
+export const DEFAULT_DECISION_MAX_ATTEMPTS = 2
+export const DEFAULT_DECISION_ATTEMPT_TIMEOUT_MS = 10_000
+
+const DECISION_MODEL_MAX_COUNT = 8
+const REASONING_MODEL_MAX_COUNT = 8
+const OPENROUTER_DECISION_MODEL =
+  /^openrouter\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/
+const OPENROUTER_REASONING_MODEL =
+  /^openrouter\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
+const GENERIC_REASONING_MODEL =
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/
 
 /** Total deadline for a review, shared by the server and TUI watchdog. */
 export function reviewBudgetMs(config: ReviewerConfig): number {
@@ -298,20 +320,28 @@ function isClosedSetMemberArray(value: unknown, valid: ReadonlySet<string>): val
   )
 }
 
-export function resolveConfig(options: Record<string, unknown> | undefined): ReviewerConfig {
+export function resolveConfig(
+  options: Record<string, unknown> | undefined,
+  hostGeneration: HostGeneration = "v1",
+): ReviewerConfig {
   const source = options ?? {}
   const model =
-    typeof source.model === "string" && source.model.includes("/")
-      ? source.model
-      : DEFAULT_CONFIG.model
+    hostGeneration === "v2"
+      ? DEFAULT_CONFIG.model
+      : typeof source.model === "string" && source.model.includes("/")
+        ? source.model
+        : DEFAULT_CONFIG.model
   const variant =
     typeof source.variant === "string" && source.variant.length > 0
       ? source.variant
       : DEFAULT_CONFIG.variant
   const outputFormat = source.outputFormat === "text" ? "text" : "json_schema"
-  const escalationReviewer = resolveEscalationReviewer(source.escalationReviewer)
+  const escalationReviewer =
+    hostGeneration === "v2" ? undefined : resolveEscalationReviewer(source.escalationReviewer)
   const systemOneFallback =
-    model === "opencode/jev-1.13-free" && isValidSystemOneFallback(source.systemOneFallback)
+    hostGeneration !== "v2" &&
+    model === "opencode/jev-1.13-free" &&
+    isValidSystemOneFallback(source.systemOneFallback)
       ? (source.systemOneFallback as SystemOneFallbackConfig)
       : undefined
   const policy =
@@ -329,6 +359,7 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
     outputFormat,
     ...(escalationReviewer === undefined ? {} : { escalationReviewer }),
     ...(systemOneFallback === undefined ? {} : { systemOneFallback }),
+    ...(hostGeneration === "v2" ? resolveDecisionRoutingConfig(source) : {}),
     timeoutMs: boundedInteger(source.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5_000, 600_000),
     ...(source.reviewBudgetMs === undefined
       ? {}
@@ -410,6 +441,127 @@ export function resolveConfig(options: Record<string, unknown> | undefined): Rev
     ...(isStringArray(source.configDegraded) && source.configDegraded.length > 0
       ? { configDegraded: source.configDegraded }
       : {}),
+  }
+}
+
+/** Decision routes are intentionally generic within the bounded OpenRouter
+ *  publisher/model namespace; Zen is limited to its free Jev model. */
+export function isValidDecisionsModel(value: unknown): value is string {
+  return (
+    value === "opencode/jev-1.13-free" ||
+    (typeof value === "string" && OPENROUTER_DECISION_MODEL.test(value))
+  )
+}
+
+export function isValidDecisionModels(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= DECISION_MODEL_MAX_COUNT &&
+    value.every(isValidDecisionsModel) &&
+    new Set(value).size === value.length
+  )
+}
+
+/** Validate an entire reasoning route array. A single invalid entry invalidates
+ *  the complete trusted array rather than silently shifting its active route. */
+export function isValidReasoningModels(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length < 1 || value.length > REASONING_MODEL_MAX_COUNT) {
+    return false
+  }
+  const models = new Set<string>()
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false
+    const source = entry as Record<string, unknown>
+    if (
+      Object.keys(source).some(
+        (key) => !["model", "variant", "outputFormat", "timeoutMs"].includes(key),
+      )
+    )
+      return false
+    if (typeof source.model !== "string" || !isValidReasoningModel(source.model)) return false
+    if (models.has(source.model)) return false
+    models.add(source.model)
+    if (
+      source.variant !== undefined &&
+      (typeof source.variant !== "string" ||
+        source.variant.length === 0 ||
+        source.variant.length > 128 ||
+        source.variant.split("").some((character) => {
+          const code = character.charCodeAt(0)
+          return code <= 0x1f || code === 0x7f
+        }))
+    ) {
+      return false
+    }
+    if (
+      source.outputFormat !== undefined &&
+      source.outputFormat !== "json_schema" &&
+      source.outputFormat !== "text"
+    ) {
+      return false
+    }
+    if (source.timeoutMs !== undefined && !isBoundedInteger(source.timeoutMs, 5_000, 600_000)) {
+      return false
+    }
+  }
+  return true
+}
+
+export function isValidDecisionMaxAttempts(value: unknown): value is number {
+  return isBoundedInteger(value, 1, 5)
+}
+
+export function isValidDecisionAttemptTimeoutMs(value: unknown): value is number {
+  return isBoundedInteger(value, 1_000, 60_000)
+}
+
+function isBoundedInteger(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max
+}
+
+function isValidReasoningModel(model: string): boolean {
+  if (model.length > 256) return false
+  const validSyntax = model.startsWith("openrouter/")
+    ? OPENROUTER_REASONING_MODEL.test(model)
+    : GENERIC_REASONING_MODEL.test(model)
+  return validSyntax && !isSystemOneReviewerModel(model)
+}
+
+function resolveDecisionRoutingConfig(
+  source: Record<string, unknown>,
+): Pick<
+  ReviewerConfig,
+  "decisionModels" | "reasoningModels" | "decisionMaxAttempts" | "decisionAttemptTimeoutMs"
+> {
+  const reasoningModels =
+    source.reasoningModels === undefined
+      ? DEFAULT_REASONING_MODELS.map((entry) => ({ ...entry }))
+      : isValidReasoningModels(source.reasoningModels)
+        ? (source.reasoningModels as Array<Record<string, unknown>>).map((entry) => ({
+            model: entry.model as string,
+            variant: (entry.variant as string | undefined) ?? DEFAULT_CONFIG.variant,
+            outputFormat:
+              (entry.outputFormat as ReviewerConfig["outputFormat"] | undefined) ??
+              DEFAULT_CONFIG.outputFormat,
+            timeoutMs: (entry.timeoutMs as number | undefined) ?? DEFAULT_CONFIG.timeoutMs,
+          }))
+        : []
+
+  return {
+    decisionModels:
+      source.decisionModels === undefined
+        ? [...DEFAULT_DECISION_MODELS]
+        : isValidDecisionModels(source.decisionModels)
+          ? [...source.decisionModels]
+          : [],
+    reasoningModels,
+    decisionMaxAttempts: isValidDecisionMaxAttempts(source.decisionMaxAttempts)
+      ? source.decisionMaxAttempts
+      : DEFAULT_DECISION_MAX_ATTEMPTS,
+    decisionAttemptTimeoutMs: isValidDecisionAttemptTimeoutMs(source.decisionAttemptTimeoutMs)
+      ? source.decisionAttemptTimeoutMs
+      : DEFAULT_DECISION_ATTEMPT_TIMEOUT_MS,
   }
 }
 

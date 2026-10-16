@@ -51,9 +51,13 @@ the host and configuration.
 - [OpenCode](https://opencode.ai) V1 `>=1.18.29 <2` (**tested with 1.18.34**), or V2 `>=2.0.3 <3` (**tested with 2.0.21**)
 - `git` on `PATH` (only used for read-only Git-state enrichment; missing git
   degrades gracefully)
-- A model provider configured in OpenCode, exposing a model that follows JSON
+- For V1, a model provider configured in OpenCode with a model that follows JSON
   schemas reliably, or a Jev API key in the trusted process environment (see
-  [Choosing the reviewer model](#choosing-the-reviewer-model))
+  [Choosing the reviewer model](#choosing-the-reviewer-model)). V2's default
+  Zen Decisions route needs no provider key; its default reasoning reviewer
+  needs `openai/gpt-6-luna` configured in OpenCode when a review is sent for
+  reasoning. An OpenRouter Decisions route needs a saved OpenRouter API-key
+  connection in V2.
 - A permission policy with at least one `ask` rule — **if nothing is `ask`, the
   plugin never activates** (everything is already `allow`/`deny`).
 
@@ -77,10 +81,12 @@ bun install && bun run build
 What ships in `dist/`:
 
 - **Server** — `main` / `./server` → `dist/index.js` (bundled).
-- **TUI overlay** — `./tui` → `dist/tui/tui.tsx` (**raw TSX**, not a JS bundle).
-  OpenCode's host compiles that entry with its own Solid/OpenTUI pipeline and
-  rewrites `solid-js` / `@opentui/*` onto the host runtime. A prebundled
-  `dist/tui.js` loads but **never paints** the overlay.
+- **TUI overlay** — `./tui` → `dist/tui/tui.tsx` (unbundled JavaScript kept at
+  `.ts`/`.tsx` paths, not a JS bundle). `scripts/copy-tui.ts` precompiles the
+  existing 11-file TS/JSX graph and maps `solid-js` / `@opentui/*` onto the
+  host OpenTUI runtime IDs. No Solid/OpenTUI runtime is bundled and no new
+  dependencies are added. A prebundled `dist/tui.js` loads but **never
+  paints** the overlay.
 - **CLI** — `./cli` / `bin` → `dist/explain.js`.
 
 The CLI can register the plugin for you (`--tui` writes V1 `tui.json` or V2 global `cli.json`;
@@ -165,22 +171,117 @@ belong in the trusted global `permission-reviewer.jsonc`; V2 inline options
 of unknown provenance can only tighten security restrictions. The TUI reads
 effective settings and review status from the server.
 
-V2 uses the official authenticated client to manage isolated reviewer sessions
-for normal models. It reuses one reviewer location per backend, excludes
-configured MCP servers there, and checks that the location has no MCP servers
-before each review. Jev instead uses its direct typed API.
+#### Ordered Decisions routing
+
+V2 uses an ordered native Decisions route as its primary reviewer. Configure
+the routes in the trusted global `~/.config/opencode/permission-reviewer.jsonc`,
+not in `opencode.json`, a repository config, or the plugin's inline `options`:
+
+```jsonc
+// ~/.config/opencode/permission-reviewer.jsonc
+{
+  "decisionModels": ["opencode/jev-1.13-free", "openrouter/typesafe/jev-1.13"],
+  "reasoningModels": [
+    {
+      "model": "openai/gpt-6-luna",
+      "variant": "medium",
+      "outputFormat": "json_schema",
+      "timeoutMs": 120000,
+    },
+  ],
+  "decisionMaxAttempts": 2,
+  "decisionAttemptTimeoutMs": 10000,
+}
+```
+
+`decisionModels` defaults to `opencode/jev-1.13-free`, the anonymous OpenCode
+Zen route. You can add OpenRouter model IDs in `openrouter/<publisher>/<model>`
+form. Lists contain 1–8 distinct valid IDs and run from left to right. Each
+configured provider may receive the review evidence when its route is reached;
+V2 does not contact an unlisted provider as a fallback.
+
+`reasoningModels` defaults to `openai/gpt-6-luna` with `medium` reasoning,
+`json_schema` output, and a 120,000 ms timeout. Each entry has a `model` and may
+set `variant`, `outputFormat` (`json_schema` or `text`), and `timeoutMs`.
+Omitted subfields use the Luna defaults above. Configure 1–8 distinct valid
+reasoning model IDs; V2 uses only the first entry and does not fail over to
+later reasoning models. The selected Decisions result reaches this isolated
+reviewer only when the existing System One review rules request reasoning.
+Route availability failures do not invoke it. Its configured variant, output
+format, and timeout retain the existing isolated-reviewer behavior.
+Text mode keeps the existing corrective re-prompt for an invalid response.
+
+`decisionMaxAttempts` is the total number of attempts per Decisions model,
+including the initial request: default `2`, range `1`–`5`.
+`decisionAttemptTimeoutMs` defaults to `10000` and accepts `1000`–`60000` ms
+per attempt. These limits do not extend the existing total review deadline; the
+deadline can stop routing before every configured attempt runs.
+
+These four V2 settings are trusted-global-only. Project config and unknown-origin
+inline plugin options cannot select the Decisions or reasoning models or change
+the attempt limits. An absent array uses its default. An explicitly empty or
+invalid trusted array is rejected as a whole, becomes `[]`, and marks the config
+degraded; it is not filtered or replaced by a default. Invalid trusted numeric
+controls use their safe defaults and also mark the config degraded. Degradation
+keeps automatic approval disabled until the trusted config is fixed.
+
+Zen uses the fixed anonymous endpoint `https://opencode.ai/zen/v1/systemone`.
+OpenRouter uses `https://openrouter.ai/api/alpha/decisions` and an active saved
+OpenRouter API-key connection in OpenCode V2, resolved only when that route is
+needed. OpenRouter OAuth credentials are not used. V2 does not read an
+environment API key or accept a custom endpoint.
+
+Routing retries invalid JSON, model identity or decision structure, network
+failures, timeouts, and HTTP 408, 429, or 5xx on the current model before
+advancing. Missing credentials,
+HTTP 401/402/403, 404/410, and a response that explicitly says the requested
+model does not exist advance to the next configured entry, including another
+entry from the same provider. A generic 400, 413, 422, or other unexpected
+failure stops routing. Cancellation and the total review deadline stop
+immediately.
+
+The first structurally valid decision ends routing. A valid deny, escalation,
+low-confidence result, or contradictory result is handled by the existing
+policy and enforcement rules; it never triggers the next configured Decisions
+model. After route exhaustion, existing invalid-decision or reviewer-failure
+handling applies. Routing availability alone never sends a review to the
+reasoning model.
+
+V2 audit records may include a bounded `decisionAttempts` history (at most 40
+entries) with the configured model, route index, attempt number, request-sent
+status, outcome, HTTP status, and duration. `responseModel` is recorded only
+for a verified response identity. `reviewerModel` is attributed to the reasoning
+model only when reasoning returns a successful, conclusive decision. If it fails
+or remains inconclusive, attribution stays with the selected Decisions model.
+These are audit fields, not configuration options.
+
+To inspect V2 settings, pass `--generation v2` to `doctor`,
+`config print-effective`, or `explain`; these commands default to V1 for
+compatibility.
+
+V2 uses the official authenticated client to manage an isolated reviewer
+session only when a reasoning review is configured and requested. It reuses one
+reviewer location per backend, excludes configured MCP servers there, and checks
+that the location has no MCP servers before each review. Primary Decisions
+requests use the fixed endpoints above.
 The registered service is discovered without starting or stopping it. For an
 independent `serve`, configure `OPENCODE_PERMISSION_REVIEWER_HOST_URL` and the
 host's `OPENCODE_PASSWORD` in the trusted process environment. An identity check
 rejects connections to a different plugin instance. Provider credentials stay
 inside OpenCode. See [Migration and rollback](./MIGRATION.md).
 
-Structured output uses a dedicated schema-validated result tool. All operational
-tools remain disabled. `retainReviewSessions: false` removes the auxiliary
-session; `true` keeps it for inspection. `reviewBudgetMs` bounds the whole
-review; by default it is `2 * timeoutMs + 60000`. Retries consume this budget.
+When a reasoning review runs, structured output uses a dedicated
+schema-validated result tool and all operational tools remain disabled.
+`retainReviewSessions: false` removes the auxiliary session; `true` keeps it for
+inspection. `reviewBudgetMs` bounds the whole review; by default it is
+`2 * timeoutMs + 60000`. Routing and reasoning share this deadline.
 
 ## Choosing the reviewer model
+
+The root-level `model`, `variant`, and `outputFormat` settings below describe
+the V1 reviewer. V2 selects its primary reviewer through
+[`decisionModels`](#ordered-decisions-routing) and configures reasoning models
+through `reasoningModels`.
 
 By default the reviewer is a normal OpenCode model invocation with every tool
 denied at the session-permission level, so it can be **any model from any
@@ -201,21 +302,22 @@ The model options are:
   `opencode-go/deepseek-v4-flash`.
 - **`timeoutMs`**: review timeout; keep it in the shared config for V1.
 
-The default reviewer is **`openai/gpt-6-luna`** (`medium` reasoning). Override
+The default V1 reviewer is **`openai/gpt-6-luna`** (`medium` reasoning). Override
 `model` to use any other provider/model you have configured; whichever you pick should follow structured
 output reliably. Model mistakes can cause unsupported approvals as well as
 unnecessary escalations, so compare both safety errors and format validity.
 Higher reasoning variants may cost more or take longer without always improving
 the result.
 
-### Jev System One reviewer
+### Jev System One reviewer (V1)
 
 Set `model` in the trusted global `~/.config/opencode/permission-reviewer.jsonc`
 and put the matching key in the **OpenCode server process environment** before
 starting OpenCode for existing paid primary routes. The Jev call uses the
-provider's System One endpoint directly. For the new optional V2 OpenRouter
-fallback, the plugin reads the saved `/connect` credential on demand instead;
-Command Code CLI login credentials are not used. The supported routes are:
+provider's System One endpoint directly. These model and environment-key routes
+are V1-only; V2 uses [ordered Decisions routing](#ordered-decisions-routing).
+Command Code CLI login credentials are not used for these routes. The supported
+V1 routes are:
 
 | Reviewer `model`                                       | Required environment variable | System One API                                                                                |
 | ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------------------------- |
@@ -223,39 +325,9 @@ Command Code CLI login credentials are not used. The supported routes are:
 | `typesafe-ai/jev-1.13.0` (or `typesafe-ai/jev-latest`) | `TYPESAFE_API_KEY`            | [TypeSafe AI](https://docs.typesafe.ai/sdk/javascript)                                        |
 | `commandcode/typesafe/jev`                             | `CMD_API_KEY`                 | [Command Code Provider API](https://commandcode.ai/docs/provider#decision-models-typesafejev) |
 
-For a **free-first V2 Jev reviewer**, the anonymous Zen promotion
-(`jev-1.13-free`) requires no API key. If the free route is unavailable or
-returns an invalid response, the plugin makes at most three free attempts
-before using the **saved active OpenRouter API-key connection** from OpenCode V2
-(`/connect`). The fallback is only attempted for transport or malformed
-response failures; valid Jev `allow`, `deny`, and `escalate` decisions never
-trigger it. SDK internal retries are disabled for the paid route, and all
-attempts share the existing total review deadline.
-
-```jsonc
-// ~/.config/opencode/permission-reviewer.jsonc (trusted global)
-{
-  "model": "opencode/jev-1.13-free",
-  "systemOneFallback": { "model": "openrouter/typesafe/jev-1.13" },
-  "systemOneConfidenceThreshold": 0.4,
-  "systemOneReasoningThreshold": 0.38,
-  "escalationReviewer": {
-    "model": "openrouter/openai/gpt-6-luna",
-    "variant": "low",
-    "outputFormat": "json_schema",
-    "timeoutMs": 120000,
-  },
-  "escalationMode": "manual",
-  "audit": true,
-}
-```
-
-Fallback and reasoning escalation are **independent**. A valid but difficult
-Jev judgment may be escalated to Luna; a broken transport is never treated as
-a difficult judgment. Without a saved OpenRouter key, paid fallback fails
-safely rather than reusing unrelated environment credentials. The free
-promotion may be discontinued; this configuration automatically uses the
-paid route when the free service becomes unavailable.
+V2 uses [ordered Decisions routing](#ordered-decisions-routing), not these
+root-level V1 settings. V2 ignores the legacy `model`, `systemOneFallback`, and
+`escalationReviewer` fields; no migration to those fields is required.
 
 For **Jev only**, omit `escalationReviewer`:
 
@@ -314,13 +386,13 @@ the chat-reviewer `confidenceThreshold`.
 Jev escalations. Raising it sends fewer cases to the reasoning reviewer; project
 configuration may raise this value but cannot lower a trusted threshold.
 
-### Reviewer models without structured-output support
+### Reviewer models without structured-output support (V1)
 
 Some models (for example `opencode-go/deepseek-v4-flash`) do not support
 OpenCode's `json_schema` structured-output format and fail with a format error
-when it is requested. For those, set `"outputFormat": "text"` so the reviewer
-asks the model to emit its decision as plain JSON and parses it locally. Set
-this option in the trusted global `permission-reviewer.jsonc` for either host:
+when it is requested. For a V1 primary reviewer, set `"outputFormat": "text"`
+so the reviewer asks the model to emit its decision as plain JSON and parses it
+locally. Set this option in the trusted global `permission-reviewer.jsonc`:
 
 ```jsonc
 {
@@ -351,40 +423,45 @@ either mode, so pick as strong a reviewer model as your budget allows.
 
 ### All configuration options
 
-Every option is optional. Numeric/string options are clamped to safe bounds.
+Every option is optional. V1 scalar options are clamped to safe bounds; V2
+routing arrays are validated as a whole, and invalid trusted arrays degrade
+the configuration instead of being filtered.
 
-| Option                         | Default                                                   | Bounds / type                       | Description                                                                                   |
-| ------------------------------ | --------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------- |
-| `model`                        | `openai/gpt-6-luna`                                       | `provider/model`                    | Reviewer model (override with any provider/model)                                             |
-| `variant`                      | `medium`                                                  | non-empty string                    | Reasoning variant passed to OpenCode                                                          |
-| `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`              | How the reviewer returns its decision (`text` for models without structured output)           |
-| `systemOneFallback`            | unset                                                     | trusted `{ model: string }`         | V2 only: free Zen transport fallback to saved OpenRouter Jev key                              |
-| `escalationReviewer`           | unset                                                     | trusted object                      | Optional reasoning reviewer for valid but difficult Jev decisions                             |
-| `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                     | Review timeout; put shared V1 settings in the global config                                   |
-| `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                           | Minimum confidence to auto-act; below it escalates                                            |
-| `systemOneConfidenceThreshold` | `0.4`                                                     | `0.3`–`1`                           | Calibrated Jev outcome-confidence floor; below it escalates                                   |
-| `systemOneReasoningThreshold`  | `0.38`                                                    | `0`–`1`                             | Combined `allow`/`deny` probability required to send an explicit Jev escalation to reasoning  |
-| `maxContextChars`              | `32000`                                                   | `4000`–`200000`                     | Total transcript evidence budget                                                              |
-| `maxPartChars`                 | `8000`                                                    | `500`–`50000`                       | Per-message-part budget                                                                       |
-| `maxEnrichmentChars`           | `24000`                                                   | `1000`–`100000`                     | SSH / script / Git enrichment budget                                                          |
-| `maxIntentChars`               | `8000`                                                    | `1000`–`50000`                      | User-intent history budget                                                                    |
-| `transcriptMessages`           | `12`                                                      | `1`–`100`                           | Recent messages shown to the reviewer                                                         |
-| `intentMessages`               | `8`                                                       | `1`–`50`                            | Genuine user intents kept                                                                     |
-| `historyMessages`              | `200`                                                     | `20`–`500`                          | Operational messages fetched; literal user intent is recovered separately                     |
-| `retainReviewSessions`         | `false`                                                   | boolean                             | Keep reviewer child sessions (debug only; see below)                                          |
-| `audit`                        | `true`                                                    | boolean                             | Append one JSONL audit record per review                                                      |
-| `auditPath`                    | `~/.local/share/opencode/permission-reviewer-audit.jsonl` | path                                | Audit file location                                                                           |
-| `policy`                       | built-in default                                          | string                              | Full local override of the tenant policy text                                                 |
-| `debug`                        | `false`                                                   | boolean                             | Verbose logs to stderr                                                                        |
-| `enforcementMode`              | `observe`                                                 | `observe` / `enforce`               | `enforce` applies declarative policy routes; `observe` audits them only                       |
-| `escalationMode`               | `manual`                                                  | `manual` / `deny`                   | How final escalations are disposed (`manual` = human; `deny` = fail-closed reject)            |
-| `maxSessionDepth`              | `8`                                                       | `1`–`32`                            | Parent-session lineage walk depth                                                             |
-| `maxParentSessions`            | `8`                                                       | `0`–`32`                            | Max parent sessions resolved for actor context                                                |
-| `actorProfiles`                | `{}`                                                      | name → profile map                  | Trusted agent name → profile (`read-only`, `validation`, `workspace`, …)                      |
-| `riskPolicy`                   | built-in conservative matrix                              | object                              | Override `allow` cells per risk level and failure modes (`onInvalidDecision`, …)              |
-| `repositoryTrust`              | `unknown`                                                 | `trusted` / `untrusted` / `unknown` | Repository trust level used by the policy engine                                              |
-| `policyRules`                  | `[]`                                                      | array                               | Declarative rules (most-restrictive wins); project rules combine with trusted ones            |
-| `askDecisions`                 | `true`                                                    | boolean                             | Show the reviewer what the user answered in agent ask dialogs (scoped authorization evidence) |
+| Option                         | Default                                                   | Bounds / type                        | Description                                                                                   |
+| ------------------------------ | --------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `model`                        | `openai/gpt-6-luna`                                       | `provider/model`                     | V1 primary reviewer model; V2 uses `decisionModels`                                           |
+| `variant`                      | `medium`                                                  | non-empty string                     | V1 primary model variant; V2 reasoning variants are set per `reasoningModels` entry           |
+| `outputFormat`                 | `json_schema`                                             | `json_schema` / `text`               | V1 primary output format; V2 reasoning output formats are set per entry                       |
+| `decisionModels`               | `opencode/jev-1.13-free`                                  | V2 trusted list, 1–8 distinct IDs    | Ordered Decisions routes; Zen free model or `openrouter/<publisher>/<model>`                  |
+| `reasoningModels`              | Luna, `medium`, `json_schema`, `120000` ms                | V2 trusted list, 1–8 distinct models | Reasoning reviewer settings; only the first configured entry is used                          |
+| `decisionMaxAttempts`          | `2`                                                       | V2 integer, `1`–`5`                  | Total attempts per Decisions model, including the initial request                             |
+| `decisionAttemptTimeoutMs`     | `10000`                                                   | V2 integer, `1000`–`60000` ms        | Timeout for each Decisions request attempt                                                    |
+| `escalationReviewer`           | unset                                                     | V1 trusted object                    | Optional reasoning reviewer for valid but difficult Jev decisions                             |
+| `timeoutMs`                    | `120000`                                                  | `5000`–`600000`                      | V1 reviewer timeout; V2 still uses the existing overall review-budget calculation             |
+| `confidenceThreshold`          | `0.7`                                                     | `0.5`–`1`                            | Minimum confidence to auto-act; below it escalates                                            |
+| `systemOneConfidenceThreshold` | `0.4`                                                     | `0.3`–`1`                            | Calibrated Jev outcome-confidence floor; below it escalates                                   |
+| `systemOneReasoningThreshold`  | `0.38`                                                    | `0`–`1`                              | Combined `allow`/`deny` probability required to send an explicit Jev escalation to reasoning  |
+| `maxContextChars`              | `32000`                                                   | `4000`–`200000`                      | Total transcript evidence budget                                                              |
+| `maxPartChars`                 | `8000`                                                    | `500`–`50000`                        | Per-message-part budget                                                                       |
+| `maxEnrichmentChars`           | `24000`                                                   | `1000`–`100000`                      | SSH / script / Git enrichment budget                                                          |
+| `maxIntentChars`               | `8000`                                                    | `1000`–`50000`                       | User-intent history budget                                                                    |
+| `transcriptMessages`           | `12`                                                      | `1`–`100`                            | Recent messages shown to the reviewer                                                         |
+| `intentMessages`               | `8`                                                       | `1`–`50`                             | Genuine user intents kept                                                                     |
+| `historyMessages`              | `200`                                                     | `20`–`500`                           | Operational messages fetched; literal user intent is recovered separately                     |
+| `retainReviewSessions`         | `false`                                                   | boolean                              | Keep reviewer child sessions (debug only; see below)                                          |
+| `audit`                        | `true`                                                    | boolean                              | Append one JSONL audit record per review                                                      |
+| `auditPath`                    | `~/.local/share/opencode/permission-reviewer-audit.jsonl` | path                                 | Audit file location                                                                           |
+| `policy`                       | built-in default                                          | string                               | Full local override of the tenant policy text                                                 |
+| `debug`                        | `false`                                                   | boolean                              | Verbose logs to stderr                                                                        |
+| `enforcementMode`              | `observe`                                                 | `observe` / `enforce`                | `enforce` applies declarative policy routes; `observe` audits them only                       |
+| `escalationMode`               | `manual`                                                  | `manual` / `deny`                    | How final escalations are disposed (`manual` = human; `deny` = fail-closed reject)            |
+| `maxSessionDepth`              | `8`                                                       | `1`–`32`                             | Parent-session lineage walk depth                                                             |
+| `maxParentSessions`            | `8`                                                       | `0`–`32`                             | Max parent sessions resolved for actor context                                                |
+| `actorProfiles`                | `{}`                                                      | name → profile map                   | Trusted agent name → profile (`read-only`, `validation`, `workspace`, …)                      |
+| `riskPolicy`                   | built-in conservative matrix                              | object                               | Override `allow` cells per risk level and failure modes (`onInvalidDecision`, …)              |
+| `repositoryTrust`              | `unknown`                                                 | `trusted` / `untrusted` / `unknown`  | Repository trust level used by the policy engine                                              |
+| `policyRules`                  | `[]`                                                      | array                                | Declarative rules (most-restrictive wins); project rules combine with trusted ones            |
+| `askDecisions`                 | `true`                                                    | boolean                              | Show the reviewer what the user answered in agent ask dialogs (scoped authorization evidence) |
 
 Config is layered: built-in defaults ← trusted global
 `~/.config/opencode/permission-reviewer.jsonc` ← untrusted project
@@ -408,6 +485,13 @@ provider, which is not a monotonic security trade, so only global
 configuration may move them in either direction. Project and inline
 values of the wrong type (including `null`) are ignored, never normalized
 back to defaults.
+
+For V2, `decisionModels`, `reasoningModels`, `decisionMaxAttempts`, and
+`decisionAttemptTimeoutMs` are trusted-global-only. Repository config and
+unknown-origin inline plugin options cannot redirect either reviewer or change
+the attempt limits. An explicitly invalid trusted array is rejected as a
+whole, leaves no route in that array, and marks the config degraded; it is not
+replaced with a default. Missing arrays use their documented defaults.
 
 A config file that exists but cannot be honored fails CLOSED on the trusted
 side: a malformed or unreadable **global** config, or trusted `policyRules`
@@ -463,6 +547,14 @@ deny from fail-closed escalate→deny), optional System One reasoning origin,
 optional fallback route, reason class, and number of free requests,
 and a bounded SSH summary. Remote commands
 are stored as **SHA-256**, never in clear text. Set `audit: false` to disable.
+
+V2 audit records can include a bounded `decisionAttempts` history of up to 40
+sanitized entries: model ID, model index, attempt number, whether the request
+was sent, outcome, HTTP status, and duration. `responseModel` is present only
+for a verified Decisions response identity. `reviewerModel` identifies the
+model that produced the final reviewer decision; if a reasoning reviewer
+produces that decision, attribution names the reasoning model. These fields are
+audit metadata, not configuration options.
 
 ## What you'll see
 
@@ -703,7 +795,8 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   The `@opencode/client` dependency can still reach optional
   `@msgpackr-extract/*` native accelerators through `effect` and `msgpackr`;
   the consumer install test tracks their platform package names too. The
-  published tarball itself contains only JavaScript, raw TSX sources, and documentation;
+  published tarball itself contains only JavaScript (including precompiled
+  unbundled TUI JavaScript kept at `.ts`/`.tsx` paths) and documentation;
   `tests/package-smoke.test.ts` rejects native addons and shared libraries,
   `prebuilds/` directories, platform packages, and bundled-dependency payloads
   in the ship set, and every release publishes a CycloneDX SBOM of the
@@ -721,9 +814,10 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   itself.
 - **Renderer dependencies belong to the host, not this plugin.** OpenTUI
   (`@opentui/core` and `@opentui/solid`) and `solid-js` are optional peers,
-  with development-only pins for typechecking. OpenCode V2 compiles the raw
-  TSX overlay against its own single rendering runtime; V1 also requires
-  its host TUI runtime. Installing this package alone must not pull a second
+  with development-only pins for typechecking. The build precompiles the TUI
+  graph to unbundled JavaScript that imports the host's single rendering
+  runtime via OpenTUI runtime IDs; raw TSX under `node_modules` misses the
+  host transform. Installing this package alone must not pull a second
   OpenTUI, Solid or Seroval tree into a consumer project.
 - **Seroval and Babel advisories are host-owned.** Older Solid/OpenTUI
   combinations may reach vulnerable Seroval (GHSA-p6vx-979v-rg4c,
@@ -751,11 +845,12 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | OpenCode V2           | `>=2.0.3 <3`       | Compatibility layer; verified with **2.0.21**              |
 | `@opencode-ai/plugin` | `>=1.18.29 <2`     | Optional V1 peer dependency                                |
 | Bun                   | `>=1.4.2`          | Declared in `engines.bun`; CI runs **1.4.2**              |
-| TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared raw TSX presentation        |
+| TUI overlay           | OpenCode V1 and V2 | Separate host adapters, shared unbundled presentation      |
 | OS                    | Linux (verified)   | Other operating systems require equivalent live validation |
 
-- **TUI overlay** ships as **raw TSX** (`dist/tui/tui.tsx`). The host compiles
-  it against its embedded Solid/OpenTUI runtime. A prebundled TUI entry loads
+- **TUI overlay** ships as **precompiled unbundled JavaScript** kept at
+  `.ts`/`.tsx` paths (`dist/tui/tui.tsx`). The build maps `solid-js` /
+  `@opentui/*` onto the host runtime IDs. A prebundled TUI entry loads
   but never paints. The server half does not depend on the overlay.
 - **Server half** replies through an isolated transport chosen once at startup:
   public SDK reply with feedback `message` → public reply plus a separate
@@ -784,17 +879,17 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 
 ## Troubleshooting
 
-| Symptom                                       | Likely cause                                                                      | Fix                                                                                                                                                                         |
-| --------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                |
-| Plugin does nothing                           | No `ask` rule in the host permission policy                                       | Set a V1 `"bash": "ask"` rule or a V2 shell permission with `effect: "ask"`                                                                                                 |
-| TUI overlay never appears                     | Wrong TUI config; stale process; or host without Solid/OpenTUI pipeline           | Check V1 `tui.json` or V2 global `cli.json`. The overlay is raw TSX (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
-| Startup error: "authenticated SDK transport…" | OpenCode V1 outside `>=1.18.29 <2`, or an SDK change that hides the raw transport | Upgrade OpenCode and `@opencode-ai/plugin` into the supported range; report the version in an issue                                                                         |
-| Reviewer host connection unavailable          | Independent V2 server without a registered endpoint                               | Configure the trusted server URL and authentication, then restart                                                                                                           |
-| Reviews always time out                       | `timeoutMs` too low for the model                                                 | Raise `timeoutMs` (up to 600000)                                                                                                                                            |
-| `GIT_STATE_ANALYSIS` shows `spawn git ENOENT` | `git` not on `PATH`                                                               | Install `git`; Git enrichment degrades safely until then                                                                                                                    |
-| Want a version check                          | Host/SDK outside the supported range                                              | Run `opencode --version` and `opencode-permission-reviewer doctor`                                                                                                          |
-| Want to turn it off                           | -                                                                                 | Remove the plugin from the host config and, if installed, V1 `tui.json` or V2 global `cli.json`                                                                             |
+| Symptom                                       | Likely cause                                                                      | Fix                                                                                                                                                                                                                             |
+| --------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                                | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                                                                    |
+| Plugin does nothing                           | No `ask` rule in the host permission policy                                       | Set a V1 `"bash": "ask"` rule or a V2 shell permission with `effect: "ask"`                                                                                                                                                     |
+| TUI overlay never appears                     | Wrong TUI config; stale process; or host without Solid/OpenTUI pipeline           | Check V1 `tui.json` or V2 global `cli.json`. The overlay is precompiled unbundled JavaScript kept at `.ts`/`.tsx` paths (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
+| Startup error: "authenticated SDK transport…" | OpenCode V1 outside `>=1.18.29 <2`, or an SDK change that hides the raw transport | Upgrade OpenCode and `@opencode-ai/plugin` into the supported range; report the version in an issue                                                                                                                             |
+| Reviewer host connection unavailable          | Independent V2 server without a registered endpoint                               | Configure the trusted server URL and authentication, then restart                                                                                                                                                               |
+| Reviews always time out                       | `timeoutMs` too low for the model                                                 | Raise `timeoutMs` (up to 600000)                                                                                                                                                                                                |
+| `GIT_STATE_ANALYSIS` shows `spawn git ENOENT` | `git` not on `PATH`                                                               | Install `git`; Git enrichment degrades safely until then                                                                                                                                                                        |
+| Want a version check                          | Host/SDK outside the supported range                                              | Run `opencode --version` and `opencode-permission-reviewer doctor`                                                                                                                                                              |
+| Want to turn it off                           | -                                                                                 | Remove the plugin from the host config and, if installed, V1 `tui.json` or V2 global `cli.json`                                                                                                                                 |
 
 Enable `"debug": true` for verbose stderr logs while investigating. TUI load
 errors (`[tui.plugin] …`) are printed on the **TUI process console**, not in
@@ -806,11 +901,12 @@ errors (`[tui.plugin] …`) are printed on the **TUI process console**, not in
 bun install
 bun run check          # format + lint + typecheck + tests + build (must pass before any push)
 bun run test:stress    # stress suite only
-bun run test:package   # npm pack ship-set smoke (raw TUI + server bundle)
+bun run test:package   # npm pack ship-set smoke (TUI + server bundle)
 ```
 
-`bun run build` bundles the server/CLI with tsup, then copies the slim TUI
-source graph into `dist/tui/` as raw TSX (`scripts/copy-tui.ts`). Do not add a
+`bun run build` bundles the server/CLI with tsup, then precompiles the slim TUI
+source graph into `dist/tui/` as unbundled JavaScript kept at `.ts`/`.tsx`
+paths (`scripts/copy-tui.ts`). Do not add a
 prebundled TUI entry — it will not render on the host.
 
 The live end-to-end harness in `tests/live-harness.ts` runs against a real

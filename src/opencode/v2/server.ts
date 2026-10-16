@@ -2,8 +2,8 @@ import { createHash, randomUUID } from "node:crypto"
 import type { Plugin } from "@opencode/plugin"
 import type { OpenCodeEvent } from "@opencode/client"
 import { loadResolvedConfig } from "../../config/loader.ts"
-import { isSystemOneReviewerModel, reviewBudgetMs } from "../../config.ts"
-import { createAuditWriter } from "../../audit.ts"
+import { reviewBudgetMs } from "../../config.ts"
+import { createAuditWriter, sanitizeDecisionMetadata } from "../../audit.ts"
 import { applyEscalationDisposition } from "../../escalation.ts"
 import { formatFailureReason } from "../../failure-reason.ts"
 import { assembleEvidence, defaultEvidenceProviders } from "../../context/evidence-assembler.ts"
@@ -48,8 +48,9 @@ export async function setupWithServices(
       `Unsupported OpenCode V2 host ${ctx.app.version}; supported range is ${SUPPORTED_V2_RANGE}`,
     )
   const directory = ctx.location.directory
-  const config = services.loadConfig(ctx.options, directory, "unknown")
-  const systemOneReviewer = isSystemOneReviewerModel(config.model)
+  const config = services.loadConfig(ctx.options, directory, "unknown", "v2")
+  const primaryDecisionModel = config.decisionModels?.[0] ?? "unavailable"
+  const reasoningReviewer = config.reasoningModels?.[0]
   const generation = randomUUID()
   const identity = randomUUID()
   const backend = services.createBackend(ctx, config)
@@ -82,7 +83,13 @@ export async function setupWithServices(
   const log = (message: string, details?: unknown) =>
     console.error(`[opencode-permission-reviewer] ${message}`, details ?? "")
   const audit = createAuditWriter(config, log)
-  const effectiveConfigHash = createHash("sha256").update(JSON.stringify(config)).digest("hex")
+  const hashConfig: Record<string, unknown> = { ...config }
+  delete hashConfig.model
+  delete hashConfig.variant
+  delete hashConfig.outputFormat
+  delete hashConfig.escalationReviewer
+  delete hashConfig.systemOneFallback
+  const effectiveConfigHash = createHash("sha256").update(JSON.stringify(hashConfig)).digest("hex")
   const registrations: Array<{ dispose(): Promise<void> }> = []
   const rpc = await ctx.rpc.register(ReviewerRpc, {
     identity: async () => identity,
@@ -92,20 +99,22 @@ export async function setupWithServices(
       generation,
       directory,
       adapter: "permission.evaluate",
-      backend: systemOneReviewer ? "system-one" : "v2-isolated-session",
+      backend: "v2-decisions",
       active: !disposed,
       pending: requests.size,
       revision,
-      outputFormat: systemOneReviewer ? "system_one" : config.outputFormat,
-      model: config.model,
-      variant: systemOneReviewer ? "system-one" : config.variant,
+      outputFormat: reasoningReviewer?.outputFormat ?? "json_schema",
+      model: primaryDecisionModel,
+      variant: reasoningReviewer?.variant ?? "none",
+      decisionModels: config.decisionModels ?? [],
+      reasoningModels: config.reasoningModels ?? [],
       configDegraded: config.configDegraded ?? [],
       effectiveConfigHash,
       connection: connectionState,
       eventConnection: eventStreamHealthy ? "connected" : "unavailable",
-      capabilities: systemOneReviewer
-        ? { structuredTool: false, text: false, retention: false, nativeJsonSchema: false }
-        : { structuredTool: true, text: true, retention: true, nativeJsonSchema: false },
+      capabilities: reasoningReviewer
+        ? { structuredTool: true, text: true, retention: true, nativeJsonSchema: false }
+        : { structuredTool: false, text: false, retention: false, nativeJsonSchema: false },
     }),
     snapshot: async () => ({ generation, revision, directory, reviews: [...statuses.values()] }),
   })
@@ -192,6 +201,7 @@ export async function setupWithServices(
             durationMs: 0,
             application: "evaluation-returned",
             decisionSource: "failure-safe",
+            ...(config.decisionModels === undefined ? {} : { decisionAttempts: [] }),
           }),
         )
       return
@@ -236,8 +246,8 @@ export async function setupWithServices(
         const request = normalized.request
         await publish(
           createUiStatus(request, "reviewing", {
-            model: config.model,
-            variant: systemOneReviewer ? "system-one" : config.variant,
+            model: primaryDecisionModel,
+            variant: "decisions",
             timeoutMs: budget,
           }),
         )
@@ -264,6 +274,7 @@ export async function setupWithServices(
                 scriptRegistry,
                 ...(askDecisions ? { askDecisions } : {}),
               })
+              envelope.decisionTrace ??= { attempts: [] }
               envelope.actionEvidenceComplete =
                 envelope.actionEvidenceComplete !== false && normalized!.actionEvidenceComplete
               return envelope
@@ -304,6 +315,23 @@ export async function setupWithServices(
           reason: "Review was cancelled or its total deadline expired",
           decisionSource: "failure-safe",
         }
+      if (config.decisionModels !== undefined) {
+        const decisionMetadata = sanitizeDecisionMetadata(config, envelope?.decisionTrace, result)
+        const resultWithDecisionMetadata = { ...result }
+        delete resultWithDecisionMetadata.decisionAttempts
+        delete resultWithDecisionMetadata.reviewerModel
+        delete resultWithDecisionMetadata.reviewerEscalatedFrom
+        delete resultWithDecisionMetadata.responseModel
+        if (decisionMetadata.decisionAttempts !== undefined)
+          resultWithDecisionMetadata.decisionAttempts = decisionMetadata.decisionAttempts
+        if (decisionMetadata.reviewerModel !== undefined)
+          resultWithDecisionMetadata.reviewerModel = decisionMetadata.reviewerModel
+        if (decisionMetadata.reviewerEscalatedFrom !== undefined)
+          resultWithDecisionMetadata.reviewerEscalatedFrom = decisionMetadata.reviewerEscalatedFrom
+        if (decisionMetadata.responseModel !== undefined)
+          resultWithDecisionMetadata.responseModel = decisionMetadata.responseModel
+        result = resultWithDecisionMetadata
+      }
       // The hook owns this evaluation; there is no published permission ID to reply to.
       input.effect = result.kind === "allow" ? "allow" : result.kind === "deny" ? "deny" : "ask"
       if (input.effect === "allow" && envelope?.actionEvidenceComplete !== false)
@@ -319,12 +347,12 @@ export async function setupWithServices(
               normalized!.request,
               result.kind === "allow" ? "approved" : result.kind === "deny" ? "denied" : "manual",
               {
-                model: result.reviewerModel ?? config.model,
+                model: result.reviewerModel ?? primaryDecisionModel,
                 variant: result.reviewerEscalatedFrom
-                  ? (config.escalationReviewer?.variant ?? config.variant)
-                  : isSystemOneReviewerModel(config.model)
+                  ? (reasoningReviewer?.variant ?? "unknown")
+                  : result.fallbackFrom
                     ? "system-one"
-                    : config.variant,
+                    : "decisions",
                 timeoutMs: budget,
                 reason: result.reason,
                 ...(result.decision ? { decision: result.decision } : {}),
@@ -345,6 +373,10 @@ export async function setupWithServices(
             ...(result.fallbackAttempts !== undefined
               ? { fallbackAttempts: result.fallbackAttempts }
               : {}),
+            ...(result.decisionAttempts === undefined
+              ? {}
+              : { decisionAttempts: result.decisionAttempts }),
+            ...(result.responseModel === undefined ? {} : { responseModel: result.responseModel }),
             ...(result.reviewerEscalatedFrom
               ? { reviewerEscalatedFrom: result.reviewerEscalatedFrom }
               : {}),

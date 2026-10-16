@@ -10,10 +10,193 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
-import type { ReviewAuditRecord, ReviewerConfig } from "./types.ts"
+import type {
+  DecisionAttempt,
+  DecisionRoutingTrace,
+  ReviewAuditRecord,
+  ReviewerConfig,
+} from "./types.ts"
 import { redactSecrets } from "./redact.ts"
 
 export const DEFAULT_AUDIT_PATH = "~/.local/share/opencode/permission-reviewer-audit.jsonl"
+
+const DECISION_ATTEMPT_OUTCOMES: ReadonlySet<string> = new Set([
+  "valid-decision",
+  "invalid-decision",
+  "network-error",
+  "timeout",
+  "internal-error",
+  "http-error",
+  "missing-credentials",
+  "cancelled",
+  "deadline",
+])
+const SAFE_MODEL_ID =
+  /^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|openrouter\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127})$/
+const SAFE_RESPONSE_MODEL_ID =
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?:\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127})?(?:-\d{8})?$/
+const MAX_DECISION_ATTEMPTS = 40
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isSafeResponseModel(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 202 && SAFE_RESPONSE_MODEL_ID.test(value)
+}
+
+function sanitizeDecisionAttempts(
+  config: ReviewerConfig,
+  value: unknown,
+): DecisionAttempt[] | undefined {
+  if (!Array.isArray(value) || !Array.isArray(config.decisionModels)) return
+  const sanitized: DecisionAttempt[] = []
+  for (const candidate of value.slice(0, MAX_DECISION_ATTEMPTS)) {
+    if (!isRecord(candidate)) continue
+    const modelIndex = candidate.modelIndex
+    const model = candidate.model
+    const attempt = candidate.attempt
+    const durationMs = candidate.durationMs
+    if (
+      typeof modelIndex !== "number" ||
+      !Number.isInteger(modelIndex) ||
+      modelIndex < 0 ||
+      modelIndex > 7 ||
+      modelIndex >= config.decisionModels.length ||
+      typeof model !== "string" ||
+      !SAFE_MODEL_ID.test(model) ||
+      model !== config.decisionModels[modelIndex] ||
+      typeof attempt !== "number" ||
+      !Number.isInteger(attempt) ||
+      attempt < 1 ||
+      attempt > 5 ||
+      typeof candidate.requestSent !== "boolean" ||
+      typeof candidate.outcome !== "string" ||
+      !DECISION_ATTEMPT_OUTCOMES.has(candidate.outcome) ||
+      typeof durationMs !== "number" ||
+      !Number.isFinite(durationMs) ||
+      durationMs < 0
+    ) {
+      continue
+    }
+    const outcome = candidate.outcome as DecisionAttempt["outcome"]
+    const responseModel =
+      outcome === "valid-decision" && isSafeResponseModel(candidate.responseModel)
+        ? candidate.responseModel
+        : undefined
+    const httpStatus =
+      typeof candidate.httpStatus === "number" &&
+      Number.isInteger(candidate.httpStatus) &&
+      candidate.httpStatus >= 100 &&
+      candidate.httpStatus <= 599
+        ? candidate.httpStatus
+        : undefined
+    sanitized.push({
+      model,
+      modelIndex,
+      attempt,
+      requestSent: candidate.requestSent,
+      outcome,
+      durationMs: Math.min(60_000, durationMs),
+      ...(httpStatus === undefined ? {} : { httpStatus }),
+      ...(responseModel === undefined ? {} : { responseModel }),
+    })
+  }
+  return sanitized
+}
+
+/** Copy only configured V2 route attribution and its bounded closed attempt history. */
+export function sanitizeDecisionMetadata(
+  config: ReviewerConfig,
+  trace:
+    | Pick<
+        DecisionRoutingTrace,
+        "attempts" | "reviewerModel" | "reviewerEscalatedFrom" | "responseModel"
+      >
+    | undefined,
+  fallback?: Pick<
+    ReviewAuditRecord,
+    "reviewerModel" | "reviewerEscalatedFrom" | "responseModel" | "decisionAttempts"
+  >,
+): Pick<
+  ReviewAuditRecord,
+  "decisionAttempts" | "reviewerModel" | "reviewerEscalatedFrom" | "responseModel"
+> {
+  if (!Array.isArray(config.decisionModels)) return {}
+  const attempts = sanitizeDecisionAttempts(
+    config,
+    trace === undefined ? fallback?.decisionAttempts : trace.attempts,
+  )
+  const reviewerModel = trace === undefined ? fallback?.reviewerModel : trace.reviewerModel
+  const provenance =
+    trace === undefined ? fallback?.reviewerEscalatedFrom : trace.reviewerEscalatedFrom
+  const safeProvenance =
+    isRecord(provenance) &&
+    typeof provenance.model === "string" &&
+    SAFE_MODEL_ID.test(provenance.model) &&
+    config.decisionModels.includes(provenance.model) &&
+    attempts?.some(
+      (attempt) => attempt.model === provenance.model && attempt.outcome === "valid-decision",
+    ) &&
+    typeof provenance.reason === "string"
+      ? {
+          model: provenance.model,
+          reason: redactSecrets(boundedReason(provenance.reason)),
+        }
+      : undefined
+  // Only the first configured reasoning entry ever executes in the V2
+  // backend (the factory builds its reasoning reviewer from
+  // reasoningModels[0]); later entries are inactive and must never be
+  // attributed as the reviewer.
+  const activeReasoningModel = config.reasoningModels?.[0]?.model
+  const configuredReviewerModels = new Set([
+    ...config.decisionModels,
+    ...(activeReasoningModel === undefined ? [] : [activeReasoningModel]),
+  ])
+  const safeReviewerModel =
+    typeof reviewerModel === "string" &&
+    SAFE_MODEL_ID.test(reviewerModel) &&
+    configuredReviewerModels.has(reviewerModel) &&
+    ((config.decisionModels.includes(reviewerModel) &&
+      attempts?.some(
+        (attempt) => attempt.model === reviewerModel && attempt.outcome === "valid-decision",
+      )) ||
+      (reviewerModel === activeReasoningModel && safeProvenance !== undefined))
+      ? reviewerModel
+      : undefined
+  const responseModel = trace === undefined ? fallback?.responseModel : trace.responseModel
+  const safeResponseModel =
+    isSafeResponseModel(responseModel) &&
+    attempts?.some(
+      (attempt) =>
+        attempt.outcome === "valid-decision" &&
+        attempt.responseModel === responseModel &&
+        config.decisionModels?.[attempt.modelIndex] === attempt.model,
+    )
+      ? responseModel
+      : undefined
+  const safeReviewerEscalatedFrom =
+    safeReviewerModel !== undefined && safeReviewerModel === activeReasoningModel
+      ? safeProvenance
+      : undefined
+  return {
+    ...(attempts === undefined ? {} : { decisionAttempts: attempts }),
+    ...(safeReviewerModel === undefined ? {} : { reviewerModel: safeReviewerModel }),
+    ...(safeReviewerEscalatedFrom === undefined
+      ? {}
+      : { reviewerEscalatedFrom: safeReviewerEscalatedFrom }),
+    ...(safeResponseModel === undefined ? {} : { responseModel: safeResponseModel }),
+  }
+}
+
+function withoutDecisionMetadata(record: ReviewAuditRecord): ReviewAuditRecord {
+  const copy = { ...record }
+  delete copy.decisionAttempts
+  delete copy.reviewerModel
+  delete copy.reviewerEscalatedFrom
+  delete copy.responseModel
+  return copy
+}
 
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
 const O_WRONLY = typeof fsConstants.O_WRONLY === "number" ? fsConstants.O_WRONLY : 0
@@ -283,8 +466,27 @@ export function createAuditWriter(
     // pipeline's redaction). Structural identifiers are left intact: running
     // the redactor over the whole serialized line would also match key names
     // like "sessionID" and corrupt the record's correlation fields.
+    const decisionMetadata = sanitizeDecisionMetadata(config, undefined, record)
+    const baseRecord =
+      config.decisionModels === undefined ? record : withoutDecisionMetadata(record)
     const sanitized: ReviewAuditRecord = {
-      ...record,
+      ...baseRecord,
+      ...(config.decisionModels === undefined
+        ? {}
+        : {
+            ...(decisionMetadata.decisionAttempts === undefined
+              ? {}
+              : { decisionAttempts: decisionMetadata.decisionAttempts }),
+            ...(decisionMetadata.reviewerModel === undefined
+              ? {}
+              : { reviewerModel: decisionMetadata.reviewerModel }),
+            ...(decisionMetadata.reviewerEscalatedFrom === undefined
+              ? {}
+              : { reviewerEscalatedFrom: decisionMetadata.reviewerEscalatedFrom }),
+            ...(decisionMetadata.responseModel === undefined
+              ? {}
+              : { responseModel: decisionMetadata.responseModel }),
+          }),
       reason: redactSecrets(boundedReason(record.reason)),
       ...(record.fallbackReason === undefined
         ? {}
@@ -314,14 +516,16 @@ export function createAuditWriter(
               answer: redactSecrets(decision.answer),
             })),
           }),
-      ...(record.reviewerEscalatedFrom === undefined
-        ? {}
-        : {
-            reviewerEscalatedFrom: {
-              ...record.reviewerEscalatedFrom,
-              reason: redactSecrets(boundedReason(record.reviewerEscalatedFrom.reason)),
-            },
-          }),
+      ...(config.decisionModels === undefined
+        ? record.reviewerEscalatedFrom === undefined
+          ? {}
+          : {
+              reviewerEscalatedFrom: {
+                ...record.reviewerEscalatedFrom,
+                reason: redactSecrets(boundedReason(record.reviewerEscalatedFrom.reason)),
+              },
+            }
+        : {}),
     }
     try {
       appendAuditLine(path, `${JSON.stringify(sanitized)}\n`)

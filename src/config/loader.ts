@@ -7,10 +7,14 @@ import {
   resolveConfig,
   DEFAULT_CONFIG,
   DEFAULT_RISK_POLICY,
+  isValidDecisionAttemptTimeoutMs,
+  isValidDecisionMaxAttempts,
+  isValidDecisionModels,
   isValidEscalationReviewer,
+  isValidReasoningModels,
   isValidSystemOneFallback,
 } from "../config.ts"
-import type { PolicyRule, ReviewerConfig } from "../types.ts"
+import type { HostGeneration, PolicyRule, ReviewerConfig } from "../types.ts"
 import type { InlineOptionsTrust } from "./sources.ts"
 
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
@@ -178,7 +182,20 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "maxParentSessions",
   "askDecisions",
   "debug",
+  "decisionModels",
+  "reasoningModels",
+  "decisionMaxAttempts",
+  "decisionAttemptTimeoutMs",
 ])
+
+const V2_CONFIG_KEYS = [
+  "decisionModels",
+  "reasoningModels",
+  "decisionMaxAttempts",
+  "decisionAttemptTimeoutMs",
+] as const
+
+const V2_OBSOLETE_CONFIG_KEYS = ["model", "systemOneFallback", "escalationReviewer"] as const
 
 /** Reviewer resource knobs: how long a review may run and how much context
  *  (transcript, evidence, session chains) it may consume. These are NOT
@@ -199,6 +216,8 @@ const TRUSTED_ONLY_RESOURCE_KEYS = [
   "historyMessages",
   "maxSessionDepth",
   "maxParentSessions",
+  "decisionMaxAttempts",
+  "decisionAttemptTimeoutMs",
 ] as const
 
 /** Load and merge config from global, project, and inline sources.
@@ -215,12 +234,16 @@ export function loadResolvedConfig(
   inlineOptions: Record<string, unknown> | undefined,
   directory?: string,
   inlineTrust: InlineOptionsTrust = "trusted",
+  hostGeneration: HostGeneration = "v1",
 ): ReviewerConfig {
   const globalLayer = readConfigLayer(globalConfigPath())
   const projectLayer: ConfigLayer =
     directory !== undefined
       ? readConfigLayer(projectConfigPath(directory))
       : { raw: {}, status: "missing" }
+  const globalOptions = applyGenerationConfig(globalLayer.raw, hostGeneration)
+  const projectOptions = applyGenerationConfig(projectLayer.raw, hostGeneration)
+  const inlineGenerationOptions = applyGenerationConfig(inlineOptions, hostGeneration)
   for (const layer of [globalLayer, projectLayer]) {
     if (layer.warning !== undefined) console.warn(layer.warning)
   }
@@ -236,8 +259,9 @@ export function loadResolvedConfig(
     degraded.push("global config file exists but could not be read")
   } else if (globalLayer.status === "ok") {
     if (
-      globalLayer.raw.escalationReviewer !== undefined &&
-      !isValidEscalationReviewer(globalLayer.raw.escalationReviewer)
+      hostGeneration === "v1" &&
+      globalOptions.escalationReviewer !== undefined &&
+      !isValidEscalationReviewer(globalOptions.escalationReviewer)
     ) {
       degraded.push("global config escalationReviewer is invalid and was ignored")
       console.warn(
@@ -245,15 +269,19 @@ export function loadResolvedConfig(
       )
     }
     if (
-      globalLayer.raw.systemOneFallback !== undefined &&
-      !isValidSystemOneFallback(globalLayer.raw.systemOneFallback)
+      hostGeneration === "v1" &&
+      globalOptions.systemOneFallback !== undefined &&
+      !isValidSystemOneFallback(globalOptions.systemOneFallback)
     ) {
       degraded.push("global config systemOneFallback is invalid and was ignored")
       console.warn(
         "permission-reviewer: global config systemOneFallback is invalid; automatic approval stays disabled until fixed",
       )
     }
-    const invalidRules = countInvalidPolicyRules(globalLayer.raw.policyRules)
+    if (hostGeneration === "v2") {
+      validateTrustedDecisionConfig(globalOptions, "global", degraded, true)
+    }
+    const invalidRules = countInvalidPolicyRules(globalOptions.policyRules)
     if (invalidRules > 0) {
       degraded.push(
         `${invalidRules} policy rule(s) from the global config were dropped by validation`,
@@ -265,7 +293,7 @@ export function loadResolvedConfig(
     // A mistyped mode silently falls back to the less restrictive default in
     // resolveConfig, so it gets the same fail-closed treatment as a dropped
     // rule: visible degradation instead of a quiet downgrade.
-    const globalEnforcement = globalLayer.raw.enforcementMode
+    const globalEnforcement = globalOptions.enforcementMode
     if (
       globalEnforcement !== undefined &&
       globalEnforcement !== "enforce" &&
@@ -278,7 +306,7 @@ export function loadResolvedConfig(
         `permission-reviewer: global config enforcementMode ${JSON.stringify(globalEnforcement)} is invalid and was ignored; automatic approval stays disabled until it is fixed`,
       )
     }
-    const globalEscalation = globalLayer.raw.escalationMode
+    const globalEscalation = globalOptions.escalationMode
     if (
       globalEscalation !== undefined &&
       globalEscalation !== "manual" &&
@@ -294,7 +322,7 @@ export function loadResolvedConfig(
   }
 
   const invalidInlineRules =
-    inlineTrust === "trusted" ? countInvalidPolicyRules(inlineOptions?.policyRules) : 0
+    inlineTrust === "trusted" ? countInvalidPolicyRules(inlineGenerationOptions?.policyRules) : 0
   if (invalidInlineRules > 0) {
     degraded.push(
       `${invalidInlineRules} policy rule(s) from inline config were dropped by validation`,
@@ -304,20 +332,25 @@ export function loadResolvedConfig(
   // Same visibility for trusted inline modes (no console.warn, matching the
   // inline policyRules treatment above). resolveConfig still clamps the value
   // to the safe default; this only records that the trusted input was lost.
-  if (inlineTrust === "trusted" && inlineOptions !== undefined) {
+  if (inlineTrust === "trusted" && inlineGenerationOptions !== undefined) {
     if (
-      inlineOptions.escalationReviewer !== undefined &&
-      !isValidEscalationReviewer(inlineOptions.escalationReviewer)
+      hostGeneration === "v1" &&
+      inlineGenerationOptions.escalationReviewer !== undefined &&
+      !isValidEscalationReviewer(inlineGenerationOptions.escalationReviewer)
     ) {
       degraded.push("inline config escalationReviewer is invalid and was ignored")
     }
     if (
-      inlineOptions.systemOneFallback !== undefined &&
-      !isValidSystemOneFallback(inlineOptions.systemOneFallback)
+      hostGeneration === "v1" &&
+      inlineGenerationOptions.systemOneFallback !== undefined &&
+      !isValidSystemOneFallback(inlineGenerationOptions.systemOneFallback)
     ) {
       degraded.push("inline config systemOneFallback is invalid and was ignored")
     }
-    const inlineEnforcement = inlineOptions.enforcementMode
+    if (hostGeneration === "v2") {
+      validateTrustedDecisionConfig(inlineGenerationOptions, "inline", degraded, false)
+    }
+    const inlineEnforcement = inlineGenerationOptions.enforcementMode
     if (
       inlineEnforcement !== undefined &&
       inlineEnforcement !== "enforce" &&
@@ -327,7 +360,7 @@ export function loadResolvedConfig(
         `inline config enforcementMode ${JSON.stringify(inlineEnforcement)} is invalid and was ignored`,
       )
     }
-    const inlineEscalation = inlineOptions.escalationMode
+    const inlineEscalation = inlineGenerationOptions.escalationMode
     if (
       inlineEscalation !== undefined &&
       inlineEscalation !== "manual" &&
@@ -342,7 +375,7 @@ export function loadResolvedConfig(
   // Dropped project rules are warned about but never degrade the config:
   // configDegraded describes trusted sources only, and project rules cannot
   // weaken trusted restrictions anyway.
-  const invalidProjectRules = countInvalidPolicyRules(projectLayer.raw.policyRules)
+  const invalidProjectRules = countInvalidPolicyRules(projectOptions.policyRules)
   if (invalidProjectRules > 0) {
     console.warn(
       `permission-reviewer: ${invalidProjectRules} policy rule(s) in the project config are invalid and were dropped`,
@@ -354,21 +387,26 @@ export function loadResolvedConfig(
   // the project layer is clamped against.
   const trusted: Record<string, unknown> = {
     ...DEFAULT_CONFIG,
-    ...globalLayer.raw,
-    ...(inlineTrust === "trusted" ? (inlineOptions ?? {}) : {}),
+    ...globalOptions,
+    ...(inlineTrust === "trusted" ? (inlineGenerationOptions ?? {}) : {}),
   }
   if (
+    hostGeneration === "v1" &&
     trusted.systemOneFallback !== undefined &&
     isValidSystemOneFallback(trusted.systemOneFallback) &&
     trusted.model !== "opencode/jev-1.13-free"
   ) {
     degraded.push("trusted systemOneFallback requires opencode/jev-1.13-free as primary model")
   }
-  let merged = mergeWithTrustBoundary(trusted, projectLayer.raw)
+  let merged = mergeWithTrustBoundary(trusted, projectOptions)
   if (inlineTrust !== "trusted") {
     // Unknown-origin options may only contribute boundary-controlled hardening.
     const restrictions = Object.fromEntries(
-      Object.entries(inlineOptions ?? {}).filter(([key]) => TRUST_BOUNDARY_KEYS.has(key)),
+      Object.entries(inlineGenerationOptions ?? {}).filter(
+        ([key]) =>
+          TRUST_BOUNDARY_KEYS.has(key) &&
+          !V2_CONFIG_KEYS.includes(key as (typeof V2_CONFIG_KEYS)[number]),
+      ),
     )
     merged = mergeWithTrustBoundary(merged, restrictions)
   }
@@ -376,11 +414,59 @@ export function loadResolvedConfig(
   // non-security field (the boundary's own keys are exempt: re-applying inline
   // there could undo project hardening clamped against it).
   const out: Record<string, unknown> = { ...merged }
-  for (const [key, value] of Object.entries(inlineOptions ?? {})) {
+  for (const [key, value] of Object.entries(inlineGenerationOptions ?? {})) {
     if (inlineTrust === "trusted" && !TRUST_BOUNDARY_KEYS.has(key)) out[key] = value
   }
   if (degraded.length > 0) out.configDegraded = degraded
-  return resolveConfig(out)
+  return resolveConfig(out, hostGeneration)
+}
+
+function applyGenerationConfig(
+  source: Record<string, unknown> | undefined,
+  hostGeneration: HostGeneration,
+): Record<string, unknown> {
+  const result = { ...(source ?? {}) }
+  const ignoredKeys = hostGeneration === "v2" ? V2_OBSOLETE_CONFIG_KEYS : V2_CONFIG_KEYS
+  for (const key of ignoredKeys) delete result[key]
+  return result
+}
+
+function validateTrustedDecisionConfig(
+  source: Record<string, unknown>,
+  layer: "global" | "inline",
+  degraded: string[],
+  warn: boolean,
+): void {
+  const checks: Array<[string, boolean]> = [
+    [
+      "decisionModels",
+      source.decisionModels === undefined || isValidDecisionModels(source.decisionModels),
+    ],
+    [
+      "reasoningModels",
+      source.reasoningModels === undefined || isValidReasoningModels(source.reasoningModels),
+    ],
+    [
+      "decisionMaxAttempts",
+      source.decisionMaxAttempts === undefined ||
+        isValidDecisionMaxAttempts(source.decisionMaxAttempts),
+    ],
+    [
+      "decisionAttemptTimeoutMs",
+      source.decisionAttemptTimeoutMs === undefined ||
+        isValidDecisionAttemptTimeoutMs(source.decisionAttemptTimeoutMs),
+    ],
+  ]
+  for (const [key, valid] of checks) {
+    if (valid) continue
+    const message = `${layer} config ${key} is invalid and was ignored`
+    degraded.push(message)
+    if (warn) {
+      console.warn(
+        `permission-reviewer: ${message}; automatic approval stays disabled until it is fixed`,
+      )
+    }
+  }
 }
 
 /** Whether the key is present in the layer (a `null`/wrong-type value must be
@@ -461,6 +547,8 @@ function mergeWithTrustBoundary(
   delete clamped.model
   delete clamped.escalationReviewer
   delete clamped.systemOneFallback
+  delete clamped.decisionModels
+  delete clamped.reasoningModels
   delete clamped.policy
   delete clamped.variant
   delete clamped.outputFormat
