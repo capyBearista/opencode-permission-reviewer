@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Package script evidence starts from the shell command's `workdir`, resolving
   relative paths against the session directory, instead of always using the
-  session directory. An unusable `workdir` marks the scripts as unresolved
-  rather than reporting another manifest. Reads stay within the approved
-  evidence roots.
+  session directory. The `workdir` is followed to its real path, as package
+  managers do, and one that is not an existing directory marks the scripts as
+  unresolved rather than reporting another manifest. Reads stay within the
+  approved evidence roots.
 
 - Ordered Decisions routing advances to the next configured model on HTTP 413
   or 422 instead of stopping. Those limits are per model: a 16k-context model
