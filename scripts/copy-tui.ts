@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { dirname, join, resolve } from "node:path"
 import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
 
-// OpenTUI 0.5.11 ships the transform helper but does not export its subpath.
+// OpenTUI 0.7.0 ships the transform helper but does not export its subpath.
 const solidEntry = import.meta.resolve("@opentui/solid")
 const { transformSolidSource } = await import(
   new URL("./scripts/solid-transform.js", solidEntry).href
@@ -23,13 +23,9 @@ const files = [
   ["src/ui/components.tsx", "ui/components.tsx"],
   ["src/ui/v2.tsx", "ui/v2.tsx"],
   ["src/ui/rpc.ts", "ui/rpc.ts"],
-  ["src/config.ts", "config.ts"],
-  ["src/config/loader.ts", "config/loader.ts"],
-  ["src/config/jsonc.ts", "config/jsonc.ts"],
   ["src/ui-protocol.ts", "ui-protocol.ts"],
   ["src/ui-state.ts", "ui-state.ts"],
   ["src/types.ts", "types.ts"],
-  ["src/opencode/event-normalizer.ts", "opencode/event-normalizer.ts"],
 ] as const
 
 rmSync(out, { recursive: true, force: true })

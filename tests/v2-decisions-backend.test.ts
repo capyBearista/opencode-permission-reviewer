@@ -73,14 +73,11 @@ function envelope(): ReviewEnvelope {
 }
 
 function config(overrides: Record<string, unknown> = {}): ReviewerConfig {
-  return resolveConfig(
-    {
-      decisionMaxAttempts: 1,
-      reasoningModels: [],
-      ...overrides,
-    },
-    "v2",
-  )
+  return resolveConfig({
+    decisionMaxAttempts: 1,
+    reasoningModels: [],
+    ...overrides,
+  })
 }
 
 function backend(

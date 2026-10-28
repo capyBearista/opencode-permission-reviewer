@@ -53,13 +53,12 @@ jobs:
           bun tests/plugin-parity.mjs --repo ../..
 
   hosts:
-    name: hosts (${{ matrix.host }}, ${{ matrix.package-manager }})
+    name: hosts (${{ matrix.package-manager }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        host: [v1, v2]
         package-manager: [npm, bun]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -73,28 +72,13 @@ jobs:
       - run: bun run build
       - run: python -m pip install pytest==9.1.1
       - name: Install pinned hosts in scratch directories
-        env:
-          HOST_GENERATION: ${{ matrix.host }}
-        run: |
-          bun tests/compatibility/install-hosts.ts
-          if [ "$HOST_GENERATION" = v2 ]; then
-            HOST_GENERATION=v1 bun tests/compatibility/install-hosts.ts
-          fi
+        run: bun tests/compatibility/install-hosts.ts
       - name: Install the packed plugin without lifecycle scripts
         env:
           PACKAGE_MANAGER: ${{ matrix.package-manager }}
         run: bun tests/compatibility/install-package.ts
       - name: Exercise real hosts with isolated config and synthetic models
-        env:
-          HOST_GENERATION: ${{ matrix.host }}
-        run: |
-          if [ "$HOST_GENERATION" = v1 ]; then
-            python -m pytest tests/compatibility/test_opencode_v1.py tests/compatibility/test_evidence_recovery.py tests/compatibility/test_local_evidence.py -q
-            python -m pytest tests/compatibility/test_tui.py -k v1 -q
-          else
-            python -m pytest tests/compatibility/test_opencode_v2.py tests/compatibility/test_v2_reviewer.py tests/compatibility/test_v2_analysis_regressions.py tests/compatibility/test_rollback.py tests/compatibility/test_evidence_recovery.py tests/compatibility/test_local_evidence.py -q
-            python -m pytest tests/compatibility/test_tui.py -k v2 -q
-          fi
+        run: python -m pytest tests/compatibility -q
 
   # Stable required-check name for branch protection. Matrix leg names change
   # when Bun versions drift; this gate does not.

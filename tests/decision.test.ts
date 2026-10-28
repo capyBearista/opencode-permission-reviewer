@@ -199,29 +199,6 @@ describe("configuration", () => {
     expect(resolveConfig({ outputFormat: 42 }).outputFormat).toBe("json_schema")
   })
 
-  test("resolves an optional reasoning escalation reviewer", () => {
-    const value = resolveConfig({
-      escalationReviewer: {
-        model: "openai/gpt-5.6-luna",
-        variant: "high",
-        outputFormat: "text",
-        timeoutMs: 30_000,
-      },
-    })
-    expect(value.escalationReviewer).toEqual({
-      model: "openai/gpt-5.6-luna",
-      variant: "high",
-      outputFormat: "text",
-      timeoutMs: 30_000,
-    })
-    expect(resolveConfig({ escalationReviewer: { model: "invalid" } }).escalationReviewer).toBe(
-      undefined,
-    )
-    expect(
-      resolveConfig({ escalationReviewer: { model: "typesafe-ai/jev-1.13.0" } }).escalationReviewer,
-    ).toBeUndefined()
-  })
-
   test("bounds unsafe numeric options", () => {
     const value = resolveConfig({
       timeoutMs: 1,

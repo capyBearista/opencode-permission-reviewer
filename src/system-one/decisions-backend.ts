@@ -58,6 +58,7 @@ function canonicalOutcome(outcome: DecisionAttemptRecord["outcome"]): DecisionAt
     case "access-unavailable":
     case "endpoint-unavailable":
     case "model-not-found":
+    case "model-rejected":
     case "http-retryable":
     case "invalid-request":
     case "unexpected-http-status":

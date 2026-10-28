@@ -13,14 +13,13 @@ import subprocess
 import termios
 import time
 from threading import Thread
-import urllib.parse
 import urllib.request
 import pytest
 
 V2_VERSIONS = (
     [os.environ["V2_HOST_VERSION"]]
     if os.environ.get("V2_HOST_VERSION")
-    else ["2.0.3", "2.0.11", "2.0.15", "2.0.18"]
+    else ["2.2.0"]
 )
 
 from test_v2_reviewer import (
@@ -92,23 +91,11 @@ def terminal(arguments, env):
         os.close(master)
 
 
-@pytest.mark.parametrize(
-    "generation,version",
-    [
-        ("v1", "1.18.29"),
-        ("v1", "1.18.30"),
-        ("v1", "1.18.31"),
-        ("v1", "1.18.32"),
-        *(("v2", version) for version in V2_VERSIONS),
-    ],
-)
+@pytest.mark.parametrize("version", V2_VERSIONS)
 def test_tui_renders_review_state(
-    launch_host, activate_host, model_server, generation, version, request, tmp_path
+    launch_host, activate_host, model_server, decisions_server, version, tmp_path
 ):
-    binary = os.environ[f"OPENCODE_{generation.upper()}_{version.replace('.', '_')}"]
-    package = os.environ.get(
-        "PLUGIN_PACKAGE_PATH", str(Path(__file__).resolve().parents[2])
-    )
+    binary = os.environ[f"OPENCODE_V2_{version.replace('.', '_')}"]
     provider = {
         "providers": {
             "fixture": {
@@ -135,54 +122,18 @@ def test_tui_renders_review_state(
             }
         }
     }
-    if generation == "v1":
-        provider = {
-            "provider": {
-                "fixture": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "Fixture",
-                    "options": {
-                        "baseURL": model_server["url"],
-                        "apiKey": "synthetic-fixture",
-                    },
-                    "models": {
-                        name: {
-                            "name": name,
-                            "limit": {"context": 32000, "output": 1000},
-                        }
-                        for name in ["reviewer", "driver"]
-                    },
-                }
-            }
-        }
-    config = (
-        {"plugins": [package]}
-        if generation == "v2"
-        else {"plugin": [package], "permission": {"bash": "ask"}}
+    decisions_server.set_default_mode("inconclusive")
+    package = v2_plugin_package(tmp_path, decisions_server)
+    config = {"plugins": [package]}
+    reviewer = v2_reviewer_config(
+        timeout_ms=10000,
+        review_budget_ms=20000,
+        reasoning_timeout_ms=10000,
     )
-    reviewer = {
-        "model": "fixture/reviewer",
-        "timeoutMs": 10000,
-        "reviewBudgetMs": 20000,
-    }
-    if generation == "v2":
-        decisions = request.getfixturevalue("decisions_server")
-        decisions.set_default_mode("inconclusive")
-        package = v2_plugin_package(tmp_path, decisions)
-        config = {"plugins": [package]}
-        reviewer = v2_reviewer_config(
-            timeout_ms=10000,
-            review_budget_ms=20000,
-            reasoning_timeout_ms=10000,
-        )
-    host = launch_host(
-        generation, binary, config, reviewer=reviewer, global_config=provider
-    )
-    activate_host(host, generation)
+    host = launch_host(binary, config, reviewer=reviewer, global_config=provider)
+    activate_host(host)
 
     def request(path, body=None):
-        if generation == "v1":
-            path += "?" + urllib.parse.urlencode({"directory": str(host["project"])})
         req = urllib.request.Request(
             host["url"] + path,
             data=None if body is None else json.dumps(body).encode(),
@@ -192,7 +143,7 @@ def test_tui_renders_review_state(
             return json.load(response)
 
     session = request(
-        "/api/session" if generation == "v2" else "/session",
+        "/api/session",
         {
             "title": "Reviewer UI fixture",
             "location": {"directory": str(host["project"])},
@@ -200,32 +151,19 @@ def test_tui_renders_review_state(
         },
     )
     session_id = session.get("data", session)["id"]
-    cli_config = (
-        host["root"]
-        / "config"
-        / "opencode"
-        / ("cli.json" if generation == "v2" else "tui.json")
-    )
-    cli_config.write_text(
-        json.dumps({"plugins" if generation == "v2" else "plugin": [package]})
-    )
-    arguments = (
-        [binary, "--server", host["url"], "--session", session_id, str(host["project"])]
-        if generation == "v2"
-        else [
-            binary,
-            "attach",
-            host["url"],
-            "--session",
-            session_id,
-            "--dir",
-            str(host["project"]),
-        ]
-    )
+    # No cli.json: OpenCode 2.2.0 loads the TUI half from the opencode.json entry.
+    arguments = [
+        binary,
+        "--server",
+        host["url"],
+        "--session",
+        session_id,
+        str(host["project"]),
+    ]
     with ExitStack() as stack:
         terminals = [
             stack.enter_context(terminal(arguments, host["env"]))
-            for _ in range(2 if generation == "v2" else 1)
+            for _ in range(2)
         ]
         for output, proc in terminals:
             deadline = time.monotonic() + 15
@@ -237,32 +175,18 @@ def test_tui_renders_review_state(
                 time.sleep(0.1)
             assert proc.poll() is None, output.decode("utf-8", errors="replace")[-6000:]
         model_server["control"]["delay"] = 1
-        if generation == "v2":
-            outcome = request(
-                f"/api/session/{session_id}/permission",
-                {
-                    "action": "shell",
-                    "resources": ["printf *"],
-                    "metadata": {"command": "printf harmless"},
-                },
-            )
-            assert outcome["data"]["effect"] == "allow"
-            assert len(decisions.calls) == 1
-            assert decisions.calls[0]["destination"] == DECISIONS_URLS[0]
-            assert decisions.calls[0]["body"]["model"] == "jev-1.13-free"
-        else:
-            request(
-                f"/session/{session_id}/message",
-                {
-                    "model": {"providerID": "fixture", "modelID": "driver"},
-                    "parts": [
-                        {
-                            "type": "text",
-                            "text": "Print the fixture marker using bash once",
-                        }
-                    ],
-                },
-            )
+        outcome = request(
+            f"/api/session/{session_id}/permission",
+            {
+                "action": "shell",
+                "resources": ["printf *"],
+                "metadata": {"command": "printf harmless"},
+            },
+        )
+        assert outcome["data"]["effect"] == "allow"
+        assert len(decisions_server.calls) == 1
+        assert decisions_server.calls[0]["destination"] == DECISIONS_URLS[0]
+        assert decisions_server.calls[0]["body"]["model"] == "jev-1.13-free"
         time.sleep(1)
         for index, (output, _proc) in enumerate(terminals):
             text = re.sub(

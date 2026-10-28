@@ -1,7 +1,7 @@
 {
   "name": "opencode-permission-reviewer",
   "version": "2.4.0",
-  "description": "Policy-aware permission reviewer for OpenCode V1 and V2",
+  "description": "Policy-aware permission reviewer for OpenCode V2",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,9 +33,6 @@
     "opencode-permission-reviewer": "./dist/explain.js"
   },
   "files": [
-    "server.js",
-    "rpc.js",
-    "tui.tsx",
     "dist/",
     "README.md",
     "MIGRATION.md",
@@ -69,12 +66,12 @@
   ],
   "engines": {
     "bun": ">=1.4.2",
-    "opencode": ">=1.18.29 <2 || >=2.0.3 <3"
+    "opencode": ">=2.2.0 <3"
   },
   "peerDependencies": {
-    "@opencode/plugin": ">=2.0.3 <3",
-    "@opentui/core": ">=0.5.11",
-    "@opentui/solid": ">=0.5.11",
+    "@opencode/plugin": ">=2.2.0 <3",
+    "@opentui/core": ">=0.7.0",
+    "@opentui/solid": ">=0.7.0",
     "solid-js": ">=1.9.12"
   },
   "peerDependenciesMeta": {
@@ -93,10 +90,9 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",
-    "@opencode-ai/plugin": "1.18.34",
-    "@opencode/plugin": "2.0.21",
-    "@opentui/core": "0.5.11",
-    "@opentui/solid": "0.5.11",
+    "@opencode/plugin": "2.2.0",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
     "@types/bun": "^1.3.0",
     "@types/semver": "7.8.0",
     "eslint": "^10.8.0",
@@ -126,7 +122,7 @@
     "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@opencode/client": "2.0.21",
+    "@opencode/client": "2.2.0",
     "@typesafe-ai/sdk": "0.6.0",
     "jsonc-parser": "3.3.1",
     "semver": "7.8.5",

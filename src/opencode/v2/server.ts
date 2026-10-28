@@ -48,7 +48,7 @@ export async function setupWithServices(
       `Unsupported OpenCode V2 host ${ctx.app.version}; supported range is ${SUPPORTED_V2_RANGE}`,
     )
   const directory = ctx.location.directory
-  const config = services.loadConfig(ctx.options, directory, "unknown", "v2")
+  const config = services.loadConfig(ctx.options, directory, "unknown")
   const primaryDecisionModel = config.decisionModels?.[0] ?? "unavailable"
   const reasoningReviewer = config.reasoningModels?.[0]
   const generation = randomUUID()
@@ -87,8 +87,6 @@ export async function setupWithServices(
   delete hashConfig.model
   delete hashConfig.variant
   delete hashConfig.outputFormat
-  delete hashConfig.escalationReviewer
-  delete hashConfig.systemOneFallback
   const effectiveConfigHash = createHash("sha256").update(JSON.stringify(hashConfig)).digest("hex")
   const registrations: Array<{ dispose(): Promise<void> }> = []
   const rpc = await ctx.rpc.register(ReviewerRpc, {

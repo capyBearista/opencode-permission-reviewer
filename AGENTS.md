@@ -21,7 +21,7 @@ Run from this repository root:
 
 `bun run build` runs both tsup and `scripts/copy-tui.ts`; tsup alone does not
 produce the complete package. Coverage requires 90% overall lines and 100% in the
-eight explicitly listed safety-critical modules.
+six explicitly listed safety-critical modules.
 <!-- bootstrap:managed:end core-commands -->
 
 ## Non-obvious guardrails
