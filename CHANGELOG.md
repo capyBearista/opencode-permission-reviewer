@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Ordered Decisions routing advances to the next configured model on HTTP 413
+  or 422 instead of stopping. Those limits are per model: a 16k-context model
+  rejected large evidence, so the review fell back to a manual prompt without
+  trying a larger model further down the list.
+
 ## [2.4.0] - 2026-10-02
 
 ### Added

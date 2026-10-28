@@ -236,8 +236,10 @@ failures, timeouts, and HTTP 408, 429, or 5xx on the current model before
 advancing. Missing credentials,
 HTTP 401/402/403, 404/410, and a response that explicitly says the requested
 model does not exist advance to the next configured entry, including another
-entry from the same provider. A generic 400, 413, 422, or other unexpected
-failure stops routing. Cancellation and the total review deadline stop
+entry from the same provider. HTTP 413 and 422 also advance, because size and
+validation limits are per model: a model with a 16k context window rejects
+evidence that a larger model accepts. A generic 400 or other unexpected failure
+stops routing. Cancellation and the total review deadline stop
 immediately.
 
 The first structurally valid decision ends routing. A valid deny, escalation,

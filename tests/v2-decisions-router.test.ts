@@ -466,8 +466,66 @@ describe("ordered V2 Decisions selection", () => {
     }
   })
 
-  test("terminates on generic 400, 413, 422, and unexpected statuses", async () => {
-    for (const status of [400, 413, 422, 418]) {
+  test("a 413 or 422 rejection advances to the next configured model", async () => {
+    for (const status of [413, 422]) {
+      const requested: string[] = []
+      const models = ["openrouter/vendor/small", "openrouter/vendor/large"]
+      const router = settings(
+        models,
+        async (request) => {
+          requested.push(request.model)
+          if (request.model === "openrouter/vendor/small") throw http(status)
+          return send(request, validResponse("vendor/large"))
+        },
+        { attemptsPerModel: 3 },
+      )
+      const attempt = new ReviewAttempt("g", 10_000)
+      try {
+        const result = await router(STATE, attempt)
+        expect(result.kind).toBe("selected")
+        expect(requested).toEqual(["openrouter/vendor/small", "openrouter/vendor/large"])
+        expect(result.attempts[0]).toMatchObject({
+          requestSent: true,
+          outcome: "model-rejected",
+          httpStatus: status,
+        })
+      } finally {
+        attempt.close("finished")
+      }
+    }
+  })
+
+  test("fails closed after every configured model rejects the request with 422", async () => {
+    const requested: string[] = []
+    const models = ["openrouter/vendor/first", "openrouter/vendor/second"]
+    const router = settings(
+      models,
+      async (request) => {
+        requested.push(request.model)
+        throw http(422)
+      },
+      { attemptsPerModel: 3 },
+    )
+    const attempt = new ReviewAttempt("g", 10_000)
+    try {
+      const result = await router(STATE, attempt)
+      expect(result.kind).toBe("failed")
+      // One attempt per model: a rejection is never retried on the same model.
+      expect(requested).toEqual(models)
+      if (result.kind === "failed") {
+        expect(result.category).toBe("reviewer-failure")
+        expect(result.attempts.map((record) => record.outcome)).toEqual([
+          "model-rejected",
+          "model-rejected",
+        ])
+      }
+    } finally {
+      attempt.close("finished")
+    }
+  })
+
+  test("terminates on generic 400 and unexpected statuses", async () => {
+    for (const status of [400, 418]) {
       let calls = 0
       const models = ["openrouter/vendor/first", "openrouter/vendor/second"]
       const router = settings(models, async () => {
