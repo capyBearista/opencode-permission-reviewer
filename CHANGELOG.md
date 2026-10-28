@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- OpenCode V1 support. The V1 `server` entrypoint, V1 TUI, raw reply
+  transport, V1 reviewer backends (chat session and direct Jev routes) and the
+  `@opencode-ai/plugin` dependency are gone. Stay on 2.4.x for OpenCode V1.
+- The root `server.js`, `rpc.js` and `tui.tsx` shims. OpenCode 2.2.0 resolves
+  the package through `exports`.
+- The `ApprovalReviewerRuntime` and `extractPermissionRequest` library exports.
+- `init --host` and `init --tui`, and `--generation` on `doctor`,
+  `config print-effective` and `explain`.
+- The V1 config keys `systemOneFallback` and `escalationReviewer`. Like
+  `model`, they are ignored wherever they appear.
+
+### Changed
+
+- Require OpenCode `>=2.2.0 <3` and OpenTUI 0.7, and verify with OpenCode
+  2.2.0. Build against `@opencode/plugin` and `@opencode/client` 2.2.0.
+- Register the plugin once, in `opencode.json`. OpenCode 2.2.0 loads the TUI
+  half from that entry, so `init` no longer writes `cli.json`.
+
 ### Fixed
 
 - The reasoning reviewer uses the model's own default when it does not offer

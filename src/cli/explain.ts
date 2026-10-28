@@ -32,12 +32,7 @@ import { normalizeV2Permission } from "../opencode/v2/permission-codec.ts"
 import { validateHostEndpoint } from "../opencode/v2/connection.ts"
 import { ReviewerRpc } from "../ui/rpc.ts"
 import { OpenCode } from "@opencode/client"
-import type {
-  HostGeneration,
-  PermissionRequest,
-  PermissionToolSource,
-  ReviewerConfig,
-} from "../types.ts"
+import type { PermissionRequest, PermissionToolSource, ReviewerConfig } from "../types.ts"
 import { includeEvidenceFile } from "../ssh-evidence.ts"
 import { renderVerifiedSshScriptCommand, VERIFIED_SCRIPT_LIMIT } from "../verified-ssh-script.ts"
 import { redactSecrets } from "../redact.ts"
@@ -87,18 +82,12 @@ export async function runCli(argv: string[]): Promise<number> {
 
 function usage(): string {
   return `Usage:
-  opencode-permission-reviewer init [--project <dir>] [--global] [--tui] [--dry-run] [--print] [--yes]
-  opencode-permission-reviewer explain [--event <file>] [--project <dir>] [--generation v1|v2]
-  opencode-permission-reviewer doctor [--project <dir>] [--json] [--generation v1|v2]
-  opencode-permission-reviewer config print-effective [--project <dir>] [--generation v1|v2]
+  opencode-permission-reviewer init [--project <dir>] [--global] [--npm] [--dry-run] [--print] [--yes] [--json]
+  opencode-permission-reviewer explain [--event <file>] [--project <dir>]
+  opencode-permission-reviewer doctor [--project <dir>] [--json]
+  opencode-permission-reviewer config print-effective [--project <dir>]
   opencode-permission-reviewer audit report [--path <file>] [--project <dir>] [--json]
   opencode-permission-reviewer script command --file <path> --host <host> [--port <port>] [--shell bash|sh]`
-}
-
-function parseGeneration(value: string | undefined): HostGeneration {
-  if (value === undefined) return "v1"
-  if (value === "v1" || value === "v2") return value
-  throw new Error('--generation must be "v1" or "v2"')
 }
 
 async function runScript(argv: string[]): Promise<number> {
@@ -173,15 +162,13 @@ async function runExplain(argv: string[]): Promise<number> {
       event: { type: "string" },
       defaults: { type: "boolean" },
       project: { type: "string" },
-      generation: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
     allowPositionals: false,
   })
-  const generation = parseGeneration(values.generation)
   if (values.help) {
-    console.error(`Usage: explain --event <fixture.json> [--project <dir>] [--generation v1|v2]
+    console.error(`Usage: explain --event <fixture.json> [--project <dir>]
 Reads a permission request JSON, runs the capability analyzer and policy engine
 (observe mode), and prints the result as JSON.`)
     return 0
@@ -211,8 +198,8 @@ Reads a permission request JSON, runs the capability analyzer and policy engine
 
   const directory = values.project ?? process.cwd()
   const config = values.defaults
-    ? resolveConfig(undefined, generation)
-    : loadResolvedConfig(undefined, directory, "trusted", generation)
+    ? resolveConfig(undefined)
+    : loadResolvedConfig(undefined, directory, "trusted")
   const worktree = directory
   const nativeResources = normalized.nativeAction !== undefined
   const command =
@@ -226,8 +213,8 @@ Reads a permission request JSON, runs the capability analyzer and policy engine
     permission: request.permission,
     command,
     configuration: values.defaults ? "defaults" : "effective",
-    model: generation === "v2" ? (config.decisionModels?.[0] ?? null) : config.model,
-    ...(generation === "v2" ? { configDegraded: config.configDegraded ?? [] } : {}),
+    model: config.decisionModels?.[0] ?? null,
+    configDegraded: config.configDegraded ?? [],
     ...(nativeResources
       ? {
           resources: request.patterns,
@@ -260,20 +247,18 @@ async function runDoctor(argv: string[]): Promise<number> {
       binary: { type: "string" },
       endpoint: { type: "string" },
       json: { type: "boolean" },
-      generation: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
     allowPositionals: false,
   })
-  const generation = parseGeneration(values.generation)
   if (values.help) {
-    console.error("Usage: doctor [--project <dir>] [--json] [--generation v1|v2]")
+    console.error("Usage: doctor [--project <dir>] [--json]")
     return 0
   }
   const directory = values.project ?? process.cwd()
   const pkg = readPackageJson()
-  const config = loadResolvedConfig(undefined, directory, "trusted", generation)
+  const config = loadResolvedConfig(undefined, directory, "trusted")
   const sources = inspectConfigSources(directory)
   const effectiveHash = hashEffectivePolicy(filterProjectAllowRules(config.policyRules), config)
   const auditPath = resolveAuditPath(config)
@@ -305,16 +290,11 @@ async function runDoctor(argv: string[]): Promise<number> {
     config: {
       global: sources.global,
       project: sources.project,
-      ...(generation === "v2"
-        ? {
-            generation,
-            decisionModels: config.decisionModels ?? [],
-            reasoningModel: config.reasoningModels?.[0] ?? null,
-            decisionMaxAttempts: config.decisionMaxAttempts,
-            decisionAttemptTimeoutMs: config.decisionAttemptTimeoutMs,
-            configDegraded: config.configDegraded ?? [],
-          }
-        : { model: config.model }),
+      decisionModels: config.decisionModels ?? [],
+      reasoningModel: config.reasoningModels?.[0] ?? null,
+      decisionMaxAttempts: config.decisionMaxAttempts,
+      decisionAttemptTimeoutMs: config.decisionAttemptTimeoutMs,
+      configDegraded: config.configDegraded ?? [],
       enforcementMode: config.enforcementMode,
       repositoryTrust: config.repositoryTrust,
       policyRuleCount: config.policyRules.length,
@@ -340,20 +320,15 @@ async function runDoctor(argv: string[]): Promise<number> {
   console.error(`config`)
   console.error(`  global:     ${fmtSource(sources.global)}`)
   console.error(`  project:    ${fmtSource(sources.project)}`)
-  if ("generation" in report.config) {
-    const reasoningModel = report.config.reasoningModel
-    console.error(`  generation:  ${report.config.generation}`)
-    console.error(`  decision models: ${report.config.decisionModels.join(" -> ") || "(none)"}`)
-    console.error(
-      `  reasoning model: ${reasoningModel ? `${reasoningModel.model} (variant: ${reasoningModel.variant}, output: ${reasoningModel.outputFormat}, timeout: ${reasoningModel.timeoutMs}ms)` : "(none)"}`,
-    )
-    console.error(`  decision max attempts: ${report.config.decisionMaxAttempts}`)
-    console.error(`  decision attempt timeout: ${report.config.decisionAttemptTimeoutMs}ms`)
-    if (report.config.configDegraded.length) {
-      console.error(`  config degraded: ${report.config.configDegraded.join("; ")}`)
-    }
-  } else {
-    console.error(`  model:      ${report.config.model}`)
+  const reasoningModel = report.config.reasoningModel
+  console.error(`  decision models: ${report.config.decisionModels.join(" -> ") || "(none)"}`)
+  console.error(
+    `  reasoning model: ${reasoningModel ? `${reasoningModel.model} (variant: ${reasoningModel.variant}, output: ${reasoningModel.outputFormat}, timeout: ${reasoningModel.timeoutMs}ms)` : "(none)"}`,
+  )
+  console.error(`  decision max attempts: ${report.config.decisionMaxAttempts}`)
+  console.error(`  decision attempt timeout: ${report.config.decisionAttemptTimeoutMs}ms`)
+  if (report.config.configDegraded.length) {
+    console.error(`  config degraded: ${report.config.configDegraded.join("; ")}`)
   }
   // The mode gates declarative rules only; the reviewer still auto-allows or denies.
   const modeNote =
@@ -380,19 +355,17 @@ async function runConfig(argv: string[]): Promise<number> {
     args: argv,
     options: {
       project: { type: "string" },
-      generation: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
     allowPositionals: true,
   })
   if (values.help || positionals[0] !== "print-effective") {
-    console.error("Usage: config print-effective [--project <dir>] [--generation v1|v2]")
+    console.error("Usage: config print-effective [--project <dir>]")
     return 2
   }
-  const generation = parseGeneration(values.generation)
   const directory = values.project ?? process.cwd()
-  const config = loadResolvedConfig(undefined, directory, "trusted", generation)
+  const config = loadResolvedConfig(undefined, directory, "trusted")
   const sources = inspectConfigSources(directory)
   const report = {
     command: "print-effective",
@@ -590,7 +563,7 @@ function normalizeRequest(
             ? (v.metadata as Record<string, unknown>)
             : {},
       },
-      { reviewID: "explain-dry-run", generation: "explain", directory: "", hostVersion: "2.0.3" },
+      { reviewID: "explain-dry-run", generation: "explain", directory: "", hostVersion: "2.2.0" },
       v.input,
     )
   }

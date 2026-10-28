@@ -10,7 +10,7 @@ import { setupWithServices } from "../src/opencode/v2/server.ts"
 import { normalizeV2Permission } from "../src/opencode/v2/permission-codec.ts"
 import { ReviewAttempt } from "../src/core/review-attempt.ts"
 import type { ReviewEnvelope } from "../src/types.ts"
-import { MockClient, config, request, runtime } from "./helpers.ts"
+import { config, request } from "./helpers.ts"
 
 type V2Context = Parameters<Plugin.Plugin["setup"]>[0]
 type V2Input = Parameters<typeof normalizeV2Permission>[0] & { message?: string }
@@ -80,45 +80,56 @@ test("helper caps cause depth and total length and never throws", () => {
   expect(fallback).toContain("reviewer backend")
 })
 
-test("v1 reviewer backend failure keeps deny and failure-safe with cause", async () => {
-  const client = new MockClient()
-  client.promptImpl = async () => {
-    throw clientError()
-  }
-  const harness = runtime(client, { escalationMode: "deny" })
-  try {
-    const result = await harness.runtime.process(request())
-    expect(result.kind).toBe("deny")
-    expect(result.decisionSource).toBe("failure-safe")
-    expect(result.reason).toContain("reviewer backend")
-    expect(result.reason).toContain("ClientError")
-    expect(result.reason).toContain("socket hang up")
-    expect(result.reviewerOutcome).toBeUndefined()
-    expect(result.decision).toBeUndefined()
-  } finally {
-    await harness.runtime.dispose()
-  }
-})
+test("helper tolerates blank names, messages, reasons, phases, and odd causes", () => {
+  const blank = new Error("") as Error & { reason?: unknown; cause?: unknown }
+  blank.name = "  "
+  blank.reason = "   "
+  expect(formatFailureReason("  ", blank)).toMatch(/^review failed \(Error\): /)
 
-test("review coordination failure audits deny with phase and cause", async () => {
-  const client = new MockClient()
-  client.messagesImpl = async () => {
-    throw clientError()
+  const numeric = Object.assign(new Error("boom"), { reason: 42 })
+  expect(formatFailureReason("phase", numeric)).toContain("reason=42")
+  expect(
+    formatFailureReason("phase", Object.assign(new Error("boom"), { reason: false })),
+  ).toContain("reason=false")
+
+  const withCause = (cause: unknown) => formatFailureReason("phase", new Error("top", { cause }))
+  expect(withCause("plain string cause")).toContain("caused by: plain string cause")
+  expect(withCause(new Error(""))).toContain("caused by: Error")
+  expect(withCause(404)).toContain("caused by: 404")
+  expect(withCause("")).not.toContain("caused by")
+  expect(withCause({ toString: () => "" })).not.toContain("caused by")
+  expect(
+    withCause({
+      toString() {
+        throw new Error("hostile")
+      },
+    }),
+  ).not.toContain("caused by")
+
+  const hostileCause = new Error("top")
+  Object.defineProperty(hostileCause, "cause", {
+    get() {
+      throw new Error("bad cause")
+    },
+  })
+  expect(formatFailureReason("phase", hostileCause)).toBe("phase failed (Error): top")
+
+  const hostileReason = new Error("top")
+  Object.defineProperty(hostileReason, "reason", {
+    get() {
+      throw new Error("bad reason")
+    },
+  })
+  expect(formatFailureReason("phase", hostileReason)).toBe("phase failed (Error): top")
+
+  const hostileThrown = {
+    toString() {
+      throw new Error("hostile")
+    },
   }
-  const harness = runtime(client, { escalationMode: "deny" })
-  try {
-    await expect(harness.runtime.process(request())).rejects.toThrow("Transport")
-    const audits = (harness.ctx as unknown as { auditRecords: Array<Record<string, unknown>> })
-      .auditRecords
-    expect(audits).toHaveLength(1)
-    expect(audits[0]).toMatchObject({ outcome: "deny", decisionSource: "failure-safe" })
-    const reason = audits[0]!["reason"] as string
-    expect(reason).toContain("review coordination")
-    expect(reason).toContain("ClientError")
-    expect(reason).toContain("socket hang up")
-  } finally {
-    await harness.runtime.dispose()
-  }
+  expect(formatFailureReason("phase", hostileThrown)).toBe(
+    "phase failed (UnknownError): unknown error",
+  )
 })
 
 test("v2 reviewer session call failure keeps deny and failure-safe with cause", async () => {
@@ -178,7 +189,7 @@ test("v2 permission review hook failure denies with phase and cause", async () =
   const events: OpenCodeEvent[] = []
   const registration = () => ({ dispose: async () => {} })
   const ctx = {
-    app: { version: "2.0.3" },
+    app: { version: "2.2.0" },
     options: {},
     location: { directory, project: { directory } },
     rpc: {

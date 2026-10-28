@@ -8,8 +8,6 @@ import type {
   RepositoryTrust,
   ReviewerConfig,
   EscalationReviewerConfig,
-  HostGeneration,
-  SystemOneFallbackConfig,
   UserAuthorization,
 } from "./types.ts"
 
@@ -320,30 +318,15 @@ function isClosedSetMemberArray(value: unknown, valid: ReadonlySet<string>): val
   )
 }
 
-export function resolveConfig(
-  options: Record<string, unknown> | undefined,
-  hostGeneration: HostGeneration = "v1",
-): ReviewerConfig {
+export function resolveConfig(options: Record<string, unknown> | undefined): ReviewerConfig {
   const source = options ?? {}
-  const model =
-    hostGeneration === "v2"
-      ? DEFAULT_CONFIG.model
-      : typeof source.model === "string" && source.model.includes("/")
-        ? source.model
-        : DEFAULT_CONFIG.model
+  // The reviewer model is chosen per attempt from decisionModels/reasoningModels.
+  const model = DEFAULT_CONFIG.model
   const variant =
     typeof source.variant === "string" && source.variant.length > 0
       ? source.variant
       : DEFAULT_CONFIG.variant
   const outputFormat = source.outputFormat === "text" ? "text" : "json_schema"
-  const escalationReviewer =
-    hostGeneration === "v2" ? undefined : resolveEscalationReviewer(source.escalationReviewer)
-  const systemOneFallback =
-    hostGeneration !== "v2" &&
-    model === "opencode/jev-1.13-free" &&
-    isValidSystemOneFallback(source.systemOneFallback)
-      ? (source.systemOneFallback as SystemOneFallbackConfig)
-      : undefined
   const policy =
     typeof source.policy === "string" && source.policy.trim().length > 0
       ? source.policy.trim()
@@ -357,9 +340,7 @@ export function resolveConfig(
     model,
     variant,
     outputFormat,
-    ...(escalationReviewer === undefined ? {} : { escalationReviewer }),
-    ...(systemOneFallback === undefined ? {} : { systemOneFallback }),
-    ...(hostGeneration === "v2" ? resolveDecisionRoutingConfig(source) : {}),
+    ...resolveDecisionRoutingConfig(source),
     timeoutMs: boundedInteger(source.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5_000, 600_000),
     ...(source.reviewBudgetMs === undefined
       ? {}
@@ -563,62 +544,6 @@ function resolveDecisionRoutingConfig(
       ? source.decisionAttemptTimeoutMs
       : DEFAULT_DECISION_ATTEMPT_TIMEOUT_MS,
   }
-}
-
-/** Only this audited paid route is permitted; reject arbitrary endpoint overrides. */
-export function isValidSystemOneFallback(value: unknown): value is SystemOneFallbackConfig {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.keys(value).length === 1 &&
-    (value as Record<string, unknown>).model === "openrouter/typesafe/jev-1.13"
-  )
-}
-
-function resolveEscalationReviewer(value: unknown): EscalationReviewerConfig | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return
-  const source = value as Record<string, unknown>
-  if (
-    typeof source.model !== "string" ||
-    !source.model.includes("/") ||
-    isSystemOneReviewerModel(source.model)
-  )
-    return
-  return {
-    model: source.model,
-    variant:
-      typeof source.variant === "string" && source.variant.length > 0
-        ? source.variant
-        : DEFAULT_CONFIG.variant,
-    outputFormat: source.outputFormat === "text" ? "text" : "json_schema",
-    timeoutMs: boundedInteger(source.timeoutMs, DEFAULT_CONFIG.timeoutMs, 5_000, 600_000),
-  }
-}
-
-export function isValidEscalationReviewer(value: unknown): boolean {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
-  const source = value as Record<string, unknown>
-  if (
-    typeof source.model !== "string" ||
-    !source.model.includes("/") ||
-    isSystemOneReviewerModel(source.model)
-  )
-    return false
-  if (source.variant !== undefined && (typeof source.variant !== "string" || !source.variant))
-    return false
-  if (
-    source.outputFormat !== undefined &&
-    source.outputFormat !== "text" &&
-    source.outputFormat !== "json_schema"
-  )
-    return false
-  if (
-    source.timeoutMs !== undefined &&
-    (typeof source.timeoutMs !== "number" || !Number.isInteger(source.timeoutMs))
-  )
-    return false
-  return true
 }
 
 export function splitModel(model: string): { providerID: string; modelID: string } {

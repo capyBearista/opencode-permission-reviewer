@@ -12,9 +12,7 @@ import type {
   SessionLineage,
   SessionNode,
 } from "../types.ts"
-import type { OpenCodeClientLike } from "../opencode/types.ts"
 import type { ContextReader } from "../core/ports.ts"
-import { createV1ContextReader } from "../opencode/v1/context-reader.ts"
 import { withTimeout } from "../opencode/transport.ts"
 
 /** Bound for the resolver's metadata SDK calls: a hung session.get/messages
@@ -655,13 +653,12 @@ function assessCompleteness(
 export async function resolveActorContext(
   request: PermissionRequest,
   messages: MessageWithParts[],
-  client: OpenCodeClientLike | ContextReader,
+  reader: ContextReader,
   directory: string,
   config: ReviewerConfig,
   intentMessages = messages,
 ): Promise<ActorResolution> {
   try {
-    const reader = "messages" in client ? client : createV1ContextReader(client)
     const current = resolveCurrentActor(request, messages)
     const lineage = await walkLineage(reader, request.sessionID, directory, config)
     const intent = await resolveIntent(request, intentMessages, lineage, reader, directory, config)

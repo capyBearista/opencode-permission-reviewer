@@ -51,13 +51,12 @@ def test_current_bundle_regressions(
     }
     binary = os.environ[f"OPENCODE_V2_{host_version.replace('.', '_')}"]
     host = launch_host(
-        "v2",
         binary,
         {"plugins": [package]},
         reviewer=v2_reviewer_config(),
         global_config=provider,
     )
-    activate_host(host, "v2")
+    activate_host(host)
     for args in [
         ["init"],
         ["config", "user.email", "fixture@example.invalid"],

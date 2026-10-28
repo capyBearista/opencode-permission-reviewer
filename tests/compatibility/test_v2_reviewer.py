@@ -24,29 +24,25 @@ from v2_decisions_fixture import (
 V2_VERSIONS = (
     [os.environ["V2_HOST_VERSION"]]
     if os.environ.get("V2_HOST_VERSION")
-    else ["2.0.3", "2.0.11", "2.0.15", "2.0.18"]
+    else ["2.2.0"]
 )
 V2_CASES = [
     (version, "json_schema", outcome)
     for version in V2_VERSIONS
-    for outcome in ("allow", "deny", "service")
-] + (
-    [
-        ("2.0.3", "text", "allow"),
-        ("2.0.3", "json_schema", "ambiguous"),
-        ("2.0.3", "json_schema", "low-confidence-deny"),
-        ("2.0.3", "json_schema", "prior-deny"),
-        ("2.0.3", "json_schema", "later-deny"),
-        ("2.0.3", "json_schema", "interrupted"),
-        ("2.0.3", "json_schema", "retained"),
-        ("2.0.3", "json_schema", "brake"),
-        ("2.0.3", "json_schema", "schema-retry"),
-        ("2.0.15", "json_schema", "interrupted"),
-        ("2.0.15", "json_schema", "brake"),
-    ]
-    if not os.environ.get("V2_HOST_VERSION")
-    else []
-)
+    for outcome in (
+        "allow",
+        "deny",
+        "service",
+        "ambiguous",
+        "low-confidence-deny",
+        "prior-deny",
+        "later-deny",
+        "interrupted",
+        "retained",
+        "brake",
+        "schema-retry",
+    )
+] + [(version, "text", "allow") for version in V2_VERSIONS]
 
 
 @pytest.fixture
@@ -328,7 +324,6 @@ def test_v2_reviewer_applies_and_cleans_up(
             else [package, str(other)]
         )
     host = launch_host(
-        "v2",
         binary,
         {"plugins": plugins},
         reviewer=v2_reviewer_config(
@@ -338,7 +333,7 @@ def test_v2_reviewer_applies_and_cleans_up(
         global_config=provider,
         service=decision_outcome == "service",
     )
-    plugins = activate_host(host, "v2")
+    plugins = activate_host(host)
     assert "opencode-permission-reviewer" in json.dumps(plugins), plugins
 
     def request(path, body=None):
@@ -366,9 +361,7 @@ def test_v2_reviewer_applies_and_cleans_up(
         },
     )
     session_id = session.get("data", session)["id"]
-    wait_prefix = (
-        "/api/session" if host_version == "2.0.3" else "/api/experimental/session"
-    )
+    wait_prefix = "/api/experimental/session"
     if decision_outcome == "interrupted":
         model_server["control"]["delay"] = 1
         request(
@@ -539,7 +532,6 @@ def test_v2_native_decisions_retry_same_model_then_use_reasoning_only_for_policy
         }
     }
     host = launch_host(
-        "v2",
         binary,
         {"plugins": [package]},
         reviewer=v2_reviewer_config(
@@ -550,7 +542,7 @@ def test_v2_native_decisions_retry_same_model_then_use_reasoning_only_for_policy
         ),
         global_config=provider,
     )
-    activate_host(host, "v2")
+    activate_host(host)
 
     def request(path, body=None):
         req = urllib.request.Request(
@@ -654,13 +646,12 @@ def test_v2_interrupt_cancels_a_pending_local_decisions_response_without_retry(
         }
     }
     host = launch_host(
-        "v2",
         binary,
         {"plugins": [package]},
         reviewer=v2_reviewer_config(),
         global_config=provider,
     )
-    activate_host(host, "v2")
+    activate_host(host)
 
     def request(path, body=None):
         req = urllib.request.Request(
@@ -690,9 +681,7 @@ def test_v2_interrupt_cancels_a_pending_local_decisions_response_without_retry(
         time.sleep(0.02)
     assert len(decisions_server.calls) == 1, decisions_server.calls
     request(f"/api/session/{session_id}/interrupt", {})
-    wait_prefix = (
-        "/api/session" if host_version == "2.0.3" else "/api/experimental/session"
-    )
+    wait_prefix = "/api/experimental/session"
     request(f"{wait_prefix}/{session_id}/wait", {})
     context = request(f"/api/session/{session_id}/context")
     assert not any(
@@ -771,7 +760,6 @@ for line in sys.stdin:
     # Reviews must settle within the reviewer budget even on loaded runners;
     # the property under test is reviewer location reuse, not review latency.
     host = launch_host(
-        "v2",
         binary,
         {"plugins": [package]},
         reviewer=v2_reviewer_config(
@@ -781,7 +769,7 @@ for line in sys.stdin:
         ),
         global_config=provider,
     )
-    activate_host(host, "v2")
+    activate_host(host)
 
     def request(path, body=None):
         req = urllib.request.Request(
@@ -878,52 +866,49 @@ for line in sys.stdin:
         )
         with urllib.request.urlopen(req, timeout=5):
             pass
-    new_directory = None
-    if tuple(map(int, host_version.split("."))) >= (2, 0, 18):
-        reload_request = urllib.request.Request(
-            host["url"] + "/api/location/reload",
-            data=b"",
-            headers=host["headers"],
-            method="POST",
+    reload_request = urllib.request.Request(
+        host["url"] + "/api/location/reload",
+        data=b"",
+        headers=host["headers"],
+        method="POST",
+    )
+    with urllib.request.urlopen(reload_request, timeout=30) as response:
+        assert response.status == 204
+    # The host rebuilds locations after a reload without awaiting plugin
+    # activation; a permission evaluated in that window has no hooks and
+    # would stay pending. Wait for the plugin to be active again.
+    activate_host(host)
+    assert mcp_servers(reviewer_directory) == []
+    reloaded_session = review(7)
+    deadline = time.monotonic() + 10
+    reloaded_record = None
+    while time.monotonic() < deadline:
+        reloaded_record = next(
+            (
+                record
+                for record in audit_records()
+                if record.get("sessionID") == reloaded_session
+            ),
+            None,
         )
-        with urllib.request.urlopen(reload_request, timeout=30) as response:
-            assert response.status == 204
-        # The host rebuilds locations after a reload without awaiting plugin
-        # activation; a permission evaluated in that window has no hooks and
-        # would stay pending. Wait for the plugin to be active again.
-        activate_host(host, "v2")
-        assert mcp_servers(reviewer_directory) == []
-        reloaded_session = review(7)
-        deadline = time.monotonic() + 10
-        reloaded_record = None
-        while time.monotonic() < deadline:
-            reloaded_record = next(
-                (
-                    record
-                    for record in audit_records()
-                    if record.get("sessionID") == reloaded_session
-                ),
-                None,
-            )
-            if reloaded_record:
-                break
-            time.sleep(0.05)
-        assert reloaded_record
-        assert len(decisions_server.calls) == len(operational_sessions) + 1
-        new_reviewer_id = reloaded_record["reviewerSessionID"]
-        new_directory = request("/api/session/" + new_reviewer_id)["data"]["location"][
-            "directory"
-        ]
-        assert new_directory != reviewer_directory
-        assert mcp_servers(new_directory) == []
-        req = urllib.request.Request(
-            host["url"] + "/api/session/" + new_reviewer_id,
-            headers=host["headers"],
-            method="DELETE",
-        )
-        with urllib.request.urlopen(req, timeout=5):
-            pass
+        if reloaded_record:
+            break
+        time.sleep(0.05)
+    assert reloaded_record
+    assert len(decisions_server.calls) == len(operational_sessions) + 1
+    new_reviewer_id = reloaded_record["reviewerSessionID"]
+    new_directory = request("/api/session/" + new_reviewer_id)["data"]["location"][
+        "directory"
+    ]
+    assert new_directory != reviewer_directory
+    assert mcp_servers(new_directory) == []
+    req = urllib.request.Request(
+        host["url"] + "/api/session/" + new_reviewer_id,
+        headers=host["headers"],
+        method="DELETE",
+    )
+    with urllib.request.urlopen(req, timeout=5):
+        pass
     host["stop"]()
     shutil.rmtree(reviewer_directory, ignore_errors=True)
-    if new_directory:
-        shutil.rmtree(new_directory, ignore_errors=True)
+    shutil.rmtree(new_directory, ignore_errors=True)

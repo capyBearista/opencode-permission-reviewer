@@ -6,9 +6,7 @@ import {
   pendingPermissionSection,
 } from "../context.ts"
 import type { AskDecisionSource } from "./ask-decisions.ts"
-import type { OpenCodeClientLike } from "../opencode/types.ts"
 import type { ContextReader } from "../core/ports.ts"
-import { createV1ContextReader } from "../opencode/v1/context-reader.ts"
 import { withTimeout } from "../opencode/transport.ts"
 import { resolveActorContext } from "./actor-resolver.ts"
 import { resolveActionPurpose } from "./action-purpose.ts"
@@ -29,7 +27,7 @@ import {
 import { REVIEWER_PROMPT_VERSION } from "../policy.ts"
 
 export interface EvidenceAssemblyContext {
-  client: OpenCodeClientLike | ContextReader
+  client: ContextReader
   directory: string
   worktree: string
   config: ReviewerConfig
@@ -50,7 +48,7 @@ export async function assembleEvidence(
   ctx: EvidenceAssemblyContext,
 ): Promise<ReviewEnvelope> {
   const contextStart = performance.now()
-  const reader = "messages" in ctx.client ? ctx.client : createV1ContextReader(ctx.client)
+  const reader = ctx.client
   // A transcript fetch that never settles would leave the review pending
   // forever; bound it well above any realistic fetch time.
   const [response, intentResponse] = await withTimeout(

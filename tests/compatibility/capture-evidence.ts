@@ -1,12 +1,10 @@
 import { pathToFileURL } from "node:url"
 import { join } from "node:path"
-import { createOpencodeClient } from "@opencode-ai/sdk"
 import { OpenCode } from "@opencode/client"
 import { hostCompatibleFetch } from "../../src/opencode/v2/connection.ts"
-import type { OpenCodeClientLike } from "../../src/opencode/types.ts"
 
-const [generation, url, directory, sessionID, command, sourceRoot] = process.argv.slice(2)
-if (!generation || !url || !directory || !sessionID || !command)
+const [url, directory, sessionID, command, sourceRoot] = process.argv.slice(2)
+if (!url || !directory || !sessionID || !command)
   throw new Error("Missing evidence fixture settings")
 const root = sourceRoot ?? new URL("../..", import.meta.url).pathname
 const load = (path: string) => import(pathToFileURL(join(root, "src", path)).href)
@@ -17,16 +15,10 @@ const password = process.env.OPENCODE_PASSWORD
 const headers = password
   ? { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` }
   : {}
-const reader =
-  generation === "v1"
-    ? (await load("opencode/v1/context-reader.ts")).createV1ContextReader(
-        createOpencodeClient({ baseUrl: url, headers }) as unknown as OpenCodeClientLike,
-        controller.signal,
-      )
-    : (await load("opencode/v2/context-reader.ts")).createV2ContextReader(
-        OpenCode.make({ baseUrl: url, headers, fetch: hostCompatibleFetch() }),
-        controller.signal,
-      )
+const reader = (await load("opencode/v2/context-reader.ts")).createV2ContextReader(
+  OpenCode.make({ baseUrl: url, headers, fetch: hostCompatibleFetch() }),
+  controller.signal,
+)
 const config = resolveConfig({ model: "fixture/reviewer", timeoutMs: 30000 })
 const request = {
   id: "fixture-evidence",

@@ -14,16 +14,9 @@ updates:
     cooldown:
       default-days: 7
       exclude:
-        - "@opencode-ai/*"
         - "@opencode/*"
     groups:
-      # Keep the two supported OpenCode host generations independently reviewable.
-      opencode-v1:
-        patterns:
-          - "@opencode-ai/*"
-        update-types:
-          - minor
-          - patch
+      # Keep OpenCode host SDK updates independently reviewable.
       opencode-v2:
         patterns:
           - "@opencode/*"
@@ -35,16 +28,12 @@ updates:
         patterns:
           - "*"
         exclude-patterns:
-          - "@opencode-ai/*"
           - "@opencode/*"
         update-types:
           - minor
           - patch
     ignore:
       # A new major represents a new host generation and needs an explicit migration.
-      - dependency-name: "@opencode-ai/*"
-        update-types:
-          - version-update:semver-major
       - dependency-name: "@opencode/*"
         update-types:
           - version-update:semver-major

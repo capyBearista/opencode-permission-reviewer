@@ -30,8 +30,6 @@ test("builds the TUI graph as host-runtime JavaScript in an isolated package cop
   try {
     cpSync(join(root, "src"), join(fixture, "src"), { recursive: true })
     cpSync(join(root, "package.json"), join(fixture, "package.json"))
-    cpSync(join(root, "tui.tsx"), join(fixture, "tui.tsx"))
-    cpSync(join(root, "server.js"), join(fixture, "server.js"))
     mkdirSync(join(fixture, "scripts"), { recursive: true })
     cpSync(join(root, "scripts/copy-tui.ts"), join(fixture, "scripts/copy-tui.ts"))
     symlinkSync(join(root, "node_modules"), join(fixture, "node_modules"), "dir")
@@ -46,7 +44,7 @@ test("builds the TUI graph as host-runtime JavaScript in an isolated package cop
 
     const output = join(fixture, "dist/tui")
     const files = listFiles(output).sort()
-    expect(files).toHaveLength(11)
+    expect(files).toHaveLength(7)
     expect(files.every((file) => /\.(?:ts|tsx)$/.test(file))).toBe(true)
     expect(files).toContain("tui.tsx")
 
@@ -85,12 +83,6 @@ test("builds the TUI graph as host-runtime JavaScript in an isolated package cop
       readFileSync(join(root, "package.json"), "utf8"),
     )
     expect(packageJson.exports["./tui"]).toBe("./dist/tui/tui.tsx")
-    expect(readFileSync(join(fixture, "tui.tsx"), "utf8")).toBe(
-      readFileSync(join(root, "tui.tsx"), "utf8"),
-    )
-    expect(readFileSync(join(fixture, "server.js"), "utf8")).toBe(
-      readFileSync(join(root, "server.js"), "utf8"),
-    )
     expect(readFileSync(join(fixture, "src/tui.tsx"), "utf8")).toBe(
       readFileSync(join(root, "src/tui.tsx"), "utf8"),
     )

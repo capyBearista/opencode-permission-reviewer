@@ -63,10 +63,11 @@ test("TUI resolves nested, flat, and unavailable host themes", () => {
     success: "flat-success",
     error: "flat-error",
   })
-  expect(resolveReviewTheme(undefined)).toMatchObject({
-    backgroundPanel: expect.any(String),
-    text: expect.any(String),
-  })
+  // Bun's toMatchObject writes asymmetric matchers into the received object,
+  // which here is the shared fallback theme; assert without mutating it.
+  const fallback = resolveReviewTheme(undefined)
+  expect(typeof fallback.backgroundPanel).toBe("string")
+  expect(typeof fallback.text).toBe("string")
 })
 
 test("TUI restores authoritative snapshots after disconnect and isolates routes, revisions, and generations", async () => {

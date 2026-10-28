@@ -3,20 +3,11 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import contracts from "./host-contracts.json"
 
-const generation = process.env.HOST_GENERATION
-if (generation !== "v1" && generation !== "v2") throw new Error("Set HOST_GENERATION to v1 or v2")
-const releases =
-  generation === "v1"
-    ? Object.entries(contracts.v1.integrities).map(([version, integrity]) => ({
-        package: contracts.v1.package,
-        version,
-        integrity,
-      }))
-    : Object.entries(contracts.v2.integrities).map(([version, integrity]) => ({
-        package: contracts.v2.package,
-        version,
-        integrity,
-      }))
+const releases = Object.entries(contracts.v2.integrities).map(([version, integrity]) => ({
+  package: contracts.v2.package,
+  version,
+  integrity,
+}))
 for (const release of releases) {
   const directory = await mkdtemp(join(tmpdir(), "reviewer-host-"))
   const proc = Bun.spawn(
@@ -38,14 +29,8 @@ for (const release of releases) {
   }
   if (lock.packages[`node_modules/${release.package}`]?.integrity !== release.integrity)
     throw new Error("Pinned host integrity mismatch")
-  const binary = join(
-    directory,
-    "node_modules",
-    generation === "v1" ? "opencode-linux-x64" : "@opencode/cli-linux-x64",
-    "bin",
-    "opencode",
-  )
-  const variable = `OPENCODE_${generation.toUpperCase()}_${release.version.replaceAll(".", "_")}`
+  const binary = join(directory, "node_modules", "@opencode/cli-linux-x64", "bin", "opencode")
+  const variable = `OPENCODE_V2_${release.version.replaceAll(".", "_")}`
   if (process.env.GITHUB_ENV) await appendFile(process.env.GITHUB_ENV, `${variable}=${binary}\n`)
   else console.log(`${variable}=${binary}`)
 }

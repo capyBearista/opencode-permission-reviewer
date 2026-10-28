@@ -9,7 +9,7 @@ import { assert, sha256 } from "./util.mjs"
 export const PINNED_BLOBS = {
   "src/policy.ts": "72dc68cc8de6f536b196e3ffbe840f8b2236cd01",
   "src/context.ts": "5473abbe19ccce27163ceaaf87a63e63e6d5215a",
-  "src/config.ts": "03c9b99acca1c948cbda8ea0ca8a3552a53f5f05",
+  "src/config.ts": "dfbc6642a0324c23a39806c98b2d292f304aebd1",
   "src/decision.ts": "ad3443f3bf2ca1b34b3b23e8115c79148e19238b",
   "src/policy/policy-engine.ts": "b4470dc188d956cc0ed25454c2d34465110fe1be",
   "src/escalation.ts": "301d6e4e78bd101d7777c029a2019a80d8bf5e54",

@@ -98,13 +98,10 @@ test("V2 factory always uses the native anonymous Zen Decisions route", async ()
           return undefined
         },
       }),
-      resolveConfig(
-        {
-          model: "openrouter/ignored/legacy",
-          systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
-        },
-        "v2",
-      ),
+      resolveConfig({
+        model: "openrouter/ignored/legacy",
+        systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
+      }),
     )
     const result = await backend.review(review, attempt, {} as OpenCodeClient)
     expect(result.kind, result.reason).toBe("allow")
@@ -150,7 +147,7 @@ test("V2 factory resolves a saved OpenRouter key lazily and rejects OAuth withou
           return { type: "key", key: "synthetic-saved-key" }
         },
       }),
-      resolveConfig({ decisionModels: ["openrouter/vendor/model"] }, "v2"),
+      resolveConfig({ decisionModels: ["openrouter/vendor/model"] }),
     )
     const result = await backend.review(envelope(), attempt, {} as OpenCodeClient)
     expect(result.kind, result.reason).toBe("allow")
@@ -190,7 +187,7 @@ test("V2 factory resolves a saved OpenRouter key lazily and rejects OAuth withou
           return { type: "oauth", access: "must-not-resolve" }
         },
       }),
-      resolveConfig({ decisionModels: ["openrouter/vendor/model"] }, "v2"),
+      resolveConfig({ decisionModels: ["openrouter/vendor/model"] }),
     )
     const result = await oauthBackend.review(envelope(), oauthAttempt, {} as OpenCodeClient)
     expect(result.kind).toBe("escalate")
@@ -242,14 +239,11 @@ test("late active OpenRouter connections after cancellation or attempt timeout n
             return { type: "key", key: "synthetic-saved-key" }
           },
         }),
-        resolveConfig(
-          {
-            decisionModels: ["openrouter/vendor/model"],
-            decisionMaxAttempts: 1,
-            decisionAttemptTimeoutMs: 1000,
-          },
-          "v2",
-        ),
+        resolveConfig({
+          decisionModels: ["openrouter/vendor/model"],
+          decisionMaxAttempts: 1,
+          decisionAttemptTimeoutMs: 1000,
+        }),
       )
       reviewPromise = backend.review(envelope(), attempt, {} as OpenCodeClient)
       const state = await Promise.race([
@@ -305,14 +299,11 @@ test("an OpenRouter key resolving after cancellation is never used for fetch", a
           return pendingCredential
         },
       }),
-      resolveConfig(
-        {
-          decisionModels: ["openrouter/vendor/model"],
-          decisionMaxAttempts: 1,
-          decisionAttemptTimeoutMs: 1000,
-        },
-        "v2",
-      ),
+      resolveConfig({
+        decisionModels: ["openrouter/vendor/model"],
+        decisionMaxAttempts: 1,
+        decisionAttemptTimeoutMs: 1000,
+      }),
     )
     reviewPromise = backend.review(envelope(), attempt, {} as OpenCodeClient)
     const state = await Promise.race([
@@ -355,20 +346,17 @@ test("an empty trusted V2 Decisions list does not fall through to defaults or pa
           return undefined
         },
       }),
-      resolveConfig(
-        {
-          decisionModels: [],
-          reasoningModels: [
-            {
-              model: "openrouter/vendor/reasoning",
-              variant: "fast",
-              outputFormat: "text",
-              timeoutMs: 30_000,
-            },
-          ],
-        },
-        "v2",
-      ),
+      resolveConfig({
+        decisionModels: [],
+        reasoningModels: [
+          {
+            model: "openrouter/vendor/reasoning",
+            variant: "fast",
+            outputFormat: "text",
+            timeoutMs: 30_000,
+          },
+        ],
+      }),
     )
     const result = await backend.review(review, attempt, {} as OpenCodeClient)
     expect(result.kind).toBe("escalate")
@@ -539,25 +527,22 @@ test("factory uses only reasoningModels[0] and preserves its text format, varian
   try {
     backend = createV2ReviewerBackend(
       context({ active: async () => undefined }),
-      resolveConfig(
-        {
-          reasoningModels: [
-            {
-              model: "openrouter/vendor/reason-first",
-              variant: "first-variant",
-              outputFormat: "text",
-              timeoutMs: 47_000,
-            },
-            {
-              model: "openrouter/vendor/reason-second",
-              variant: "second-variant",
-              outputFormat: "json_schema",
-              timeoutMs: 60_000,
-            },
-          ],
-        },
-        "v2",
-      ),
+      resolveConfig({
+        reasoningModels: [
+          {
+            model: "openrouter/vendor/reason-first",
+            variant: "first-variant",
+            outputFormat: "text",
+            timeoutMs: 47_000,
+          },
+          {
+            model: "openrouter/vendor/reason-second",
+            variant: "second-variant",
+            outputFormat: "json_schema",
+            timeoutMs: 60_000,
+          },
+        ],
+      }),
     )
     const result = await backend.review(review, attempt, client)
     expect(result.kind).toBe("allow")

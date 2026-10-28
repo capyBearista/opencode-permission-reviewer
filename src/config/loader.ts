@@ -10,11 +10,9 @@ import {
   isValidDecisionAttemptTimeoutMs,
   isValidDecisionMaxAttempts,
   isValidDecisionModels,
-  isValidEscalationReviewer,
   isValidReasoningModels,
-  isValidSystemOneFallback,
 } from "../config.ts"
-import type { HostGeneration, PolicyRule, ReviewerConfig } from "../types.ts"
+import type { PolicyRule, ReviewerConfig } from "../types.ts"
 import type { InlineOptionsTrust } from "./sources.ts"
 
 const O_RDONLY = typeof fsConstants.O_RDONLY === "number" ? fsConstants.O_RDONLY : 0
@@ -157,8 +155,6 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "audit",
   "auditPath",
   "model",
-  "escalationReviewer",
-  "systemOneFallback",
   "policy",
   "repositoryTrust",
   "actorProfiles",
@@ -188,14 +184,15 @@ const TRUST_BOUNDARY_KEYS = new Set([
   "decisionAttemptTimeoutMs",
 ])
 
-const V2_CONFIG_KEYS = [
+const ROUTING_CONFIG_KEYS = [
   "decisionModels",
   "reasoningModels",
   "decisionMaxAttempts",
   "decisionAttemptTimeoutMs",
 ] as const
 
-const V2_OBSOLETE_CONFIG_KEYS = ["model", "systemOneFallback", "escalationReviewer"] as const
+/** Keys from the retired V1 config contract; ignored wherever they appear. */
+const OBSOLETE_CONFIG_KEYS = ["model", "systemOneFallback", "escalationReviewer"] as const
 
 /** Reviewer resource knobs: how long a review may run and how much context
  *  (transcript, evidence, session chains) it may consume. These are NOT
@@ -234,16 +231,15 @@ export function loadResolvedConfig(
   inlineOptions: Record<string, unknown> | undefined,
   directory?: string,
   inlineTrust: InlineOptionsTrust = "trusted",
-  hostGeneration: HostGeneration = "v1",
 ): ReviewerConfig {
   const globalLayer = readConfigLayer(globalConfigPath())
   const projectLayer: ConfigLayer =
     directory !== undefined
       ? readConfigLayer(projectConfigPath(directory))
       : { raw: {}, status: "missing" }
-  const globalOptions = applyGenerationConfig(globalLayer.raw, hostGeneration)
-  const projectOptions = applyGenerationConfig(projectLayer.raw, hostGeneration)
-  const inlineGenerationOptions = applyGenerationConfig(inlineOptions, hostGeneration)
+  const globalOptions = withoutObsoleteKeys(globalLayer.raw)
+  const projectOptions = withoutObsoleteKeys(projectLayer.raw)
+  const inlineGenerationOptions = withoutObsoleteKeys(inlineOptions)
   for (const layer of [globalLayer, projectLayer]) {
     if (layer.warning !== undefined) console.warn(layer.warning)
   }
@@ -258,29 +254,7 @@ export function loadResolvedConfig(
   } else if (globalLayer.status === "read-error") {
     degraded.push("global config file exists but could not be read")
   } else if (globalLayer.status === "ok") {
-    if (
-      hostGeneration === "v1" &&
-      globalOptions.escalationReviewer !== undefined &&
-      !isValidEscalationReviewer(globalOptions.escalationReviewer)
-    ) {
-      degraded.push("global config escalationReviewer is invalid and was ignored")
-      console.warn(
-        "permission-reviewer: global config escalationReviewer is invalid and was ignored; automatic approval stays disabled until it is fixed",
-      )
-    }
-    if (
-      hostGeneration === "v1" &&
-      globalOptions.systemOneFallback !== undefined &&
-      !isValidSystemOneFallback(globalOptions.systemOneFallback)
-    ) {
-      degraded.push("global config systemOneFallback is invalid and was ignored")
-      console.warn(
-        "permission-reviewer: global config systemOneFallback is invalid; automatic approval stays disabled until fixed",
-      )
-    }
-    if (hostGeneration === "v2") {
-      validateTrustedDecisionConfig(globalOptions, "global", degraded, true)
-    }
+    validateTrustedDecisionConfig(globalOptions, "global", degraded, true)
     const invalidRules = countInvalidPolicyRules(globalOptions.policyRules)
     if (invalidRules > 0) {
       degraded.push(
@@ -333,23 +307,7 @@ export function loadResolvedConfig(
   // inline policyRules treatment above). resolveConfig still clamps the value
   // to the safe default; this only records that the trusted input was lost.
   if (inlineTrust === "trusted" && inlineGenerationOptions !== undefined) {
-    if (
-      hostGeneration === "v1" &&
-      inlineGenerationOptions.escalationReviewer !== undefined &&
-      !isValidEscalationReviewer(inlineGenerationOptions.escalationReviewer)
-    ) {
-      degraded.push("inline config escalationReviewer is invalid and was ignored")
-    }
-    if (
-      hostGeneration === "v1" &&
-      inlineGenerationOptions.systemOneFallback !== undefined &&
-      !isValidSystemOneFallback(inlineGenerationOptions.systemOneFallback)
-    ) {
-      degraded.push("inline config systemOneFallback is invalid and was ignored")
-    }
-    if (hostGeneration === "v2") {
-      validateTrustedDecisionConfig(inlineGenerationOptions, "inline", degraded, false)
-    }
+    validateTrustedDecisionConfig(inlineGenerationOptions, "inline", degraded, false)
     const inlineEnforcement = inlineGenerationOptions.enforcementMode
     if (
       inlineEnforcement !== undefined &&
@@ -390,14 +348,6 @@ export function loadResolvedConfig(
     ...globalOptions,
     ...(inlineTrust === "trusted" ? (inlineGenerationOptions ?? {}) : {}),
   }
-  if (
-    hostGeneration === "v1" &&
-    trusted.systemOneFallback !== undefined &&
-    isValidSystemOneFallback(trusted.systemOneFallback) &&
-    trusted.model !== "opencode/jev-1.13-free"
-  ) {
-    degraded.push("trusted systemOneFallback requires opencode/jev-1.13-free as primary model")
-  }
   let merged = mergeWithTrustBoundary(trusted, projectOptions)
   if (inlineTrust !== "trusted") {
     // Unknown-origin options may only contribute boundary-controlled hardening.
@@ -405,7 +355,7 @@ export function loadResolvedConfig(
       Object.entries(inlineGenerationOptions ?? {}).filter(
         ([key]) =>
           TRUST_BOUNDARY_KEYS.has(key) &&
-          !V2_CONFIG_KEYS.includes(key as (typeof V2_CONFIG_KEYS)[number]),
+          !ROUTING_CONFIG_KEYS.includes(key as (typeof ROUTING_CONFIG_KEYS)[number]),
       ),
     )
     merged = mergeWithTrustBoundary(merged, restrictions)
@@ -418,16 +368,12 @@ export function loadResolvedConfig(
     if (inlineTrust === "trusted" && !TRUST_BOUNDARY_KEYS.has(key)) out[key] = value
   }
   if (degraded.length > 0) out.configDegraded = degraded
-  return resolveConfig(out, hostGeneration)
+  return resolveConfig(out)
 }
 
-function applyGenerationConfig(
-  source: Record<string, unknown> | undefined,
-  hostGeneration: HostGeneration,
-): Record<string, unknown> {
+function withoutObsoleteKeys(source: Record<string, unknown> | undefined): Record<string, unknown> {
   const result = { ...(source ?? {}) }
-  const ignoredKeys = hostGeneration === "v2" ? V2_OBSOLETE_CONFIG_KEYS : V2_CONFIG_KEYS
-  for (const key of ignoredKeys) delete result[key]
+  for (const key of OBSOLETE_CONFIG_KEYS) delete result[key]
   return result
 }
 
@@ -545,8 +491,6 @@ function mergeWithTrustBoundary(
   // same class of decision: a weaker variant, a looser output format, or
   // silenced retention must not be selectable from a repository.
   delete clamped.model
-  delete clamped.escalationReviewer
-  delete clamped.systemOneFallback
   delete clamped.decisionModels
   delete clamped.reasoningModels
   delete clamped.policy

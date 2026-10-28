@@ -9,7 +9,12 @@ import { normalizeV2Permission } from "../src/opencode/v2/permission-codec.ts"
 import { resolveConfig } from "../src/config.ts"
 import { DecisionsReviewerBackend } from "../src/system-one/decisions-backend.ts"
 import { SYSTEM_ONE_QUESTIONS } from "../src/system-one/review.ts"
-import type { DecisionRoutingTrace, ReviewExecutionResult, ReviewerConfig } from "../src/types.ts"
+import type {
+  DecisionRoutingTrace,
+  PolicyRule,
+  ReviewExecutionResult,
+  ReviewerConfig,
+} from "../src/types.ts"
 import { config, decision } from "./helpers.ts"
 
 type Input = Parameters<typeof normalizeV2Permission>[0] & { message?: string }
@@ -93,6 +98,9 @@ async function fixture(
     configDegraded?: string[]
     escalationMode?: ReviewerConfig["escalationMode"]
     reviewError?: Error
+    configOverrides?: Partial<ReviewerConfig>
+    publishFails?: boolean
+    contextError?: boolean
     createBackend?: (config: ReviewerConfig) => V2ReviewBackend
   } = {},
 ) {
@@ -108,7 +116,6 @@ async function fixture(
   const events: OpenCodeEvent[] = []
   let ended = false
   let reviews = 0
-  let loadedGeneration: unknown
   let registrationDisposals = 0
   const toolHooks = new Map<string, (event: unknown) => void>()
   const registration = () => ({
@@ -117,13 +124,20 @@ async function fixture(
     },
   })
   const ctx = {
-    app: { version: options.hostVersion ?? "2.0.3" },
+    app: { version: options.hostVersion ?? "2.2.0" },
     options: {},
     location: { directory, project: { directory } },
     rpc: {
       register: async (_definition: unknown, handlers: typeof rpc) => {
         rpc = handlers
-        return { events: { emit: async () => {} }, ...registration() }
+        return {
+          events: {
+            emit: async () => {
+              if (options.publishFails) throw new Error("TUI event channel is down")
+            },
+          },
+          ...registration(),
+        }
       },
     },
     tool: {
@@ -166,14 +180,14 @@ async function fixture(
   const client = {
     session: {
       get: ctx.session.get,
-      context: async () => [
-        { type: "user", id: "msg_user", text: "Run printf safe", time: { created: 2 } },
-      ],
+      context: async () => {
+        if (options.contextError) throw new Error("database unavailable")
+        return [{ type: "user", id: "msg_user", text: "Run printf safe", time: { created: 2 } }]
+      },
     },
   } as unknown as OpenCodeClient
   const dispose = await setupWithServices(ctx, {
-    loadConfig: (_options, _directory, _inlineTrust, hostGeneration) => {
-      loadedGeneration = hostGeneration
+    loadConfig: () => {
       return (
         options.resolvedConfig ??
         config({
@@ -192,6 +206,7 @@ async function fixture(
           ...(options.configDegraded ? { configDegraded: options.configDegraded } : {}),
           ...(options.escalationMode ? { escalationMode: options.escalationMode } : {}),
           ...(options.reviewerModel ? { model: options.reviewerModel } : {}),
+          ...options.configOverrides,
         })
       )
     },
@@ -258,7 +273,6 @@ async function fixture(
     rpc,
     directory,
     reviews: () => reviews,
-    loadedGeneration: () => loadedGeneration,
     registrationDisposals: () => registrationDisposals,
     endEvents: () => {
       ended = true
@@ -271,6 +285,11 @@ async function fixture(
         location: { directory: location },
       } as OpenCodeEvent)
       resume?.()
+    },
+    push: async (event: OpenCodeEvent) => {
+      events.push(event)
+      resume?.()
+      await new Promise((resolve) => setTimeout(resolve, 0))
     },
     tool: (name: string, event: unknown) => toolHooks.get(name)?.(event),
     dispose,
@@ -477,7 +496,7 @@ test("overload stays bounded and independent sessions keep independent outcomes"
 })
 
 test("v2 host setup enforces the supported range and reports it", async () => {
-  for (const version of ["2.0.3", "2.0.4", "2.0.11", "2.0.12", "2.1.0"]) {
+  for (const version of ["2.2.0", "2.2.1", "2.3.0"]) {
     const harness = await fixture({ hostVersion: version })
     try {
       expect(await harness.rpc.status()).toMatchObject({ host: "v2", hostVersion: version })
@@ -485,7 +504,7 @@ test("v2 host setup enforces the supported range and reports it", async () => {
       await harness.cleanup()
     }
   }
-  for (const version of ["2.0.2", "3.0.0", "2.0.3-beta.1"]) {
+  for (const version of ["2.1.4", "3.0.0", "2.2.0-beta.1"]) {
     const ctx = {
       app: { version },
       location: { directory: "/tmp", project: { directory: "/tmp" } },
@@ -502,7 +521,7 @@ test("v2 host setup enforces the supported range and reports it", async () => {
       },
     } as unknown as Parameters<typeof setupWithServices>[1]
     await expect(setupWithServices(ctx, services)).rejects.toThrow(
-      `Unsupported OpenCode V2 host ${version}; supported range is >=2.0.3 <3`,
+      `Unsupported OpenCode V2 host ${version}; supported range is >=2.2.0 <3`,
     )
   }
 })
@@ -517,20 +536,16 @@ test("V2 status and config hash describe decision and reasoning routes, not lega
       timeoutMs: 30_000,
     },
   ]
-  const resolvedConfig = resolveConfig(
-    {
-      model: "openai/ignored-legacy-model",
-      variant: "ignored-legacy-variant",
-      outputFormat: "json_schema",
-      decisionModels,
-      reasoningModels,
-    },
-    "v2",
-  )
+  const resolvedConfig = resolveConfig({
+    model: "openai/ignored-legacy-model",
+    variant: "ignored-legacy-variant",
+    outputFormat: "json_schema",
+    decisionModels,
+    reasoningModels,
+  })
   const harness = await fixture({ resolvedConfig })
   try {
     const status = await harness.rpc.status()
-    expect(harness.loadedGeneration()).toBe("v2")
     expect(status).toMatchObject({
       host: "v2",
       model: decisionModels[0],
@@ -1066,6 +1081,314 @@ test("action mutations and incomplete evidence cannot reuse an approval, and con
       expect(input.effect).not.toBe("allow")
       if (connectionError)
         expect(await harness.rpc.status()).toMatchObject({ connection: "failed" })
+    } finally {
+      await harness.cleanup()
+    }
+  }
+})
+
+const readOnlyRule = (effect: "deny" | "manual") =>
+  ({
+    id: `${effect}-read-only`,
+    source: "global" as const,
+    when: { actionClass: ["read-only"] },
+    effect,
+    reason: `test ${effect} rule`,
+  }) as PolicyRule
+
+test("a failing UI publish channel never changes the safety decision", async () => {
+  for (const kind of ["allow", "deny", "escalate"] as const) {
+    const harness = await fixture({
+      publishFails: true,
+      result: { kind, reason: "Fixture", decision: decision(kind), decisionSource: "llm-reviewer" },
+    })
+    try {
+      const input = harness.input()
+      await harness.evaluate(input)
+      expect(input.effect).toBe(kind === "escalate" ? "ask" : kind)
+      await harness.dispose()
+      expect((await harness.records())[0]?.outcome).toBe(kind)
+    } finally {
+      await harness.cleanup()
+    }
+  }
+})
+
+test("escalationMode deny turns a reviewer escalate into a deny and audits both outcomes", async () => {
+  const harness = await fixture({
+    escalationMode: "deny",
+    result: {
+      kind: "escalate",
+      reason: "Scope is ambiguous",
+      decision: decision("escalate"),
+      decisionSource: "llm-reviewer",
+    },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    expect(input.message).toBe("Scope is ambiguous")
+    await harness.dispose()
+    expect((await harness.records())[0]).toMatchObject({
+      outcome: "deny",
+      reviewerOutcome: "escalate",
+      escalationDisposition: "deny",
+      application: "evaluation-returned",
+    })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("a reviewer failure under escalationMode deny audits no invented decision fields", async () => {
+  const harness = await fixture({
+    escalationMode: "deny",
+    result: { kind: "escalate", reason: "Reviewer timed out", decisionSource: "failure-safe" },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    await harness.dispose()
+    const record = (await harness.records())[0]!
+    expect(record).toMatchObject({ outcome: "deny", escalationDisposition: "deny" })
+    for (const field of ["reviewerOutcome", "riskLevel", "confidence", "userAuthorization"])
+      expect(record).not.toHaveProperty(field)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("default manual mode leaves an escalate for a human and audits the manual disposition", async () => {
+  const harness = await fixture({
+    result: {
+      kind: "escalate",
+      reason: "Needs a human",
+      decision: decision("escalate"),
+      decisionSource: "llm-reviewer",
+    },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("ask")
+    await harness.dispose()
+    expect((await harness.records())[0]).toMatchObject({
+      outcome: "escalate",
+      escalationDisposition: "manual",
+      application: "human-pending",
+    })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("an explicit allow audit carries host identity, reviewer fields and no escalation disposition", async () => {
+  const harness = await fixture({ escalationMode: "deny" })
+  try {
+    await harness.evaluate(harness.input())
+    await harness.dispose()
+    const record = (await harness.records())[0]!
+    expect(record).toMatchObject({
+      schemaVersion: 3,
+      decisionSchemaVersion: 2,
+      hostGeneration: "v2",
+      outcome: "allow",
+      decisionSource: "llm-reviewer",
+      reviewerOutcome: "allow",
+      scopeAlignment: "aligned",
+      application: "evaluation-returned",
+    })
+    expect(record.riskLevel).toBeString()
+    expect(record.userAuthorization).toBeString()
+    expect(record.confidence).toBeNumber()
+    expect(record.promptVersion).toBeString()
+    expect(record.actionFingerprint).toMatch(/^v2:[0-9a-f]{64}$/)
+    expect(record.reviewID).toBe(record.requestID)
+    expect(record).not.toHaveProperty("escalationDisposition")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("policy trace and resolved actor reach the audit record", async () => {
+  const harness = await fixture()
+  try {
+    await harness.evaluate(harness.input())
+    await harness.dispose()
+    const record = (await harness.records())[0]!
+    expect(record.policyTrace).toMatchObject({ mode: "observe", finalRoute: "review" })
+    expect(
+      (record.policyTrace as { effectivePolicyHash: string }).effectivePolicyHash,
+    ).toHaveLength(16)
+    expect(record.rootSessionID).toBe("ses_main")
+    expect(record.actor).toMatchObject({ profile: expect.any(String) })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("enforce mode deny and manual rules skip the reviewer", async () => {
+  for (const effect of ["deny", "manual"] as const) {
+    const harness = await fixture({
+      configOverrides: { enforcementMode: "enforce", policyRules: [readOnlyRule(effect)] },
+    })
+    try {
+      const input = harness.input()
+      await harness.evaluate(input)
+      expect(input.effect).toBe(effect === "deny" ? "deny" : "ask")
+      expect(harness.reviews()).toBe(0)
+      await harness.dispose()
+      expect((await harness.records())[0]).toMatchObject({
+        decisionSource: "deterministic-policy",
+        policyTrace: { finalRoute: effect, mode: "enforce" },
+      })
+    } finally {
+      await harness.cleanup()
+    }
+  }
+})
+
+test("observe mode audits the counterfactual deny route but still reviews and allows", async () => {
+  const harness = await fixture({
+    configOverrides: { enforcementMode: "observe", policyRules: [readOnlyRule("deny")] },
+  })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).toBe("allow")
+    expect(harness.reviews()).toBe(1)
+    await harness.dispose()
+    expect((await harness.records())[0]?.policyTrace).toMatchObject({
+      mode: "observe",
+      finalRoute: "deny",
+    })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("reviewer sessions requesting permissions are denied without a model call", async () => {
+  const harness = await fixture({
+    createBackend: () => ({
+      owns: (sessionID) => sessionID === "ses_reviewer",
+      waitForIdle: async () => {},
+      dispose: async () => {},
+      review: async () => {
+        throw new Error("must not be called")
+      },
+    }),
+  })
+  try {
+    const input = harness.input("ses_reviewer")
+    await harness.evaluate(input)
+    expect(input.effect).toBe("deny")
+    expect(harness.reviews()).toBe(0)
+    await harness.dispose()
+    expect((await harness.records())[0]).toMatchObject({
+      outcome: "deny",
+      decisionSource: "emergency-brake",
+      riskLevel: "critical",
+    })
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("the emergency brake and static-analysis budgets deny before any model call", async () => {
+  const commands = [
+    "rm -rf /",
+    `${"env -S ".repeat(33)}rm -rf /`,
+    Array.from({ length: 9_000 }, (_, i) => `echo segment-${i}`).join(";"),
+  ]
+  for (const command of commands) {
+    const harness = await fixture()
+    try {
+      const input = { ...harness.input(), metadata: { command }, resources: [command] }
+      await harness.evaluate(input)
+      expect(input.effect).toBe("deny")
+      expect(harness.reviews()).toBe(0)
+    } finally {
+      await harness.cleanup()
+    }
+  }
+})
+
+test("an allow over an elided long command escalates instead of approving", async () => {
+  const command = `printf '${"x".repeat(9_000)}' ; rm -rf /tmp/scratch ; echo ${"y".repeat(9_000)}`
+  const harness = await fixture()
+  try {
+    const input = { ...harness.input(), metadata: { command }, resources: [command] }
+    await harness.evaluate(input)
+    expect(input.effect).toBe("ask")
+    expect(input.message).toContain("elided or truncated")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("transcript retrieval failure never approves", async () => {
+  const harness = await fixture({ contextError: true })
+  try {
+    const input = harness.input()
+    await harness.evaluate(input)
+    expect(input.effect).not.toBe("allow")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("a failure after evidence collection still audits the ssh summary with phase and cause", async () => {
+  const command = "ssh -p 2222 ubuntu@203.0.113.8 'docker ps'"
+  const harness = await fixture({ reviewError: new Error("backend exploded") })
+  try {
+    const input = { ...harness.input(), metadata: { command }, resources: [command] }
+    await harness.evaluate(input)
+    expect(input.effect).not.toBe("allow")
+    await harness.dispose()
+    expect((await harness.records())[0]).toMatchObject({
+      decisionSource: "failure-safe",
+      ssh: [{ destination: "ubuntu@203.0.113.8", port: "2222" }],
+    })
+    expect(input.message).toContain("permission review hook")
+    expect(input.message).toContain("backend exploded")
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("captured ask decisions reach the audit capped to the latest five, and the knob disables them", async () => {
+  for (const askDecisions of [true, false]) {
+    const harness = await fixture({ configOverrides: { askDecisions } })
+    try {
+      const at = (type: string, data: unknown) =>
+        ({ type, data, location: { directory: harness.directory } }) as OpenCodeEvent
+      for (let index = 0; index < 7; index++) {
+        const form = {
+          id: `form_${index}`,
+          sessionID: "ses_main",
+          title: "Scope",
+          fields: [{ key: "scope", title: "Pick", type: "string" }],
+        }
+        await harness.push(at("form.created", { form }))
+        await harness.push(
+          at("form.replied", {
+            id: form.id,
+            sessionID: "ses_main",
+            answer: { scope: `answer-${index}` },
+          }),
+        )
+      }
+      await harness.evaluate(harness.input())
+      await harness.dispose()
+      const recorded = (await harness.records())[0]!.askDecisions as
+        Array<{ answer: string }> | undefined
+      if (askDecisions)
+        expect(recorded?.map((entry) => entry.answer)).toEqual(
+          [2, 3, 4, 5, 6].map((index) => `answer-${index}`),
+        )
+      else expect(recorded).toBeUndefined()
     } finally {
       await harness.cleanup()
     }

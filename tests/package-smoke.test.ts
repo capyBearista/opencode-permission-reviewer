@@ -87,24 +87,22 @@ describe("npm pack ship set", () => {
       "SECURITY.md",
       "dist/index.js",
       "dist/index.d.ts",
-      "server.js",
-      "tui.tsx",
-      "rpc.js",
       "dist/rpc.js",
       "MIGRATION.md",
       "dist/explain.js",
       // TUI ships as raw TSX so the host compiles it with its Solid pipeline.
       "dist/tui/tui.tsx",
-      "dist/tui/config.ts",
-      "dist/tui/config/loader.ts",
-      "dist/tui/config/jsonc.ts",
+      "dist/tui/ui/v2.tsx",
+      "dist/tui/ui/components.tsx",
+      "dist/tui/ui/rpc.ts",
       "dist/tui/ui-protocol.ts",
       "dist/tui/ui-state.ts",
       "dist/tui/types.ts",
-      "dist/tui/opencode/event-normalizer.ts",
     ]) {
       expect(files).toContain(required)
     }
+    // The 2.2.0 host resolves entries through `exports`; root shims are gone.
+    for (const removed of ["server.js", "tui.tsx", "rpc.js"]) expect(files).not.toContain(removed)
 
     // No prebundled TUI entry — that shape fails to render on the host.
     // Guard the whole dist/tui/ tree: only raw .ts/.tsx sources may ship there.
@@ -237,7 +235,7 @@ describe("supply-chain surface", () => {
       // `effect` may appear as a literal (e.g. permission `"effect": "ask"`),
       // but never as a module specifier: tsup externalizes it, so an
       // accidental import stays visible here instead of being silently
-      // inlined. The runtime is resolved by the host from @opencode-ai/plugin's
+      // inlined. The runtime is resolved by the host from @opencode/plugin's
       // own dependency chain, never vendored by us.
       expect(bundle).not.toMatch(/(?:from|import|require)\s*\(?\s*["']effect(?:\/|["'])/)
     }
@@ -296,7 +294,7 @@ describe("npm install host-owned TUI runtime", () => {
       cmd: [
         "bun",
         "-e",
-        'const plugin = (await import("opencode-permission-reviewer")).default; if (typeof plugin.server !== "function" || typeof plugin.setup !== "function") process.exit(1)',
+        'const plugin = (await import("opencode-permission-reviewer")).default; if ("server" in plugin || typeof plugin.setup !== "function") process.exit(1)',
       ],
       cwd: installDir,
       stdout: "ignore",

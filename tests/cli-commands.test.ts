@@ -63,9 +63,9 @@ describe("doctor", () => {
       expect(exitCode).toBe(0)
       const report = JSON.parse(stdout)
       expect(report.version.package).toBeTruthy()
-      expect(report.config.model).toBe("openai/gpt-6-luna")
       expect(report.config).not.toHaveProperty("generation")
-      expect(report.config).not.toHaveProperty("decisionModels")
+      expect(report.config).not.toHaveProperty("model")
+      expect(report.config.decisionModels).toEqual(["opencode/jev-1.13-free"])
       expect(report.config.enforcementMode).toBe("observe")
     } finally {
       rmSync(home, { recursive: true })
@@ -99,13 +99,10 @@ describe("doctor", () => {
         decisionAttemptTimeoutMs: 60_000,
       })
 
-      const jsonResult = await run(
-        ["doctor", "--generation", "v2", "--project", project, "--json"],
-        { HOME: home },
-      )
+      const jsonResult = await run(["doctor", "--project", project, "--json"], { HOME: home })
       expect(jsonResult.exitCode).toBe(0)
       const config = JSON.parse(jsonResult.stdout).config
-      expect(config.generation).toBe("v2")
+      expect(config).not.toHaveProperty("generation")
       expect(config.decisionModels).toEqual(decisionModels)
       expect(config.reasoningModel).toEqual({
         model: "openrouter/acme/first-reasoner",
@@ -119,11 +116,10 @@ describe("doctor", () => {
       expect(config.decisionAttemptTimeoutMs).toBe(25_000)
       expect(config.configDegraded).toEqual([])
 
-      const humanResult = await run(["doctor", "--generation", "v2", "--project", project], {
+      const humanResult = await run(["doctor", "--project", project], {
         HOME: home,
       })
       expect(humanResult.exitCode).toBe(0)
-      expect(humanResult.stderr).toContain("generation:  v2")
       expect(humanResult.stderr).toContain(
         "decision models: openrouter/acme/first-model -> openrouter/acme/second-model",
       )
@@ -133,10 +129,9 @@ describe("doctor", () => {
       expect(humanResult.stderr).toContain("decision max attempts: 4")
       expect(humanResult.stderr).toContain("decision attempt timeout: 25000ms")
 
-      const effectiveResult = await run(
-        ["config", "print-effective", "--generation", "v2", "--project", project],
-        { HOME: home },
-      )
+      const effectiveResult = await run(["config", "print-effective", "--project", project], {
+        HOME: home,
+      })
       expect(effectiveResult.exitCode).toBe(0)
       const effective = JSON.parse(effectiveResult.stdout).config
       expect(effective.decisionModels).toEqual(decisionModels)
@@ -159,10 +154,9 @@ describe("doctor", () => {
         decisionMaxAttempts: 5,
         decisionAttemptTimeoutMs: 60_000,
       })
-      const { exitCode, stdout } = await run(
-        ["config", "print-effective", "--generation", "v2", "--project", project],
-        { HOME: home },
-      )
+      const { exitCode, stdout } = await run(["config", "print-effective", "--project", project], {
+        HOME: home,
+      })
       expect(exitCode).toBe(0)
       const config = JSON.parse(stdout).config
       expect(config.decisionModels).toEqual(["opencode/jev-1.13-free"])
@@ -189,12 +183,12 @@ describe("doctor", () => {
         decisionModels: [],
         reasoningModels: [{ model: "https://invalid.example/model" }],
       })
-      const { exitCode, stdout } = await run(["doctor", "--generation", "v2", "--json"], {
+      const { exitCode, stdout } = await run(["doctor", "--json"], {
         HOME: home,
       })
       expect(exitCode).toBe(0)
       const config = JSON.parse(stdout).config
-      expect(config.generation).toBe("v2")
+      expect(config).not.toHaveProperty("generation")
       expect(config.decisionModels).toEqual([])
       expect(config.reasoningModel).toBeNull()
       expect(config.decisionMaxAttempts).toBe(2)
@@ -207,17 +201,6 @@ describe("doctor", () => {
       )
     } finally {
       rmSync(home, { recursive: true })
-    }
-  }, 15_000)
-
-  test("rejects unsupported generations for doctor and print-effective", async () => {
-    for (const args of [
-      ["doctor", "--generation", "automatic"],
-      ["config", "print-effective", "--generation", "automatic"],
-    ]) {
-      const { exitCode, stderr } = await run(args)
-      expect(exitCode).toBe(2)
-      expect(stderr).toContain('--generation must be "v1" or "v2"')
     }
   }, 15_000)
 
@@ -235,10 +218,8 @@ describe("config print-effective", () => {
       expect(exitCode).toBe(0)
       const report = JSON.parse(stdout)
       expect(report.command).toBe("print-effective")
-      expect(report.config.model).toBe("openai/gpt-6-luna")
       expect(report.config).not.toHaveProperty("generation")
-      expect(report.config).not.toHaveProperty("decisionModels")
-      expect(report.config).not.toHaveProperty("reasoningModels")
+      expect(report.config.decisionModels).toEqual(["opencode/jev-1.13-free"])
       expect(report.policy.ruleCount).toBe(0)
       expect(report.policy.effectivePolicyHash).toMatch(/^[0-9a-f]{16}$/)
     } finally {

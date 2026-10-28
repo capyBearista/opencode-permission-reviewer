@@ -24,9 +24,6 @@ export default defineConfig({
     },
   },
   external: [
-    "@opencode-ai/plugin",
-    "@opencode-ai/plugin/tui",
-    "@opencode-ai/sdk",
     /^@opentui\//,
     "solid-js",
     "solid-js/web",

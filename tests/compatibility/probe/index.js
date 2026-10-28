@@ -7,10 +7,6 @@ async function mark(directory, event) {
 
 export default {
   id: "permission-reviewer-host-probe",
-  async server(input) {
-    await mark(input.directory, "server:v1")
-    return {}
-  },
   async setup(ctx) {
     await mark(ctx.location.directory, `setup:v2:${ctx.app.version}`)
     await writeFile(

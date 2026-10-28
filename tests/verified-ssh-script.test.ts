@@ -5,9 +5,7 @@ import { promisify } from "node:util"
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { MockClient, request } from "./helpers.ts"
-import { assembleEvidence, defaultEvidenceProviders } from "../src/context/evidence-assembler.ts"
-import { buildEvidenceResult } from "../src/context.ts"
+import { request } from "./helpers.ts"
 import { DEFAULT_CONFIG } from "../src/config.ts"
 import { evaluateReview } from "../src/core/review-engine.ts"
 import type { ReviewEnvelope } from "../src/types.ts"
@@ -219,53 +217,6 @@ describe("verified SSH script protocol", () => {
     await writeFile(path, original)
     await execFileAsync("sh", ["-c", command], { env })
     expect(await readFile(approvedMarker, "utf8")).toBe("done")
-  })
-
-  test("assembles complete first evidence and a compact follow-up for both hosts", async () => {
-    const directory = await fixture()
-    const path = join(directory, "deploy.sh")
-    const content = "echo inspected\n".repeat(1900)
-    await writeFile(path, content)
-    const command = renderVerifiedSshScriptCommand({
-      path,
-      destination: "host.invalid",
-      sha256: digest(content),
-      shell: "bash",
-    })
-    const registry = new ScriptAnalysisRegistry()
-    const client = new MockClient()
-    const pending = request({ metadata: { command }, patterns: [command] })
-    const ctx = {
-      client,
-      directory,
-      worktree: directory,
-      config: DEFAULT_CONFIG,
-      scriptRegistry: registry,
-    }
-    const first = await assembleEvidence(pending, defaultEvidenceProviders(), ctx)
-    expect(first.verifiedScript?.status).toBe("full")
-    const firstPrompt = buildEvidenceResult(first, DEFAULT_CONFIG)
-    expect(firstPrompt.actionEvidenceComplete).toBe(true)
-    expect(firstPrompt.text).toContain(content)
-    expect(firstPrompt.text.match(/echo inspected/g)?.length).toBe(1900)
-    registry.rememberApproved(first.verifiedScript, {
-      version: 2,
-      outcome: "allow",
-      risk_level: "medium",
-      user_authorization: "high",
-      scope_alignment: "aligned",
-      evidence_completeness: "sufficient",
-      rationale: "Bounded authorized deployment.",
-      confidence: 0.9,
-      script_analysis:
-        "Runs a fixed diagnostic command without deleting files or accessing credentials.",
-    })
-    const next = await assembleEvidence(pending, defaultEvidenceProviders(), ctx)
-    expect(next.verifiedScript?.status).toBe("reused")
-    const nextPrompt = buildEvidenceResult(next, DEFAULT_CONFIG)
-    expect(nextPrompt.actionEvidenceComplete).toBe(true)
-    expect(nextPrompt.text).not.toContain(content)
-    expect(nextPrompt.text).toContain("Prior model-generated script analysis")
   })
 
   test("CLI generates the accepted command without printing script content", async () => {

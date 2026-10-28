@@ -25,19 +25,15 @@ def probe_package(tmp_path):
 
 @pytest.fixture
 def activate_host():
-    def activate(host, generation):
-        route = "/path" if generation == "v1" else "/api/plugin"
-        key = "directory" if generation == "v1" else "location[directory]"
-        query = urllib.parse.urlencode({key: str(host["project"])})
+    def activate(host):
+        query = urllib.parse.urlencode({"location[directory]": str(host["project"])})
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             request = urllib.request.Request(
-                host["url"] + route + "?" + query, headers=host["headers"]
+                host["url"] + "/api/plugin?" + query, headers=host["headers"]
             )
             with urllib.request.urlopen(request, timeout=30) as response:
                 result = json.load(response)
-            if generation == "v1":
-                return result
             plugins = result.get("data", result)
             local = [plugin for plugin in plugins if plugin.get("source", {}).get("type") == "local"]
             failed = [plugin for plugin in local if plugin.get("state", {}).get("status") == "failed"]
@@ -54,13 +50,13 @@ def activate_host():
 def launch_host(tmp_path):
     processes = []
 
-    def launch(generation, binary, config, reviewer=None, global_config=None, profile=None, service=False):
+    def launch(binary, config, reviewer=None, global_config=None, profile=None, service=False):
         executable = shutil.which(binary)
         if executable is None:
             pytest.fail(f"Host binary does not exist: {binary}")
         if profile is not None and not re.fullmatch(r"[a-z0-9-]+", profile):
             pytest.fail("Invalid disposable profile name")
-        root = tmp_path / (profile or generation)
+        root = tmp_path / (profile or "host")
         root.mkdir(exist_ok=profile is not None)
         project = root / "project"
         project.mkdir(exist_ok=profile is not None)
@@ -90,10 +86,9 @@ def launch_host(tmp_path):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             port = listener.getsockname()[1]
-        if generation == "v2":
-            if not service:
-                env["OPENCODE_PERMISSION_REVIEWER_HOST_URL"] = f"http://127.0.0.1:{port}"
-            env["OPENCODE_PASSWORD"] = "synthetic-local-host-password"
+        if not service:
+            env["OPENCODE_PERMISSION_REVIEWER_HOST_URL"] = f"http://127.0.0.1:{port}"
+        env["OPENCODE_PASSWORD"] = "synthetic-local-host-password"
         log = (root / "server.log").open("w+", encoding="utf-8")
         process = subprocess.Popen(
             [executable, "serve", "--hostname", "127.0.0.1", "--port", str(port), *(["--service"] if service else [])],
@@ -112,9 +107,9 @@ def launch_host(tmp_path):
                     process.kill()
                     process.wait(timeout=5)
         url = f"http://127.0.0.1:{port}"
-        health = "/global/health" if generation == "v1" else "/api/location"
+        health = "/api/location"
         deadline = time.monotonic() + 45
-        headers = {} if generation == "v1" else {"Authorization": "Basic " + base64.b64encode(
+        headers = {"Authorization": "Basic " + base64.b64encode(
             b"opencode:synthetic-local-host-password"
         ).decode()}
         service_discovered = False
@@ -139,7 +134,7 @@ def launch_host(tmp_path):
                         service_discovered = True
                     except (KeyError, json.JSONDecodeError, OSError):
                         pass
-            if generation == "v2" and not headers:
+            if not headers:
                 log.seek(0)
                 match = re.search(r"server password (\S+)", log.read())
                 if match:
