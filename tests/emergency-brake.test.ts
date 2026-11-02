@@ -157,6 +157,15 @@ describe("deterministic emergency brake", () => {
     "echo x 1>&/dev/sda",
     "echo x 01>&/dev/sda",
     "bash -c 'echo x 1>&/dev/sda'",
+    "echo x 1>& /dev/sda",
+    // A quoted or escaped digit is a word, not a descriptor number.
+    "echo x '2'>&/dev/sda",
+    'echo x "2">&/dev/sda',
+    "echo x \\2>&/dev/sda",
+    // Redirections without a command still open the target.
+    "{ echo x; } >&/dev/sda",
+    "(echo x) 1>&/dev/sda",
+    "exec >&/dev/sda",
   ])("rejects unmistakable critical command: %s", (command) => {
     expect(emergencyBrakeReason(request({ metadata: { command } }))).toBeString()
   })
@@ -212,6 +221,11 @@ describe("deterministic emergency brake", () => {
     "sh -c 'echo x 2>&1'",
     "sh -c 'echo x >&-'",
     "echo x 2>&/dev/sda",
+    "echo x 10>&/dev/sda",
+    "{ echo x; } 2>&/dev/sda",
+    "exec 0>&/dev/sda",
+    "exec 3>&1",
+    'echo x >"&"/dev/sda',
     "cat </dev/sda",
     // Device inspection (non-destructive) must not trip.
     "wipefs /dev/sda",

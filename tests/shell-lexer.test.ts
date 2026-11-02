@@ -4,6 +4,7 @@ import {
   commandSegments,
   effectiveCommands,
   lexSegments,
+  normalizeShellRedirections,
   shellBasename,
   tokenCharIsQuoted,
 } from "../src/shell-lexer.ts"
@@ -85,6 +86,36 @@ describe("shell lexer", () => {
     }
     expect(firstExecutables("printf 'x>quoted'")).toEqual([["printf", "x>quoted"]])
     expect(commandSegments("git>/tmp/log add .")[0]!.tokens).toEqual(["git", "add", "."])
+  })
+
+  test("only unquoted digits form an IO number", () => {
+    const redirect = (command: string) =>
+      normalizeShellRedirections(lexSegments(command)[0]!.tokens).redirections
+    expect(redirect("echo x 2>&/tmp/out")).toEqual([
+      { operator: "2>&", target: "/tmp/out", quoted: false },
+    ])
+    for (const command of [
+      "echo x '2'>&/tmp/out",
+      'echo x "2">&/tmp/out',
+      "echo x \\2>&/tmp/out",
+    ]) {
+      expect(redirect(command)).toEqual([{ operator: ">&", target: "/tmp/out", quoted: false }])
+    }
+  })
+
+  test("a quoted character ends an operator and joins the target", () => {
+    const redirect = (command: string) =>
+      normalizeShellRedirections(lexSegments(command)[0]!.tokens).redirections
+    for (const [command, operator, target] of [
+      ["echo x >'&'f", ">", "&f"],
+      ["echo x >'|'f", ">", "|f"],
+      ["echo x >'>'f", ">", ">f"],
+    ] as const) {
+      expect(redirect(command)).toEqual([{ operator, target, quoted: true }])
+    }
+    expect(redirect("echo x &'>'f")).toEqual([])
+    // A quoted word glued before an operator stays a word: `'a'>>f` appends to f.
+    expect(redirect("echo 'a'>>f")).toEqual([{ operator: ">>", target: "f", quoted: false }])
   })
 
   test("records the separator that ended each segment", () => {

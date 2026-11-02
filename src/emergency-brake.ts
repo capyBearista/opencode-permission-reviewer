@@ -4,6 +4,7 @@ import {
   lexSegmentsBounded,
   MAX_ANALYSIS_INPUT_CHARS,
   newAnalysisBudget,
+  normalizeShellRedirections,
   tokenCharIsQuoted,
   type ShellSegment,
   type ShellToken,
@@ -242,6 +243,18 @@ function isBlockDeviceTarget(value: string): boolean {
   return BLOCK_DEVICE_RE.test(value)
 }
 
+/** A normalized redirection that opens a real block device for writing.
+ *  Bash sends stdout to a file for `>&word` and `1>&word`; any other fd
+ *  prefix makes a non-numeric word an ambiguous redirect. */
+function redirectionWritesBlockDevice(redirection: Redirection): boolean {
+  const fd = /^\d+/.exec(redirection.operator)?.[0]
+  const operator = redirection.operator.slice(fd?.length ?? 0)
+  const writes =
+    [">", ">>", ">|", "&>", "&>>", "<>"].includes(operator) ||
+    (operator === ">&" && (fd === undefined || Number(fd) === 1))
+  return writes && isBlockDeviceTarget(redirection.target)
+}
+
 /** Shell redirection onto a real block device: `> /dev/sda` (or `>>`, `>|`,
  *  an fd-prefixed `2>/dev/sda`, a word-glued `x>/dev/sdc`, or the operator
  *  ending its own token as in `echo x> /dev/sda`) overwrites a disk regardless
@@ -344,6 +357,10 @@ function copyOverwritesBlockDevice(tokens: ShellToken[], base: string): boolean 
 function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
   for (const { segment, effective, redirections } of analyzed) {
     if (redirectTargetsBlockDevice(segment.tokens)) return true
+    // Redirections with no command to attach to (`{ …; } >&dev`, `exec >&dev`)
+    // never reach an effective command, so check the segment's own.
+    if (normalizeShellRedirections(segment.tokens).redirections.some(redirectionWritesBlockDevice))
+      return true
     for (let commandIndex = 0; commandIndex < effective.length; commandIndex += 1) {
       const tokens = effective[commandIndex]!
       if (tokens.length === 0) continue
@@ -351,22 +368,7 @@ function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
       // ssh remote commands) only surfaces inside the resolved effective
       // commands, so the redirect scan runs on them too.
       if (redirectTargetsBlockDevice(tokens)) return true
-      if (
-        (redirections[commandIndex] ?? []).some((redirection) => {
-          const fd = /^\d+/.exec(redirection.operator)?.[0]
-          const operator = redirection.operator.slice(fd?.length ?? 0)
-          // Bash sends stdout to a file for `>&word` and `1>&word`; any other
-          // fd prefix makes a non-numeric word an ambiguous redirect.
-          const writes =
-            [">", ">>", ">|", "&>", "&>>", "<>"].includes(operator) ||
-            (operator === ">&" &&
-              (fd === undefined || Number(fd) === 1) &&
-              redirection.target !== "-" &&
-              !/^\d+$/.test(redirection.target))
-          return writes && isBlockDeviceTarget(redirection.target)
-        })
-      )
-        return true
+      if ((redirections[commandIndex] ?? []).some(redirectionWritesBlockDevice)) return true
       const base = shellBasename(tokens[0]!.value)
       const args = tokens.slice(1)
       const targetsBlock = args.some((t) => isBlockDeviceTarget(t.value))

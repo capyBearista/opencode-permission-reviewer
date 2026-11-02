@@ -14,11 +14,11 @@ export const PINNED_BLOBS = {
   "src/policy/policy-engine.ts": "b4470dc188d956cc0ed25454c2d34465110fe1be",
   "src/escalation.ts": "301d6e4e78bd101d7777c029a2019a80d8bf5e54",
   "src/core/review-engine.ts": "e17f72c6775191d8c20fb0d8b24bbf339272dc23",
-  "src/emergency-brake.ts": "8a3cbfd6fcdb31d45248539725ad7ace3d001986",
+  "src/emergency-brake.ts": "be0355042f95f36281e68f510de226d64ee6fc02",
   "src/redact.ts": "e93e4d379b64866de9848a8a5a9b5d7b1e4a8f3e",
   "src/capability/command-parser.ts": "926def261a0f1af1eec4a5991a89eb24da32af59",
   "src/capability/bash-analyzer.ts": "dcf60b95b18ffe3a0256a01075bd34634265bfec",
-  "src/shell-lexer.ts": "eaf40e0f9a66f82e61ff4c38532c103c37f82759",
+  "src/shell-lexer.ts": "fa4a0da24919e75a40fad53834dc6b88ad4179b1",
   "src/capability/heredoc-extractor.ts": "de3c1bb00f5d7e430c86845455ce6de6b1c94f6c",
   "src/system-one/review.ts": "05b9d82b2a2b272dda09a2f52e143e55b063784c",
 }
