@@ -563,7 +563,7 @@ function normalizeRequest(
             ? (v.metadata as Record<string, unknown>)
             : {},
       },
-      { reviewID: "explain-dry-run", generation: "explain", directory: "", hostVersion: "2.2.0" },
+      { reviewID: "explain-dry-run", generation: "explain", directory: "", hostVersion: "2.2.5" },
       v.input,
     )
   }

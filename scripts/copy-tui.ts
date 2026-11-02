@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } fr
 import { dirname, join, resolve } from "node:path"
 import { runtimeModuleIdForSpecifier } from "@opentui/core/runtime-plugin"
 
-// OpenTUI 0.7.0 ships the transform helper but does not export its subpath.
+// OpenTUI 0.8.0 ships the transform helper but does not export its subpath.
 const solidEntry = import.meta.resolve("@opentui/solid")
 const { transformSolidSource } = await import(
   new URL("./scripts/solid-transform.js", solidEntry).href

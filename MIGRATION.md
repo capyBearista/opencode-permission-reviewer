@@ -1,6 +1,6 @@
 # Upgrading to the OpenCode V2-only release
 
-This release supports OpenCode V2 `>=2.2.0 <3` only. OpenCode V1 (1.18.x and
+This release supports OpenCode V2 `>=2.2.5 <3` only. OpenCode V1 (1.18.x and
 1.19.x) is no longer supported. If you need OpenCode V1, stay on the previous
 release of this package (2.4.x).
 
@@ -10,7 +10,7 @@ release of this package (2.4.x).
   the reply transport, the `@opencode-ai/plugin` dependency, and the V1
   `plugin` / `tui.json` registration. The default export is `{ id, setup }`.
 - **Root entry shims.** `server.js`, `rpc.js`, and `tui.tsx` are no longer
-  shipped. OpenCode 2.2.0 resolves the package through its `exports`:
+  shipped. OpenCode 2.2.5 resolves the package through its `exports`:
   `./server`, `./tui`, and `./rpc`. Point filesystem-local config at the package
   directory, not an entry file.
 - **CLI flags.** `init` no longer accepts `--host` or `--tui`. `doctor`,
@@ -31,7 +31,7 @@ release of this package (2.4.x).
 
 ## Upgrade steps
 
-1. Upgrade OpenCode to 2.2.0 or newer. OpenTUI 0.7 comes with it.
+1. Upgrade OpenCode to 2.2.5 or newer. OpenTUI 0.8 comes with it.
 2. Register the plugin once, in the plural `plugins` array of `opencode.json`:
 
    ```jsonc
@@ -39,7 +39,7 @@ release of this package (2.4.x).
    ```
 
    `init --npm --yes` writes this entry (add `--global` for the global config).
-   OpenCode 2.2.0 loads the TUI overlay from the same entry, so a `cli.json`
+   OpenCode 2.2.5 loads the TUI overlay from the same entry, so a `cli.json`
    entry is no longer needed; remove an existing one.
 
 3. Fully restart OpenCode.

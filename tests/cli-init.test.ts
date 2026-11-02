@@ -82,10 +82,11 @@ describe("cli init", () => {
     for (const [version, supported] of [
       ["1.18.29", false],
       ["2.1.4", false],
-      ["2.2.0", true],
-      ["2.2.1", true],
+      ["2.2.4", false],
+      ["2.2.5", true],
+      ["2.2.9", true],
       ["2.3.0", true],
-      ["2.2.0-beta.1", false],
+      ["2.2.5-beta.1", false],
       ["3.0.0", false],
     ] as const) {
       writeFileSync(binary, `#!/bin/sh\nprintf '${version}\\n'\n`, { mode: 0o700 })

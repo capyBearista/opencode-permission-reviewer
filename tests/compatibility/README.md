@@ -4,7 +4,7 @@ Build with `bun run build`, install pytest (`python -m pip install pytest==9.1.1
 in a disposable Python environment, and set these executable paths:
 
 ```bash
-export OPENCODE_V2_2_2_0=/absolute/path/to/opencode-2.2.0
+export OPENCODE_V2_2_2_5=/absolute/path/to/opencode-2.2.5
 python -m pytest tests/compatibility -q
 ```
 
@@ -14,7 +14,7 @@ edit shell aliases. CI receives these paths through `GITHUB_ENV`.
 
 The V2 server and TUI compile against the minimum supported plugin SDK while
 the real-host matrix exercises the minimum and reference host binary (both
-2.2.0).
+2.2.5).
 
 To verify every pinned V2 release locally, run the sequential window harness.
 It installs one host at a time, verifies its integrity, runs the real-host
@@ -52,8 +52,8 @@ states. No provider account, key, or paid inference is required.
 
 Set `V2_HOST_VERSION` to select one host release for the functional reviewer
 tests, alongside its matching executable variable. For example,
-`V2_HOST_VERSION=2.2.1` uses `OPENCODE_V2_2_2_1` without changing the pinned
-CI matrix.
+`V2_HOST_VERSION=2.2.5` uses `OPENCODE_V2_2_2_5` without changing the pinned
+CI matrix. The selected version must be pinned in `host-contracts.json`.
 
 Without `PLUGIN_PACKAGE_PATH`, the functional tests load this checkout's built
 package. To validate installation, run `PACKAGE_MANAGER=npm bun

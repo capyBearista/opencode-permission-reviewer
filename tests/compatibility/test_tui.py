@@ -19,7 +19,7 @@ import pytest
 V2_VERSIONS = (
     [os.environ["V2_HOST_VERSION"]]
     if os.environ.get("V2_HOST_VERSION")
-    else ["2.2.0"]
+    else ["2.2.5"]
 )
 
 from test_v2_reviewer import (
@@ -151,7 +151,7 @@ def test_tui_renders_review_state(
         },
     )
     session_id = session.get("data", session)["id"]
-    # No cli.json: OpenCode 2.2.0 loads the TUI half from the opencode.json entry.
+    # No cli.json: OpenCode 2.2.5 loads the TUI half from the opencode.json entry.
     arguments = [
         binary,
         "--server",

@@ -189,7 +189,7 @@ test("v2 permission review hook failure denies with phase and cause", async () =
   const events: OpenCodeEvent[] = []
   const registration = () => ({ dispose: async () => {} })
   const ctx = {
-    app: { version: "2.2.0" },
+    app: { version: "2.2.5" },
     options: {},
     location: { directory, project: { directory } },
     rpc: {

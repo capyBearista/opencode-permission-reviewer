@@ -1,15 +1,15 @@
 {
   "v2": {
     "package": "@opencode/cli",
-    "minimum": "2.2.0",
-    "reference": "2.2.0",
+    "minimum": "2.2.5",
+    "reference": "2.2.5",
     "integrities": {
-      "2.2.0": "sha512-05wLSq/M/vqw32uZnrNUGnhSpcpXlF+4OfvKzGghtbPYyF7kB82qfIRSIZQk3vFBIH32HWu8UQCai38b7J36kw=="
+      "2.2.5": "sha512-sJAwrwuVa5b+pA3O1UOiSDcC9DgdPVmtkWv6aF6q3+rOiOTCqrE41tkz1kyyE2O8BYPs4eOvBuzkQ6oEm8w5Mw=="
     },
     "sdk": {
       "package": "@opencode/plugin",
-      "version": "2.2.0",
-      "integrity": "sha512-1h1OM9B1RnUu2HEAYnUGcT21ib7aPXuIBUE0E1XYBhfmLvgMCmHWxtFUnU4sPyNHuY+EZ3kV501YGffAdxyI4A=="
+      "version": "2.2.5",
+      "integrity": "sha512-DHtmC55UM5NbtZwyayLxI/ygTMt3n+6xXYYBkOdNxmZ+rLcIbpjmeJvySqdxFmT3K7Pk/2pHsuocxhquu6sysA=="
     },
     "entrypoint": "setup",
     "permission": "permission.hook.evaluate"

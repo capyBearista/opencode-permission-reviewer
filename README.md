@@ -9,7 +9,7 @@
 > feedback, or escalates to you** — so safe actions don't wait for a keystroke,
 > and genuinely risky ones still get blocked or surfaced.
 
-[![OpenCode](https://img.shields.io/badge/OpenCode-%E2%89%A52.2.0-6E56CF)](https://opencode.ai)
+[![OpenCode](https://img.shields.io/badge/OpenCode-%E2%89%A52.2.5-6E56CF)](https://opencode.ai)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-000000)](https://bun.sh)
 [![npm](https://img.shields.io/npm/v/opencode-permission-reviewer?color=CB3837)](https://www.npmjs.com/package/opencode-permission-reviewer)
 [![Downloads](https://img.shields.io/npm/dw/opencode-permission-reviewer)](https://www.npmjs.org/package/opencode-permission-reviewer)
@@ -48,7 +48,7 @@ the host and configuration.
 ### Requirements
 
 - [Bun](https://bun.sh) ≥ 1.4.2 (CI runs 1.4.2)
-- [OpenCode](https://opencode.ai) V2 `>=2.2.0 <3` (**tested with 2.2.0**)
+- [OpenCode](https://opencode.ai) V2 `>=2.2.5 <3` (**tested with 2.2.5**)
 - `git` on `PATH` (only used for read-only Git-state enrichment; missing git
   degrades gracefully)
 - The default Zen Decisions route needs no provider key; the default reasoning
@@ -109,7 +109,7 @@ absolute path to a checkout as `package`, or the npm package name after
 }
 ```
 
-One entry covers both halves: OpenCode 2.2.0 loads the optional TUI overlay
+One entry covers both halves: OpenCode 2.2.5 loads the optional TUI overlay
 from the package's `./tui` export, so no `cli.json` entry is needed. Reviewer
 settings belong in the trusted global `permission-reviewer.jsonc`; inline
 options of unknown provenance can only tighten security restrictions. The TUI
@@ -735,7 +735,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
   of the tarball's runtime graph. The root override addresses
   GHSA-g7r4-m6w7-qqqr in the development tree, not downstream hosts.
 - **The `effect` runtime stays external.** `@opencode/plugin` resolves
-  `effect@4.0.1` from the host's own dependency chain. It is externalized from
+  its pinned `effect` version from the host's own dependency chain. It is externalized from
   our bundles, not shipped or vendored by this package, and deliberately not
   pinned or overridden to a different version: forcing another version could
   fork the runtime the host shares with every other plugin.
@@ -744,9 +744,9 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 
 | Component          | Supported        | Notes                                                      |
 | ------------------ | ---------------- | ---------------------------------------------------------- |
-| OpenCode           | `>=2.2.0 <3`     | Declared in `engines.opencode`; verified with **2.2.0**    |
-| `@opencode/plugin` | `>=2.2.0 <3`     | Optional peer dependency                                   |
-| OpenTUI            | `>=0.7.0`        | Optional peers; OpenCode 2.2.0 requires OpenTUI 0.7        |
+| OpenCode           | `>=2.2.5 <3`     | Declared in `engines.opencode`; verified with **2.2.5**    |
+| `@opencode/plugin` | `>=2.2.5 <3`     | Optional peer dependency                                   |
+| OpenTUI            | `>=0.8.0`        | Optional peers; OpenCode 2.2.5 requires OpenTUI 0.8        |
 | Bun                | `>=1.4.2`        | Declared in `engines.bun`; CI runs **1.4.2**               |
 | TUI overlay        | OpenCode V2      | Loaded from the same `plugins` entry as the server         |
 | OS                 | Linux (verified) | Other operating systems require equivalent live validation |
@@ -777,7 +777,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | --------------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Every `ask` escalates after a long wait       | Reviewer model not found / provider not configured                               | Check the model ID in the global `permission-reviewer.jsonc`                                                                                                                                                   |
 | Plugin does nothing                           | No `ask` rule in the host permission policy                                      | Set a `permissions` rule with `effect: "ask"` (e.g. for `shell`)                                                                                                                                               |
-| TUI overlay never appears                     | OpenCode older than 2.2.0; stale process; or host without Solid/OpenTUI pipeline | Check `opencode --version`. The overlay is precompiled unbundled JavaScript kept at `.ts`/`.tsx` paths (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
+| TUI overlay never appears                     | OpenCode older than 2.2.5; stale process; or host without Solid/OpenTUI pipeline | Check `opencode --version`. The overlay is precompiled unbundled JavaScript kept at `.ts`/`.tsx` paths (`dist/tui/tui.tsx`); a prebundled `dist/tui.js` does not render. Fully restart OpenCode after rebuilds |
 | Reviewer host connection unavailable          | Independent V2 server without a registered endpoint                              | Configure the trusted server URL and authentication, then restart                                                                                                                                              |
 | Reviews always time out                       | Reasoning `timeoutMs` too low for the model                                      | Raise the `timeoutMs` of the `reasoningModels` entry (up to 600000)                                                                                                                                            |
 | `GIT_STATE_ANALYSIS` shows `spawn git ENOENT` | `git` not on `PATH`                                                              | Install `git`; Git enrichment degrades safely until then                                                                                                                                                       |

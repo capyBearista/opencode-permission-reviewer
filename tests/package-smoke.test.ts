@@ -101,7 +101,7 @@ describe("npm pack ship set", () => {
     ]) {
       expect(files).toContain(required)
     }
-    // The 2.2.0 host resolves entries through `exports`; root shims are gone.
+    // The 2.2.5 host resolves entries through `exports`; root shims are gone.
     for (const removed of ["server.js", "tui.tsx", "rpc.js"]) expect(files).not.toContain(removed)
 
     // No prebundled TUI entry — that shape fails to render on the host.
@@ -264,7 +264,12 @@ describe("npm install host-owned TUI runtime", () => {
       expect(pkg.peerDependenciesMeta[name]).toEqual({ optional: true })
       expect(pkg.devDependencies[name]).toBeDefined()
     }
-    expect(pkg.devDependencies["solid-js"]).toBe(opentui.peerDependencies["solid-js"])
+    expect(
+      Bun.semver.satisfies(
+        pkg.devDependencies["solid-js"] ?? "",
+        opentui.peerDependencies["solid-js"] ?? "",
+      ),
+    ).toBe(true)
     expect(pkg.devDependencies["@opentui/solid"]).toBe(opentui.version)
     expect(pkg.devDependencies["@opentui/core"]).toBe(opentui.version)
   }, 120_000)

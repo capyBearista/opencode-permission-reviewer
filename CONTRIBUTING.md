@@ -78,7 +78,7 @@ denial, and a deterministic emergency-brake denial, each with a matching audit
 record; provider failures cannot count as successful denials.
 
 The real-host matrix is in `tests/compatibility`. After `bun run build`, run
-`V2_HOST_VERSION=2.2.0 OPENCODE_V2_2_2_0=/path/to/opencode python -m pytest tests/compatibility -q`
+`V2_HOST_VERSION=2.2.5 OPENCODE_V2_2_2_5=/path/to/opencode python -m pytest tests/compatibility -q`
 (see its [README](./tests/compatibility/README.md) for setup). Each host uses an
 isolated home, configuration, provider and audit file; no personal OpenCode
 installation is changed.
