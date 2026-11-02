@@ -2,7 +2,7 @@
 
 Standalone TypeScript/Bun package, not a workspace of the enclosing
 `opencode-plugins` monorepo. Use this repository's ESLint, Prettier and tsup scripts,
-not the parent's Turbo, Biome or Changesets commands. Bun requires 1.4.2 or newer.
+not the parent's Turbo, Biome or Changesets commands. Bun requires 1.4.4 or newer.
 Instruction files are versioned project context; package ship-set rules exclude
 them from published artifacts. The default integration branch is `personal/active`.
 

@@ -10,7 +10,7 @@
 > and genuinely risky ones still get blocked or surfaced.
 
 [![OpenCode](https://img.shields.io/badge/OpenCode-%E2%89%A52.2.5-6E56CF)](https://opencode.ai)
-[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-000000)](https://bun.sh)
+[![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.4-000000)](https://bun.sh)
 [![npm](https://img.shields.io/npm/v/opencode-permission-reviewer?color=CB3837)](https://www.npmjs.com/package/opencode-permission-reviewer)
 [![Downloads](https://img.shields.io/npm/dw/opencode-permission-reviewer)](https://www.npmjs.org/package/opencode-permission-reviewer)
 [![License](https://img.shields.io/github/license/Warc0s/opencode-permission-reviewer?color=blue)](./LICENSE)
@@ -47,7 +47,7 @@ the host and configuration.
 
 ### Requirements
 
-- [Bun](https://bun.sh) ≥ 1.4.2 (CI runs 1.4.2)
+- [Bun](https://bun.sh) ≥ 1.4.4 (CI runs 1.4.4)
 - [OpenCode](https://opencode.ai) V2 `>=2.2.5 <3` (**tested with 2.2.5**)
 - `git` on `PATH` (only used for read-only Git-state enrichment; missing git
   degrades gracefully)
@@ -747,7 +747,7 @@ binary, blocked, or truncated evidence) remains a reviewer decision.
 | OpenCode           | `>=2.2.5 <3`     | Declared in `engines.opencode`; verified with **2.2.5**    |
 | `@opencode/plugin` | `>=2.2.5 <3`     | Optional peer dependency                                   |
 | OpenTUI            | `>=0.8.0`        | Optional peers; OpenCode 2.2.5 requires OpenTUI 0.8        |
-| Bun                | `>=1.4.2`        | Declared in `engines.bun`; CI runs **1.4.2**               |
+| Bun                | `>=1.4.4`        | Declared in `engines.bun`; CI runs **1.4.4**               |
 | TUI overlay        | OpenCode V2      | Loaded from the same `plugins` entry as the server         |
 | OS                 | Linux (verified) | Other operating systems require equivalent live validation |
 

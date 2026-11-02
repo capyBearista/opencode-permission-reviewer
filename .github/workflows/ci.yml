@@ -7,13 +7,13 @@ on:
 
 jobs:
   check:
-    name: check (bun 1.4.2)
+    name: check (bun 1.4.4)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - run: bun run check
 
@@ -24,9 +24,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
-      - run: bun run test:coverage
+      - run: bun test --coverage --coverage-reporter lcov --coverage-dir ./coverage
+      # Separate step: a failing test must not hide a coverage regression.
+      - if: ${{ !cancelled() }}
+        run: bun scripts/check-coverage.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -44,7 +47,7 @@ jobs:
           node-version: "22"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - working-directory: benchmarks/permission-reviewer
         run: |
@@ -64,7 +67,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"

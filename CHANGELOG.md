@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2.2.5. Build against `@opencode/plugin` and `@opencode/client` 2.2.5.
 - Register the plugin once, in `opencode.json`. OpenCode 2.2.5 loads the TUI
   half from that entry, so `init` no longer writes `cli.json`.
+- Require Bun 1.4.4 or newer, and run CI on 1.4.4. Earlier Bun releases report
+  lines inside multi-line expressions as covered when they never ran, which
+  hid untested branches from the coverage gate.
 
 ### Fixed
 
