@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Require Bun 1.4.4 or newer, and run CI on 1.4.4. Earlier Bun releases report
   lines inside multi-line expressions as covered when they never ran, which
   hid untested branches from the coverage gate.
+- `@typesafe-ai/sdk` is no longer installed with the plugin. The reviewer only
+  uses its types; the benchmark keeps it as a development dependency.
 
 ### Fixed
 
@@ -60,6 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not a descriptor number), and a redirection without a command, such as
   `{ …; } >&/dev/sda` or `exec >&/dev/sda`. Each of these overwrote a disk
   without tripping the brake.
+
+- Update `zod` to 4.6.7. Versions below 4.6.6 can exhaust memory while
+  validating oversized constrained collections (GHSA-mrhx-c7xc-m3w5).
 
 ## [2.4.0] - 2026-10-02
 

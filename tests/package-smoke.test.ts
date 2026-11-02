@@ -204,7 +204,6 @@ describe("supply-chain surface", () => {
     // change: update this frozen list in the same commit that adds it.
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
       "@opencode/client",
-      "@typesafe-ai/sdk",
       "jsonc-parser",
       "semver",
       "zod",
