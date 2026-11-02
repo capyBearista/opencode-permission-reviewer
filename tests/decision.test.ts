@@ -22,6 +22,18 @@ describe("decision parsing and invariants", () => {
     expect(parseDecision(value)).toBeUndefined()
   })
 
+  test.each([20, 1500])("keeps a script_analysis of %i characters", (length) => {
+    const value = { ...decision("allow"), script_analysis: "x".repeat(length) }
+    expect(parseDecision(value)).toEqual(value)
+  })
+
+  test.each([42, "x".repeat(19), "x".repeat(1501)])(
+    "rejects an out-of-bounds script_analysis %#",
+    (script_analysis) => {
+      expect(parseDecision({ ...decision("allow"), script_analysis })).toBeUndefined()
+    },
+  )
+
   test("critical risk can never be auto-approved", () => {
     const result = enforceDecision(decision("allow", { risk_level: "critical" }), DEFAULT_CONFIG)
     expect(result.kind).toBe("escalate")

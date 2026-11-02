@@ -397,3 +397,40 @@ describe("policy engine - credentialRead condition", () => {
     expect(trace.finalRoute).toBe("deny")
   })
 })
+
+describe("policy engine - privilegeEscalation condition", () => {
+  const escalation: PolicyRule[] = [
+    {
+      id: "priv",
+      source: "builtin",
+      when: { privilegeEscalation: true },
+      effect: "manual",
+      reason: "privilege escalation",
+    },
+  ]
+
+  function escalationCap(value: boolean | "unknown"): CapabilityAssessment {
+    return cap({
+      process: {
+        ...cap().process,
+        privilegeEscalation: {
+          value,
+          source: "static-analysis",
+          confidence: value === true ? "high" : "unknown",
+        },
+      },
+    })
+  }
+
+  test("matches when privilege escalation is observed", () => {
+    expect(evaluatePolicy(escalationCap(true), undefined, config, escalation).finalRoute).toBe(
+      "manual",
+    )
+  })
+
+  test.each([false, "unknown"] as const)("no match when privilege escalation is %p", (value) => {
+    expect(
+      evaluatePolicy(escalationCap(value), undefined, config, escalation).matchedRules,
+    ).toHaveLength(0)
+  })
+})
