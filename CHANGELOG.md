@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- OpenCode V1 support. The V1 `server` entrypoint, V1 TUI, raw reply
+  transport, V1 reviewer backends (chat session and direct Jev routes) and the
+  `@opencode-ai/plugin` dependency are gone. Stay on 2.4.x for OpenCode V1.
+- The root `server.js`, `rpc.js` and `tui.tsx` shims. OpenCode 2.2.5 resolves
+  the package through `exports`.
+- The `ApprovalReviewerRuntime` and `extractPermissionRequest` library exports.
+- `init --host` and `init --tui`, and `--generation` on `doctor`,
+  `config print-effective` and `explain`.
+- The V1 config keys `systemOneFallback` and `escalationReviewer`. Like
+  `model`, they are ignored wherever they appear.
+
+### Changed
+
+- Require OpenCode `>=2.2.5 <3` and OpenTUI 0.8, and verify with OpenCode
+  2.2.5. Build against `@opencode/plugin` and `@opencode/client` 2.2.5.
+- Register the plugin once, in `opencode.json`. OpenCode 2.2.5 loads the TUI
+  half from that entry, so `init` no longer writes `cli.json`.
+- Require Bun 1.4.4 or newer, and run CI on 1.4.4. Earlier Bun releases report
+  lines inside multi-line expressions as covered when they never ran, which
+  hid untested branches from the coverage gate.
+- `@typesafe-ai/sdk` is no longer installed with the plugin. The reviewer only
+  uses its types; the benchmark keeps it as a development dependency.
+
+### Fixed
+
+- The reasoning reviewer uses the model's own default when it does not offer
+  the built-in `medium` variant, instead of failing every review closed. Any
+  other explicitly configured variant the model lacks still fails closed, and
+  the error lists the variants the model offers; an explicit `medium` cannot be
+  told apart from the default and falls back too.
+
+- MCP servers that other plugins add from code, such as
+  `@upstash/context7-opencode`, are removed from the reviewer location. They
+  previously reached it and made every reasoning review fail closed.
+
+- Package script evidence starts from the shell command's `workdir`, resolving
+  relative paths against the session directory, instead of always using the
+  session directory. The `workdir` is followed to its real path, as package
+  managers do, and one that is not an existing directory marks the scripts as
+  unresolved rather than reporting another manifest. Reads stay within the
+  approved evidence roots.
+
+- Ordered Decisions routing advances to the next configured model on HTTP 413
+  or 422 instead of stopping. Those limits are per model: a 16k-context model
+  rejected large evidence, so the review fell back to a manual prompt without
+  trying a larger model further down the list.
+
+- The emergency brake stops these `>&` writes to a block device, which bash
+  runs but the brake missed: `1>&/dev/sda` (bash treats it like
+  `>&/dev/sda`), a quoted or escaped digit such as `'2'>&/dev/sda` (a word,
+  not a descriptor number), and a redirection without a command, such as
+  `{ …; } >&/dev/sda` or `exec >&/dev/sda`. Each of these overwrote a disk
+  without tripping the brake.
+
+- Update `zod` to 4.6.7. Versions below 4.6.6 can exhaust memory while
+  validating oversized constrained collections (GHSA-mrhx-c7xc-m3w5).
+
 ## [2.4.0] - 2026-10-02
 
 ### Added

@@ -7,8 +7,6 @@ export type EvidenceSufficiency = "sufficient" | "partial" | "insufficient" | "u
 export type EscalationMode = "manual" | "deny"
 /** Effective disposition applied to an internal escalate result. */
 export type EscalationDisposition = "manual" | "deny"
-/** Host/plugin generation selecting the corresponding config contract. */
-export type HostGeneration = "v1" | "v2"
 
 export interface ReviewDecision {
   /** Structured-decision schema version. Always 2 for the current schema. */
@@ -128,11 +126,6 @@ export interface EscalationReviewerConfig {
   timeoutMs: number
 }
 
-/** Trusted paid route used only after a free Jev transport/protocol failure. */
-export interface SystemOneFallbackConfig {
-  model: "openrouter/typesafe/jev-1.13"
-}
-
 export interface ReviewerConfig {
   model: string
   variant: string
@@ -140,12 +133,7 @@ export interface ReviewerConfig {
    *  OpenCode's structured-output format (requires provider support); `text`
    *  asks the model to emit JSON in plain text and parses it locally. */
   outputFormat: ReviewerOutputFormat
-  /** Optional reasoning reviewer for valid System One decisions that remain
-   *  uncertain or conflict with deterministic review gates. */
-  escalationReviewer?: EscalationReviewerConfig
-  /** Optional trusted free-Zen fallback, distinct from reasoning escalation. */
-  systemOneFallback?: SystemOneFallbackConfig
-  /** Ordered V2 Decisions routes. Absent from V1-resolved configuration. */
+  /** Ordered Decisions routes. */
   decisionModels?: string[]
   /** V2 reasoning routes; only the first configured entry is active. */
   reasoningModels?: EscalationReviewerConfig[]

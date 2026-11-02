@@ -1,58 +1,36 @@
 import { describe, expect, test } from "bun:test"
 import { resolveActorContext, unknownResolution } from "../src/context/actor-resolver.ts"
 import type { MessageWithParts, PermissionRequest } from "../src/types.ts"
-import type { ClientResponse, OpenCodeClientLike } from "../src/opencode/types.ts"
+import type { ContextReader } from "../src/core/ports.ts"
 
-// --- mock client ------------------------------------------------------------
+// --- mock context reader ----------------------------------------------------
 
 interface SessionFixture {
-  meta?: Record<string, unknown> // returned by session.get; omit to simulate 404
+  meta?: Record<string, unknown> // returned by session(); omit to simulate 404
   messages?: MessageWithParts[]
 }
 
 interface MockOptions {
   sessions?: Record<string, SessionFixture>
-  getUnavailable?: boolean // host client lacks session.get entirely
+  getUnavailable?: boolean // reader cannot fetch session metadata
   messagesUnavailable?: string[] // sessionIDs whose messages fetch should fail
 }
 
-function buildClient(opts: MockOptions = {}): OpenCodeClientLike {
+function buildClient(opts: MockOptions = {}): ContextReader {
   const sessions = opts.sessions ?? {}
   const failing = new Set(opts.messagesUnavailable ?? [])
-  const client: OpenCodeClientLike = {
-    session: {
-      create: async () => ({ data: {} }),
-      messages: async (options: unknown) => {
-        const id = readPathId(options)
-        if (id === undefined || failing.has(id) || !sessions[id]) {
-          return { error: { status: 404 } } as ClientResponse<unknown>
-        }
-        return { data: sessions[id]!.messages ?? [] }
-      },
-      prompt: async () => ({ data: {} }),
+  return {
+    messages: async (sessionID) => {
+      if (failing.has(sessionID) || !sessions[sessionID]) throw new Error("session.messages 404")
+      return sessions[sessionID]!.messages ?? []
     },
-    tool: { ids: async () => ({ data: [] }) },
+    session: async (sessionID) => {
+      if (opts.getUnavailable) return undefined
+      const meta = sessions[sessionID]?.meta
+      if (meta === undefined) throw new Error("session.get 404")
+      return meta
+    },
   }
-  if (!opts.getUnavailable) {
-    client.session.get = async (options: unknown) => {
-      const id = readPathId(options)
-      if (id === undefined || !sessions[id] || sessions[id]!.meta === undefined) {
-        return { error: { status: 404 } } as ClientResponse<unknown>
-      }
-      return { data: sessions[id]!.meta }
-    }
-  }
-  return client
-}
-
-function readPathId(options: unknown): string | undefined {
-  if (typeof options !== "object" || options === null) return undefined
-  const path = (options as Record<string, unknown>).path
-  if (typeof path === "object" && path !== null) {
-    const id = (path as Record<string, unknown>).id
-    return typeof id === "string" ? id : undefined
-  }
-  return undefined
 }
 
 function request(
@@ -499,20 +477,13 @@ describe("actor resolver — OpenCode V2 native delegation", () => {
 
 describe("actor resolver — resilience", () => {
   test("resolver failure yields unknown actor and review still proceeds", async () => {
-    const client: OpenCodeClientLike = {
-      session: {
-        create: async () => {
-          throw new Error("boom")
-        },
-        messages: async () => {
-          throw new Error("boom")
-        },
-        get: async () => {
-          throw new Error("boom")
-        },
-        prompt: async () => ({ data: {} }),
+    const client: ContextReader = {
+      messages: async () => {
+        throw new Error("boom")
       },
-      tool: { ids: async () => ({ data: [] }) },
+      session: async () => {
+        throw new Error("boom")
+      },
     }
     const res = await resolveActorContext(
       request("ses_current", { messageID: "m", callID: "c" }),

@@ -22,6 +22,18 @@ describe("decision parsing and invariants", () => {
     expect(parseDecision(value)).toBeUndefined()
   })
 
+  test.each([20, 1500])("keeps a script_analysis of %i characters", (length) => {
+    const value = { ...decision("allow"), script_analysis: "x".repeat(length) }
+    expect(parseDecision(value)).toEqual(value)
+  })
+
+  test.each([42, "x".repeat(19), "x".repeat(1501)])(
+    "rejects an out-of-bounds script_analysis %#",
+    (script_analysis) => {
+      expect(parseDecision({ ...decision("allow"), script_analysis })).toBeUndefined()
+    },
+  )
+
   test("critical risk can never be auto-approved", () => {
     const result = enforceDecision(decision("allow", { risk_level: "critical" }), DEFAULT_CONFIG)
     expect(result.kind).toBe("escalate")
@@ -197,29 +209,6 @@ describe("configuration", () => {
     // Invalid values fall back to the safe structured-output default.
     expect(resolveConfig({ outputFormat: "bogus" }).outputFormat).toBe("json_schema")
     expect(resolveConfig({ outputFormat: 42 }).outputFormat).toBe("json_schema")
-  })
-
-  test("resolves an optional reasoning escalation reviewer", () => {
-    const value = resolveConfig({
-      escalationReviewer: {
-        model: "openai/gpt-5.6-luna",
-        variant: "high",
-        outputFormat: "text",
-        timeoutMs: 30_000,
-      },
-    })
-    expect(value.escalationReviewer).toEqual({
-      model: "openai/gpt-5.6-luna",
-      variant: "high",
-      outputFormat: "text",
-      timeoutMs: 30_000,
-    })
-    expect(resolveConfig({ escalationReviewer: { model: "invalid" } }).escalationReviewer).toBe(
-      undefined,
-    )
-    expect(
-      resolveConfig({ escalationReviewer: { model: "typesafe-ai/jev-1.13.0" } }).escalationReviewer,
-    ).toBeUndefined()
   })
 
   test("bounds unsafe numeric options", () => {

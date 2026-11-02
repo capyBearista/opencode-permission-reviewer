@@ -14,6 +14,7 @@ export type DecisionsAttemptOutcome =
   | "access-unavailable"
   | "endpoint-unavailable"
   | "model-not-found"
+  | "model-rejected"
   | "http-retryable"
   | "invalid-request"
   | "unexpected-http-status"
@@ -160,7 +161,19 @@ function httpFailure(error: DecisionsTransportError, nativeModel: string): Failu
       reason: `Decisions provider returned HTTP ${status}.`,
     }
   }
-  if (status === 400 || status === 413 || status === 422) {
+  // Size and validation limits are per model (e.g. a 16k context window), so a
+  // model with larger limits can still accept the same request.
+  if (status === 413 || status === 422) {
+    return {
+      outcome: "model-rejected",
+      category: "reviewer-failure",
+      action: "next-model",
+      operational: true,
+      httpStatus: status,
+      reason: `Decisions model rejected the request (HTTP ${status}).`,
+    }
+  }
+  if (status === 400) {
     return {
       outcome: "invalid-request",
       category: "reviewer-failure",

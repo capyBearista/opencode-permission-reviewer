@@ -1,7 +1,7 @@
 {
   "name": "opencode-permission-reviewer",
   "version": "2.4.0",
-  "description": "Policy-aware permission reviewer for OpenCode V1 and V2",
+  "description": "Policy-aware permission reviewer for OpenCode V2",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,9 +33,6 @@
     "opencode-permission-reviewer": "./dist/explain.js"
   },
   "files": [
-    "server.js",
-    "rpc.js",
-    "tui.tsx",
     "dist/",
     "README.md",
     "MIGRATION.md",
@@ -68,13 +65,13 @@
     "bun"
   ],
   "engines": {
-    "bun": ">=1.4.2",
-    "opencode": ">=1.18.29 <2 || >=2.0.3 <3"
+    "bun": ">=1.4.4",
+    "opencode": ">=2.2.5 <3"
   },
   "peerDependencies": {
-    "@opencode/plugin": ">=2.0.3 <3",
-    "@opentui/core": ">=0.5.11",
-    "@opentui/solid": ">=0.5.11",
+    "@opencode/plugin": ">=2.2.5 <3",
+    "@opentui/core": ">=0.8.0",
+    "@opentui/solid": ">=0.8.0",
     "solid-js": ">=1.9.12"
   },
   "peerDependenciesMeta": {
@@ -92,22 +89,22 @@
     }
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.0",
-    "@opencode-ai/plugin": "1.18.34",
-    "@opencode/plugin": "2.0.21",
-    "@opentui/core": "0.5.11",
-    "@opentui/solid": "0.5.11",
-    "@types/bun": "^1.3.0",
+    "@eslint/js": "^10.0.1",
+    "@opencode/plugin": "2.2.5",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@types/bun": "^1.4.4",
     "@types/semver": "7.8.0",
-    "eslint": "^10.8.0",
-    "eslint-config-prettier": "^10.0.0",
-    "globals": "^17.9.0",
+    "@typesafe-ai/sdk": "0.6.0",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.14.0",
     "jiti": "^2.7.0",
-    "prettier": "^3.0.0",
-    "solid-js": "1.9.12",
-    "tsup": "^8.0.0",
+    "prettier": "^3.9.10",
+    "solid-js": "1.9.18",
+    "tsup": "^8.5.1",
     "typescript": "6.0.3",
-    "typescript-eslint": "^8.0.0"
+    "typescript-eslint": "^8.72.1"
   },
   "overrides": {
     "@babel/core": "7.29.7",
@@ -126,10 +123,9 @@
     "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@opencode/client": "2.0.21",
-    "@typesafe-ai/sdk": "0.6.0",
+    "@opencode/client": "2.2.5",
     "jsonc-parser": "3.3.1",
-    "semver": "7.8.5",
-    "zod": "4.6.5"
+    "semver": "7.8.6",
+    "zod": "4.6.7"
   }
 }

@@ -2,7 +2,7 @@
 
 Standalone TypeScript/Bun package, not a workspace of the enclosing
 `opencode-plugins` monorepo. Use this repository's ESLint, Prettier and tsup scripts,
-not the parent's Turbo, Biome or Changesets commands. Bun requires 1.4.2 or newer.
+not the parent's Turbo, Biome or Changesets commands. Bun requires 1.4.4 or newer.
 Instruction files are versioned project context; package ship-set rules exclude
 them from published artifacts. The default integration branch is `personal/active`.
 
@@ -21,7 +21,7 @@ Run from this repository root:
 
 `bun run build` runs both tsup and `scripts/copy-tui.ts`; tsup alone does not
 produce the complete package. Coverage requires 90% overall lines and 100% in the
-eight explicitly listed safety-critical modules.
+six explicitly listed safety-critical modules.
 <!-- bootstrap:managed:end core-commands -->
 
 ## Non-obvious guardrails

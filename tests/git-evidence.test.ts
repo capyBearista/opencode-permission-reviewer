@@ -539,3 +539,16 @@ console.log((await enrichGitEvidence(${JSON.stringify(input)}, process.cwd(), 80
     expect(result.text).not.toContain("defaultRemotes")
   }, 30_000)
 })
+
+test("reports Git state as unavailable when git status fails inside the repository", async () => {
+  const directory = await repository()
+  await writeFile(join(directory, ".git", "index"), "corrupt")
+  const command = "git checkout HEAD -- target.py"
+  const result = await enrichGitEvidence(
+    request({ patterns: [command], metadata: { command } }),
+    directory,
+    8_000,
+  )
+  expect(result.text).toContain('"status": "unavailable"')
+  expect(result.text).not.toContain('"branch": "staging"')
+})

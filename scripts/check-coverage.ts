@@ -13,6 +13,7 @@
  * Run via `bun run test:coverage`.
  */
 import { readFileSync, existsSync } from "node:fs"
+import { isAbsolute } from "node:path"
 
 const LCOV_PATH = "coverage/lcov.info"
 const MIN_GLOBAL_LINE_PCT = 90
@@ -25,8 +26,6 @@ const CRITICAL_MODULES: ReadonlySet<string> = new Set([
   "src/policy.ts",
   "src/policy/policy-engine.ts",
   "src/emergency-brake.ts",
-  "src/opencode/event-normalizer.ts",
-  "src/opencode/reply-transport.ts",
   "src/redact.ts",
 ])
 
@@ -71,7 +70,9 @@ function pct(hit: number, found: number): number {
 }
 
 function main(): void {
-  const files = parseLcov(LCOV_PATH)
+  // Only repository files count. Bun also reports modules loaded from outside
+  // the checkout (generated temp plugins, preloads), which would skew the totals.
+  const files = parseLcov(LCOV_PATH).filter((f) => !f.path.startsWith("../") && !isAbsolute(f.path))
   const failures: string[] = []
 
   // Global line coverage.

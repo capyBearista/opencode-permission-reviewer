@@ -45,42 +45,6 @@ describe("explain CLI", () => {
     expect(parsed.policyTrace.finalRoute).toBe("review")
   })
 
-  test("omitted generation preserves V1 explain config and ignores V2 routing fields", async () => {
-    const home = mkdtempSync(join(tmpdir(), "reviewer-explain-v1-"))
-    const project = mkdtempSync(join(tmpdir(), "reviewer-explain-project-v1-"))
-    const configDirectory = join(home, ".config", "opencode")
-    mkdirSync(configDirectory, { recursive: true })
-    writeFileSync(
-      join(configDirectory, "permission-reviewer.jsonc"),
-      JSON.stringify({
-        model: "openrouter/acme/v1-diagnostic-model",
-        decisionModels: [],
-        reasoningModels: [{ model: "https://invalid.example/model" }],
-      }),
-    )
-    try {
-      const proc = Bun.spawn({
-        cmd: ["bun", "run", "src/cli/explain.ts", "--project", project],
-        cwd: import.meta.dir + "/..",
-        env: { ...process.env, HOME: home },
-        stdin: new TextEncoder().encode(
-          JSON.stringify({ permission: "bash", metadata: { command: "printf ok" } }),
-        ),
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-      const exitCode = await proc.exited
-      const stdout = await new Response(proc.stdout).text()
-      expect(exitCode).toBe(0)
-      const result = JSON.parse(stdout)
-      expect(result.model).toBe("openrouter/acme/v1-diagnostic-model")
-      expect(result).not.toHaveProperty("decisionModels")
-    } finally {
-      rmSync(home, { recursive: true })
-      rmSync(project, { recursive: true })
-    }
-  })
-
   test("V2 explain displays only the first configured Decisions model", async () => {
     const home = mkdtempSync(join(tmpdir(), "reviewer-explain-v2-"))
     const configDirectory = join(home, ".config", "opencode")
@@ -97,7 +61,7 @@ describe("explain CLI", () => {
     )
     try {
       const proc = Bun.spawn({
-        cmd: ["bun", "run", "src/cli/explain.ts", "--generation", "v2"],
+        cmd: ["bun", "run", "src/cli/explain.ts"],
         cwd: import.meta.dir + "/..",
         env: { ...process.env, HOME: home },
         stdin: new TextEncoder().encode(
@@ -132,7 +96,7 @@ describe("explain CLI", () => {
     )
     try {
       const proc = Bun.spawn({
-        cmd: ["bun", "run", "src/cli/explain.ts", "--generation", "v2"],
+        cmd: ["bun", "run", "src/cli/explain.ts"],
         cwd: import.meta.dir + "/..",
         env: { ...process.env, HOME: home },
         stdin: new TextEncoder().encode(
@@ -176,14 +140,7 @@ describe("explain CLI", () => {
       output += `${args.join(" ")}\n`
     }
     try {
-      const exitCode = await runCli([
-        "explain",
-        "--generation",
-        "v2",
-        "--defaults",
-        "--event",
-        event,
-      ])
+      const exitCode = await runCli(["explain", "--defaults", "--event", event])
       expect(exitCode).toBe(0)
       expect(fetchCalls).toBe(0)
       expect(JSON.parse(output).model).toBe("opencode/jev-1.13-free")
@@ -192,20 +149,6 @@ describe("explain CLI", () => {
       console.log = originalLog
       rmSync(directory, { recursive: true })
     }
-  })
-
-  test("rejects unsupported explain generations", async () => {
-    const proc = Bun.spawn({
-      cmd: ["bun", "run", "src/cli/explain.ts", "--generation", "automatic"],
-      cwd: import.meta.dir + "/..",
-      stdin: new TextEncoder().encode("{}"),
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    const exitCode = await proc.exited
-    const stderr = await new Response(proc.stderr).text()
-    expect(exitCode).toBe(2)
-    expect(stderr).toContain('--generation must be "v1" or "v2"')
   })
 
   test("exits 2 on invalid JSON", async () => {

@@ -4,7 +4,6 @@
     {
       "package": "/absolute/path/to/opencode-permission-reviewer",
       "options": {
-        "model": "openai/gpt-6-luna",
         "variant": "medium",
         "timeoutMs": 180000,
         "confidenceThreshold": 0.7,

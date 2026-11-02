@@ -25,7 +25,7 @@ describe("V2 Decisions configuration", () => {
   afterAll(() => setGlobalConfigPathForTests(undefined))
 
   test("V2 defaults to the free Decisions route and one Luna reasoning route", () => {
-    const config = loadResolvedConfig(undefined, undefined, "trusted", "v2")
+    const config = loadResolvedConfig(undefined, undefined, "trusted")
 
     expect(config.decisionModels).toEqual(DEFAULT_DECISION_MODELS)
     expect(config.reasoningModels).toEqual([DEFAULT_REASONING_MODEL])
@@ -47,7 +47,6 @@ describe("V2 Decisions configuration", () => {
       },
       undefined,
       "trusted",
-      "v2",
     )
 
     expect(config.decisionModels).toEqual([
@@ -83,7 +82,7 @@ describe("V2 Decisions configuration", () => {
     ]
 
     for (const decisionModels of invalidDecisionModels) {
-      const config = loadResolvedConfig({ decisionModels }, undefined, "trusted", "v2")
+      const config = loadResolvedConfig({ decisionModels }, undefined, "trusted")
       expect(config.decisionModels).toEqual([])
       expect(config.configDegraded).toContain(
         "inline config decisionModels is invalid and was ignored",
@@ -98,7 +97,7 @@ describe("V2 Decisions configuration", () => {
     ]
 
     for (const reasoningModels of invalidReasoningModels) {
-      const config = loadResolvedConfig({ reasoningModels }, undefined, "trusted", "v2")
+      const config = loadResolvedConfig({ reasoningModels }, undefined, "trusted")
       expect(config.reasoningModels).toEqual([])
       expect(config.configDegraded).toContain(
         "inline config reasoningModels is invalid and was ignored",
@@ -115,7 +114,7 @@ describe("V2 Decisions configuration", () => {
       "openrouter/x-ai/grok-3",
       "openrouter/acme/new-model-v9:free",
     ]
-    const config = loadResolvedConfig({ decisionModels: models }, undefined, "trusted", "v2")
+    const config = loadResolvedConfig({ decisionModels: models }, undefined, "trusted")
     expect(config.decisionModels).toEqual(models)
     expect(config.configDegraded).toBeUndefined()
 
@@ -126,7 +125,7 @@ describe("V2 Decisions configuration", () => {
       "openrouter/acme/model?endpoint=https://evil.test",
       "opencode/jev-1.13",
     ]) {
-      const invalid = loadResolvedConfig({ decisionModels: [model] }, undefined, "trusted", "v2")
+      const invalid = loadResolvedConfig({ decisionModels: [model] }, undefined, "trusted")
       expect(invalid.decisionModels).toEqual([])
       expect(invalid.configDegraded).toContain(
         "inline config decisionModels is invalid and was ignored",
@@ -146,19 +145,19 @@ describe("V2 Decisions configuration", () => {
       mkdirSync(join(directory, ".opencode"), { recursive: true })
       writeFileSync(projectConfigPath(directory), JSON.stringify(projectConfig))
 
-      const projectOnly = loadResolvedConfig(undefined, directory, "trusted", "v2")
+      const projectOnly = loadResolvedConfig(undefined, directory, "trusted")
       expect(projectOnly.decisionModels).toEqual(DEFAULT_DECISION_MODELS)
       expect(projectOnly.reasoningModels).toEqual([DEFAULT_REASONING_MODEL])
       expect(projectOnly.decisionMaxAttempts).toBe(2)
       expect(projectOnly.decisionAttemptTimeoutMs).toBe(10_000)
 
-      const trusted = loadResolvedConfig(projectConfig, directory, "trusted", "v2")
+      const trusted = loadResolvedConfig(projectConfig, directory, "trusted")
       expect(trusted.decisionModels).toEqual(projectConfig.decisionModels)
       expect(trusted.reasoningModels?.[0]?.model).toBe("project/model")
       expect(trusted.decisionMaxAttempts).toBe(5)
       expect(trusted.decisionAttemptTimeoutMs).toBe(60_000)
 
-      const unknown = loadResolvedConfig(projectConfig, directory, "unknown", "v2")
+      const unknown = loadResolvedConfig(projectConfig, directory, "unknown")
       expect(unknown.decisionModels).toEqual(DEFAULT_DECISION_MODELS)
       expect(unknown.reasoningModels).toEqual([DEFAULT_REASONING_MODEL])
       expect(unknown.decisionMaxAttempts).toBe(2)
@@ -168,19 +167,7 @@ describe("V2 Decisions configuration", () => {
     }
   })
 
-  test("V1 ignores malformed V2 keys and V2 does not migrate obsolete legacy routes", () => {
-    const v1 = loadResolvedConfig({
-      decisionModels: [],
-      reasoningModels: [{ model: "https://invalid.test" }],
-      decisionMaxAttempts: 99,
-      decisionAttemptTimeoutMs: 0,
-    })
-    expect(v1.decisionModels).toBeUndefined()
-    expect(v1.reasoningModels).toBeUndefined()
-    expect(v1.decisionMaxAttempts).toBeUndefined()
-    expect(v1.decisionAttemptTimeoutMs).toBeUndefined()
-    expect(v1.configDegraded).toBeUndefined()
-
+  test("obsolete legacy route keys are ignored, not migrated", () => {
     const v2 = loadResolvedConfig(
       {
         model: "openrouter/legacy/model",
@@ -189,19 +176,18 @@ describe("V2 Decisions configuration", () => {
       },
       undefined,
       "trusted",
-      "v2",
     )
     expect(v2.decisionModels).toEqual(DEFAULT_DECISION_MODELS)
     expect(v2.reasoningModels).toEqual([DEFAULT_REASONING_MODEL])
     expect(v2.model).toBe(DEFAULT_CONFIG.model)
-    expect(v2.systemOneFallback).toBeUndefined()
-    expect(v2.escalationReviewer).toBeUndefined()
+    expect("systemOneFallback" in v2).toBe(false)
+    expect("escalationReviewer" in v2).toBe(false)
     expect(v2.configDegraded).toBeUndefined()
   })
 
   test("invalid trusted resource values degrade and use safe numeric defaults", () => {
     for (const decisionMaxAttempts of [0, 6, 1.5, "3"]) {
-      const config = loadResolvedConfig({ decisionMaxAttempts }, undefined, "trusted", "v2")
+      const config = loadResolvedConfig({ decisionMaxAttempts }, undefined, "trusted")
       expect(config.decisionMaxAttempts).toBe(2)
       expect(config.configDegraded).toContain(
         "inline config decisionMaxAttempts is invalid and was ignored",
@@ -209,7 +195,7 @@ describe("V2 Decisions configuration", () => {
     }
 
     for (const decisionAttemptTimeoutMs of [999, 60_001, 10_000.5, "10000"]) {
-      const config = loadResolvedConfig({ decisionAttemptTimeoutMs }, undefined, "trusted", "v2")
+      const config = loadResolvedConfig({ decisionAttemptTimeoutMs }, undefined, "trusted")
       expect(config.decisionAttemptTimeoutMs).toBe(10_000)
       expect(config.configDegraded).toContain(
         "inline config decisionAttemptTimeoutMs is invalid and was ignored",
@@ -220,7 +206,6 @@ describe("V2 Decisions configuration", () => {
       { decisionMaxAttempts: 1, decisionAttemptTimeoutMs: 1_000 },
       undefined,
       "trusted",
-      "v2",
     )
     expect(validMinimum.decisionMaxAttempts).toBe(1)
     expect(validMinimum.decisionAttemptTimeoutMs).toBe(1_000)
@@ -228,7 +213,6 @@ describe("V2 Decisions configuration", () => {
       { decisionMaxAttempts: 5, decisionAttemptTimeoutMs: 60_000 },
       undefined,
       "trusted",
-      "v2",
     )
     expect(validMaximum.decisionMaxAttempts).toBe(5)
     expect(validMaximum.decisionAttemptTimeoutMs).toBe(60_000)
@@ -243,7 +227,6 @@ describe("V2 Decisions configuration", () => {
       },
       undefined,
       "trusted",
-      "v2",
     )
 
     expect(reviewBudgetMs(config)).toBe(DEFAULT_CONFIG.timeoutMs * 2 + 60_000)

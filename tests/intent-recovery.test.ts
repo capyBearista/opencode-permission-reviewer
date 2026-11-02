@@ -7,10 +7,9 @@ import {
   selectIntentMessages,
 } from "../src/context.ts"
 import { assembleEvidence } from "../src/context/evidence-assembler.ts"
-import { createV1ContextReader } from "../src/opencode/v1/context-reader.ts"
 import { createV2ContextReader } from "../src/opencode/v2/context-reader.ts"
 import type { MessageWithParts } from "../src/types.ts"
-import { MockClient, request } from "./helpers.ts"
+import { request } from "./helpers.ts"
 
 const user = (id: string, text: string, created = 1): MessageWithParts => ({
   info: { id, role: "user", time: { created } },
@@ -34,84 +33,6 @@ test("literal intent selection keeps later restrictions and excludes synthetic c
     "restriction",
     "repeat-later",
   ])
-})
-
-test("legacy reader recovers authorization beyond the transcript and shares concurrent reads", async () => {
-  const client = new MockClient()
-  const messages = [
-    user("goal", "Fix the bug and run the tests."),
-    ...Array.from({ length: 420 }, (_, i) => ({
-      info: { id: `step_${i}`, role: "assistant" },
-      parts: [{ type: "text", text: "Operational output" }],
-    })),
-    user("latest", "Continue", 2),
-  ]
-  client.messagesImpl = async (input) => {
-    const limit = (input as { query: { limit: number } }).query.limit
-    await Promise.resolve()
-    return { data: messages.slice(-limit) }
-  }
-  const reader = createV1ContextReader(client)
-  const [recent, intent] = await Promise.all([
-    reader.messages("session", "/workspace", 200),
-    reader.intentMessages!("session", "/workspace", 8),
-  ])
-  expect(JSON.stringify(recent)).not.toContain("Fix the bug")
-  expect(JSON.stringify(intent)).toContain("Fix the bug and run the tests.")
-  expect(
-    client.messageQueries.map((query) => (query as { query: { limit: number } }).query.limit),
-  ).toEqual([200, 400, 800])
-  messages.push(user("new", "Stop, do not run tests.", 3))
-  expect(JSON.stringify(await reader.intentMessages!("session", "/workspace", 8))).toContain(
-    "Stop, do not run tests.",
-  )
-})
-
-test("legacy recovery stops at its scan bound instead of reading an unbounded session", async () => {
-  const client = new MockClient()
-  client.messagesImpl = async (input) => ({
-    data: Array.from({ length: (input as { query: { limit: number } }).query.limit }, (_, i) => ({
-      info: { id: `step_${i}`, role: "assistant" },
-      parts: [],
-    })),
-  })
-  expect(await createV1ContextReader(client).intentMessages!("session", "/workspace", 8)).toEqual(
-    [],
-  )
-  expect(
-    client.messageQueries.map((query) => (query as { query: { limit: number } }).query.limit),
-  ).toEqual([200, 400, 800, 1600, 2000])
-})
-
-test("legacy fork history predating session creation cannot authorize a new action", async () => {
-  const client = new MockClient()
-  client.session.get = async () => ({ data: { id: "fork", time: { created: 100 } } })
-  client.messageData = [
-    user("inherited", "Push everything", 50),
-    user("current", "Inspect only", 150),
-  ]
-  const intent = (await createV1ContextReader(client).intentMessages!(
-    "fork",
-    "/workspace",
-    8,
-  )) as MessageWithParts[]
-  expect(intent.map((message) => message.info.id)).toEqual(["current"])
-})
-
-test("legacy message failures are observed while session metadata is still pending", async () => {
-  const client = new MockClient()
-  let release!: (value: { data: { id: string } }) => void
-  client.session.get = () => new Promise((resolve) => (release = resolve))
-  client.messagesImpl = async () => {
-    throw new Error("Literal history unavailable")
-  }
-  try {
-    await expect(
-      createV1ContextReader(client).intentMessages!("session", "/workspace", 8),
-    ).rejects.toThrow("Literal history unavailable")
-  } finally {
-    release({ data: { id: "session" } })
-  }
 })
 
 test("native reader obtains literal history independently of compacted operational context", async () => {

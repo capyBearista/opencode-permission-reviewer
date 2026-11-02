@@ -1,14 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { resolveConfig, isSystemOneReviewerModel } from "../src/config.ts"
-import { ReviewAttempt } from "../src/core/review-attempt.ts"
-import { createSystemOneInvoker, SystemOneReviewerBackend } from "../src/system-one/backend.ts"
 import {
   enforceParsedSystemOneReview,
   enforceSystemOneDecision,
   parseSystemOneReview,
   SYSTEM_ONE_QUESTIONS,
 } from "../src/system-one/review.ts"
-import type { ReviewEnvelope, ReviewExecutionResult } from "../src/types.ts"
 
 const choice = (selected: string, keys: string[], confidence = 1) => {
   const remainder = (1 - confidence) / (keys.length - 1)
@@ -61,36 +58,6 @@ function response(overrides: Record<string, unknown> = {}) {
   return { model: "jev-1.13-free", answers, usage: { input_tokens: 10, output_tokens: 0 } }
 }
 
-function envelope(): ReviewEnvelope {
-  return {
-    request: {
-      id: "req_system_one",
-      sessionID: "ses_system_one",
-      permission: "bash",
-      patterns: ["printf ok"],
-      metadata: { command: "printf ok" },
-      always: [],
-    },
-    directory: "/workspace",
-    worktree: "/workspace",
-    transcript: "USER: Run the harmless marker command.",
-    intentHistory: "Run the harmless marker command.",
-    enrichment: "",
-    sshAudit: [],
-  }
-}
-
-async function withSyntheticCommandCodeKey<T>(run: () => Promise<T>): Promise<T> {
-  const previous = process.env.CMD_API_KEY
-  process.env.CMD_API_KEY = "synthetic-commandcode-key"
-  try {
-    return await run()
-  } finally {
-    if (previous === undefined) delete process.env.CMD_API_KEY
-    else process.env.CMD_API_KEY = previous
-  }
-}
-
 describe("System One reviewer", () => {
   test("selects only known Jev providers and model IDs", () => {
     expect(isSystemOneReviewerModel("opencode/jev-1.13-free")).toBe(true)
@@ -103,211 +70,9 @@ describe("System One reviewer", () => {
     expect(isSystemOneReviewerModel("opencode/not-jev")).toBe(false)
   })
 
-  test("routes Zen, TypeSafe, and Command Code through their System One endpoints", async () => {
-    const providers = [
-      {
-        model: "opencode/jev-1.13",
-        returnedModel: "jev-1.13",
-        keyName: "OPENCODE_API_KEY",
-        url: "https://opencode.ai/zen/v1/systemone",
-      },
-      {
-        model: "typesafe-ai/jev-1.13.0",
-        returnedModel: "jev-1.13.0",
-        keyName: "TYPESAFE_API_KEY",
-        url: "https://api.typesafe.ai/v1/systemone",
-      },
-      {
-        model: "commandcode/typesafe/jev",
-        returnedModel: "typesafe/jev",
-        keyName: "CMD_API_KEY",
-        url: "https://api.commandcode.ai/provider/v1/systemone",
-      },
-    ] as const
-    const previousBaseURL = process.env.TYPESAFE_BASE_URL
-    delete process.env.TYPESAFE_BASE_URL
-    try {
-      for (const provider of providers) {
-        const previousKey = process.env[provider.keyName]
-        const apiKey = `synthetic-${provider.keyName.toLowerCase()}`
-        process.env[provider.keyName] = apiKey
-        try {
-          const config = resolveConfig({ model: provider.model })
-          const state = {
-            trustedPolicy: { reviewer: "policy", tenant: "tenant" },
-            untrustedEvidence: "evidence",
-          }
-          const calls: Array<{ url: string; init: RequestInit }> = []
-          const invoke = createSystemOneInvoker(config, async (url, init) => {
-            calls.push({ url: String(url), init: init ?? {} })
-            return Response.json({ ...response(), model: provider.returnedModel })
-          })
-          const raw = await invoke(state, new AbortController().signal)
-          expect(calls).toHaveLength(1)
-          expect(calls[0]?.url).toBe(provider.url)
-          expect(calls[0]?.init.method).toBe("POST")
-          expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe(`Bearer ${apiKey}`)
-          expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
-            model: provider.model.slice(provider.model.indexOf("/") + 1),
-            state,
-            questions: SYSTEM_ONE_QUESTIONS,
-          })
-          expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
-        } finally {
-          if (previousKey === undefined) delete process.env[provider.keyName]
-          else process.env[provider.keyName] = previousKey
-        }
-      }
-    } finally {
-      if (previousBaseURL === undefined) delete process.env.TYPESAFE_BASE_URL
-      else process.env.TYPESAFE_BASE_URL = previousBaseURL
-    }
-  })
-
-  test("routes the free Zen promotion anonymously with no API key", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    const calls: Array<{ url: string; init: RequestInit }> = []
-    const invoke = createSystemOneInvoker(config, async (url, init) => {
-      calls.push({ url: String(url), init: init ?? {} })
-      return Response.json(response())
-    })
-    const state = {
-      trustedPolicy: { reviewer: "trusted", tenant: "tenant" },
-      untrustedEvidence: "read README",
-    }
-    const raw = await invoke(state, new AbortController().signal)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.url).toBe("https://opencode.ai/zen/v1/systemone")
-    expect(new Headers(calls[0]?.init.headers).has("authorization")).toBe(false)
-    expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
-      model: "jev-1.13-free",
-      state,
-      questions: SYSTEM_ONE_QUESTIONS,
-    })
-    expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
-  })
-
-  test("paid OpenRouter uses the supplied native key and precise model ID", async () => {
-    const config = resolveConfig({ model: "openrouter/typesafe/jev-1.13" })
-    const calls: Array<{ url: string; init: RequestInit }> = []
-    const invoke = createSystemOneInvoker(
-      config,
-      async (url, init) => {
-        calls.push({ url: String(url), init: init ?? {} })
-        return Response.json({ ...response(), model: "typesafe/jev-1.13-20260917" })
-      },
-      { apiKey: "synthetic-native-openrouter-key", disableRetries: true },
-    )
-    const raw = await invoke(
-      { trustedPolicy: { reviewer: "trusted", tenant: "tenant" }, untrustedEvidence: "read" },
-      new AbortController().signal,
-    )
-    expect(calls).toHaveLength(1)
-    expect(calls[0]?.url).toBe("https://openrouter.ai/api/v1/systemone")
-    expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe(
-      "Bearer synthetic-native-openrouter-key",
-    )
-    expect(JSON.parse(String(calls[0]?.init.body)).model).toBe("jev-1.13")
-    expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
-    expect(
-      parseSystemOneReview({ ...(raw as Record<string, unknown>), model: "jev-1.13-free" }, config),
-    ).toBeUndefined()
-  })
-
   test("rejects an unexpected returned model from Command Code", () => {
-    const config = resolveConfig({ model: "commandcode/typesafe/jev" })
+    const config = { ...resolveConfig(undefined), model: "commandcode/typesafe/jev" }
     expect(parseSystemOneReview({ ...response(), model: "jev-1.13" }, config)).toBeUndefined()
-  })
-
-  test("does not borrow a TypeSafe key for a Command Code request", () => {
-    const commandKey = process.env.CMD_API_KEY
-    const typesafeKey = process.env.TYPESAFE_API_KEY
-    delete process.env.CMD_API_KEY
-    process.env.TYPESAFE_API_KEY = "synthetic-typesafe-key"
-    try {
-      expect(() =>
-        createSystemOneInvoker(resolveConfig({ model: "commandcode/typesafe/jev" })),
-      ).toThrow(/Missing CMD_API_KEY/)
-    } finally {
-      if (commandKey === undefined) delete process.env.CMD_API_KEY
-      else process.env.CMD_API_KEY = commandKey
-      if (typesafeKey === undefined) delete process.env.TYPESAFE_API_KEY
-      else process.env.TYPESAFE_API_KEY = typesafeKey
-    }
-  })
-
-  test("recovers from two temporary 503 responses with one valid Jev decision", async () => {
-    await withSyntheticCommandCodeKey(async () => {
-      const config = resolveConfig({ model: "commandcode/typesafe/jev" })
-      const state = {
-        trustedPolicy: { reviewer: "policy", tenant: "tenant" },
-        untrustedEvidence: "synthetic evidence",
-      }
-      let calls = 0
-      const invoke = createSystemOneInvoker(config, async () => {
-        calls++
-        return calls < 3
-          ? Response.json(
-              { error: { message: "Upstream temporarily unavailable" } },
-              { status: 503 },
-            )
-          : Response.json({ ...response(), model: "typesafe/jev" })
-      })
-      const raw = await invoke(state, new AbortController().signal)
-      expect(calls).toBe(3)
-      expect(parseSystemOneReview(raw, config)?.decision.outcome).toBe("allow")
-    })
-  }, 10_000)
-
-  test("keeps an exhausted 503 fail-closed and does not retry authentication failures", async () => {
-    await withSyntheticCommandCodeKey(async () => {
-      const config = resolveConfig({ model: "commandcode/typesafe/jev", escalationMode: "deny" })
-      let calls = 0
-      const failed = createSystemOneInvoker(config, async () => {
-        calls++
-        return Response.json(
-          { error: { message: "Upstream temporarily unavailable" } },
-          { status: 503 },
-        )
-      })
-      const backend = new SystemOneReviewerBackend(config, undefined, undefined, failed)
-      const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-      expect(calls).toBe(3)
-      expect(result.kind).toBe("deny")
-      expect(result.decisionSource).toBe("failure-safe")
-
-      calls = 0
-      const unauthorized = createSystemOneInvoker(config, async () => {
-        calls++
-        return Response.json({ error: { message: "Invalid API key" } }, { status: 401 })
-      })
-      await expect(
-        unauthorized(
-          { trustedPolicy: { reviewer: "policy", tenant: "tenant" }, untrustedEvidence: "" },
-          new AbortController().signal,
-        ),
-      ).rejects.toMatchObject({ status: 401 })
-      expect(calls).toBe(1)
-    })
-  }, 10_000)
-
-  test("cancellation during a 503 backoff prevents another request", async () => {
-    await withSyntheticCommandCodeKey(async () => {
-      const config = resolveConfig({ model: "commandcode/typesafe/jev" })
-      let calls = 0
-      const invoke = createSystemOneInvoker(config, async () => {
-        calls++
-        return Response.json({ error: { message: "Unavailable" } }, { status: 503 })
-      })
-      const controller = new AbortController()
-      const pending = invoke(
-        { trustedPolicy: { reviewer: "policy", tenant: "tenant" }, untrustedEvidence: "" },
-        controller.signal,
-      )
-      setTimeout(() => controller.abort(new Error("Review cancelled")), 20)
-      await expect(pending).rejects.toThrow(/aborted/)
-      expect(calls).toBe(1)
-    })
   })
 
   test("builds a complete fixed question set", () => {
@@ -317,7 +82,7 @@ describe("System One reviewer", () => {
   })
 
   test("accepts a confident and internally consistent allow", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(response(), config)
     expect(parsed?.difficultReason).toBeUndefined()
     expect(parsed?.decision).toMatchObject({
@@ -329,7 +94,7 @@ describe("System One reviewer", () => {
   })
 
   test("escalates a low-confidence deny instead of trusting it", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({
         outcome: choice("deny", ["allow", "deny", "escalate"], 0.35),
@@ -356,7 +121,7 @@ describe("System One reviewer", () => {
   })
 
   test("uses outcome confidence instead of the weakest descriptive field", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({
         evidence_completeness: choice(
@@ -372,7 +137,7 @@ describe("System One reviewer", () => {
   })
 
   test("requires strong outcome confidence to allow with incomplete evidence", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({
         outcome: choice("allow", ["allow", "deny", "escalate"], 0.62),
@@ -389,11 +154,11 @@ describe("System One reviewer", () => {
   })
 
   test("recommends reasoning only when an explicit escalation is plausibly resolvable", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    const strict = resolveConfig({
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
+    const strict = {
+      ...resolveConfig({ systemOneReasoningThreshold: 0.5 }),
       model: "opencode/jev-1.13-free",
-      systemOneReasoningThreshold: 0.5,
-    })
+    }
     const clear = parseSystemOneReview(
       response({ outcome: choice("escalate", ["allow", "deny", "escalate"]) }),
       config,
@@ -413,7 +178,7 @@ describe("System One reviewer", () => {
   })
 
   test("preserves a valid deny even when its confidence marks it difficult", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({
         outcome: choice("deny", ["allow", "deny", "escalate"], 0.35),
@@ -439,7 +204,7 @@ describe("System One reviewer", () => {
   })
 
   test("does not reapply chat-model confidence floors after reconciliation", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({ outcome: choice("allow", ["allow", "deny", "escalate"], 0.55) }),
       config,
@@ -449,7 +214,7 @@ describe("System One reviewer", () => {
   })
 
   test("treats an unsafe allow signal as a difficult contradiction", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const parsed = parseSystemOneReview(
       response({ untrusted_sensitive_disclosure: { type: "noul", noul: 0.85 } }),
       config,
@@ -458,7 +223,7 @@ describe("System One reviewer", () => {
   })
 
   test("rejects a choice that is not the most probable option", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13-free" }
     const raw = response()
     raw.answers.outcome = {
       type: "choice",
@@ -467,158 +232,5 @@ describe("System One reviewer", () => {
       probabilities: { allow: 0.05, deny: 0.9, escalate: 0.05 },
     }
     expect(parseSystemOneReview(raw, config)).toBeUndefined()
-  })
-
-  test("routes a valid difficult decision to the configured reasoning reviewer", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    let escalations = 0
-    const secondary: ReviewExecutionResult = {
-      kind: "deny",
-      reason: "Reasoning reviewer denied the action.",
-      decisionSource: "llm-reviewer",
-    }
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => {
-        escalations++
-        return secondary
-      },
-      "openai/gpt-5.6-luna",
-      async () => response({ outcome: choice("escalate", ["allow", "deny", "escalate"], 0.6) }),
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("deny")
-    expect(result.reviewerModel).toBe("openai/gpt-5.6-luna")
-    expect(result.reviewerEscalatedFrom?.model).toBe("opencode/jev-1.13-free")
-    expect(escalations).toBe(1)
-  })
-
-  test("keeps a clear System One escalation manual without paying for reasoning", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    let escalations = 0
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => {
-        escalations++
-        return { kind: "deny", reason: "unexpected" }
-      },
-      "openai/gpt-5.6-luna",
-      async () => response({ outcome: choice("escalate", ["allow", "deny", "escalate"]) }),
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("escalate")
-    expect(result.decisionSource).toBe("system-one-reviewer")
-    expect(escalations).toBe(0)
-  })
-
-  test("honors a valid System One deny without paying for reasoning", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    let escalations = 0
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => {
-        escalations++
-        return { kind: "allow", reason: "unexpected" }
-      },
-      "openai/gpt-5.6-luna",
-      async () =>
-        response({
-          outcome: choice("deny", ["allow", "deny", "escalate"], 0.35),
-          primary_basis: choice("destructive_effect", [
-            "authorized_routine",
-            "authorized_reversible_change",
-            "insufficient_authorization",
-            "scope_mismatch",
-            "insufficient_evidence",
-            "destructive_effect",
-            "credential_or_private_data",
-            "security_or_privilege_change",
-            "external_or_remote_effect",
-            "trusted_policy_restriction",
-            "conflicting_evidence",
-          ]),
-        }),
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("deny")
-    expect(escalations).toBe(0)
-  })
-
-  test("does not let a reasoning reviewer override an escalation with incomplete evidence", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => ({
-        kind: "allow",
-        reason: "The action appears safe.",
-        decisionSource: "llm-reviewer",
-        reviewerOutcome: "allow",
-        decision: {
-          version: 2,
-          outcome: "allow",
-          risk_level: "low",
-          user_authorization: "high",
-          scope_alignment: "aligned",
-          evidence_completeness: "partial",
-          rationale: "The action appears safe.",
-          confidence: 0.95,
-        },
-      }),
-      "openai/gpt-5.6-luna",
-      async () => response({ outcome: choice("escalate", ["allow", "deny", "escalate"], 0.6) }),
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("escalate")
-    expect(result.reviewerOutcome).toBe("allow")
-    expect(result.reviewerModel).toBe("openai/gpt-5.6-luna")
-    expect(result.reviewerEscalatedFrom?.model).toBe("opencode/jev-1.13-free")
-  })
-
-  test("accepts a reasoning reviewer allow backed by sufficient evidence", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => ({
-        kind: "allow",
-        reason: "The action is supported by complete evidence.",
-        decisionSource: "llm-reviewer",
-        reviewerOutcome: "allow",
-        decision: {
-          version: 2,
-          outcome: "allow",
-          risk_level: "low",
-          user_authorization: "high",
-          scope_alignment: "aligned",
-          evidence_completeness: "sufficient",
-          rationale: "The action is supported by complete evidence.",
-          confidence: 0.95,
-        },
-      }),
-      "openai/gpt-5.6-luna",
-      async () => response({ outcome: choice("escalate", ["allow", "deny", "escalate"], 0.6) }),
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("allow")
-    expect(result.reviewerModel).toBe("openai/gpt-5.6-luna")
-  })
-
-  test("does not invoke the reasoning reviewer for a transport failure", async () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13-free" })
-    let escalations = 0
-    const backend = new SystemOneReviewerBackend(
-      config,
-      async () => {
-        escalations++
-        return { kind: "allow", reason: "unexpected" }
-      },
-      "openai/gpt-5.6-luna",
-      async () => {
-        throw new Error("synthetic transport failure")
-      },
-    )
-    const result = await backend.review(envelope(), new ReviewAttempt("generation", 10_000))
-    expect(result.kind).toBe("escalate")
-    expect(result.decisionSource).toBe("failure-safe")
-    expect(escalations).toBe(0)
   })
 })

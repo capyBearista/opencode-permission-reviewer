@@ -1,10 +1,7 @@
 import contracts from "./host-contracts.json"
 
 // Read registry metadata only. New releases never silently expand supported engines.
-for (const [name, reference] of [
-  [contracts.v1.package, contracts.v1.reference],
-  [contracts.v2.package, contracts.v2.reference],
-] as const) {
+for (const [name, reference] of [[contracts.v2.package, contracts.v2.reference]] as const) {
   const process = Bun.spawn(["npm", "view", `${name}@latest`, "version", "--json"], {
     stdout: "pipe",
     stderr: "pipe",

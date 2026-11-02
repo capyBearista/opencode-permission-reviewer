@@ -37,7 +37,7 @@ describe("V2 Decisions response identity", () => {
       expect(
         parseSystemOneReview(
           validResponse(returnedModel),
-          resolveConfig({ model: configuredModel }),
+          { ...resolveConfig(undefined), model: configuredModel },
           decisionsIdentity,
         ),
       ).toBeDefined()
@@ -45,7 +45,10 @@ describe("V2 Decisions response identity", () => {
   })
 
   test("accepts only the observed Mercury free-alias removal", () => {
-    const config = resolveConfig({ model: "openrouter/inception/mercury-decide:free" })
+    const config = {
+      ...resolveConfig(undefined),
+      model: "openrouter/inception/mercury-decide:free",
+    }
     expect(
       parseSystemOneReview(validResponse("inception/mercury-decide"), config, decisionsIdentity),
     ).toBeDefined()
@@ -75,7 +78,7 @@ describe("V2 Decisions response identity", () => {
       expect(
         parseSystemOneReview(
           validResponse(returnedModel),
-          resolveConfig({ model: configuredModel }),
+          { ...resolveConfig(undefined), model: configuredModel },
           decisionsIdentity,
         ),
       ).toBeUndefined()
@@ -83,7 +86,7 @@ describe("V2 Decisions response identity", () => {
   })
 
   test("treats unmapped colon suffixes as exact-only identifiers", () => {
-    const config = resolveConfig({ model: "openrouter/vendor/model:other" })
+    const config = { ...resolveConfig(undefined), model: "openrouter/vendor/model:other" }
     expect(
       parseSystemOneReview(validResponse("vendor/model:other"), config, decisionsIdentity),
     ).toBeDefined()
@@ -100,7 +103,7 @@ describe("V2 Decisions response identity", () => {
   })
 
   test("keeps the legacy identity rule when strict mode is omitted", () => {
-    const config = resolveConfig({ model: "opencode/jev-1.13" })
+    const config = { ...resolveConfig(undefined), model: "opencode/jev-1.13" }
     expect(parseSystemOneReview(validResponse("jev-unrelated-revision"), config)).toBeDefined()
   })
 })

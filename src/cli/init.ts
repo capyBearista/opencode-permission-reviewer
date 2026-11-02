@@ -37,11 +37,7 @@ interface PackageInfo {
   root: string
 }
 
-type HostGeneration = "v1" | "v2"
-type PluginEntry =
-  | string
-  | [string, Record<string, unknown>]
-  | { package: string; options?: Record<string, unknown> }
+type PluginEntry = { package: string; options?: Record<string, unknown> }
 
 export async function runInit(argv: string[]): Promise<number> {
   const { values } = parseArgs({
@@ -49,8 +45,6 @@ export async function runInit(argv: string[]): Promise<number> {
     options: {
       project: { type: "string" },
       global: { type: "boolean" },
-      tui: { type: "boolean" },
-      host: { type: "string", default: "auto" },
       binary: { type: "string", default: "opencode" },
       "dry-run": { type: "boolean" },
       print: { type: "boolean" },
@@ -75,39 +69,16 @@ export async function runInit(argv: string[]): Promise<number> {
   }
 
   const pkg = readPackageInfo()
-  if (!["auto", "v1", "v2"].includes(values.host!)) {
-    console.error("init: --host must be auto, v1, or v2")
-    return 2
-  }
   const versionChecks = await runVersionChecks(pkg, values.binary!)
-  if (values.host === "auto" && !versionChecks.find((check) => check.name === "opencode")?.ok) {
-    console.error("init: detected host is unavailable or unsupported; no configuration was written")
+  const opencode = versionChecks.find((check) => check.name === "opencode")!
+  if (opencode.detected && !opencode.ok) {
+    console.error(
+      `init: OpenCode ${opencode.version} is outside ${SUPPORTED_V2_RANGE}; no configuration was written`,
+    )
     return 2
   }
-  const version = versionChecks.find((check) => check.name === "opencode")?.version
-  const detected = version?.startsWith("1.") ? "v1" : version?.startsWith("2.") ? "v2" : undefined
-  const host = values.host === "auto" ? detected : (values.host as HostGeneration)
-  if (!host) {
-    console.error("init: cannot determine the host; pass --host v1 or --host v2")
-    return 2
-  }
-  const entry = buildEntry(pkg, Boolean(values.npm), host)
-  const targets = resolveTargets(directory, Boolean(values.global), Boolean(values.tui), host)
-  const existingSnapshot = readConfigFile(targets.config)
-  const existingConfig = existingSnapshot.status === "read" ? existingSnapshot.config : undefined
-  if (
-    values.host === "auto" &&
-    existingConfig &&
-    ((host === "v1" && "plugins" in existingConfig) ||
-      (host === "v2" && "plugin" in existingConfig))
-  ) {
-    console.error("init: binary version and config format disagree; select --host explicitly")
-    return 2
-  }
-
-  const plans = [targets.config, ...(targets.tui ? [targets.tui] : [])].map((p) =>
-    planFileChange(p, pkg, host),
-  )
+  const entry = buildEntry(pkg, Boolean(values.npm))
+  const plans = [planFileChange(resolveTarget(directory, Boolean(values.global)), pkg)]
 
   // --- output -------------------------------------------------------------
 
@@ -122,7 +93,6 @@ export async function runInit(argv: string[]): Promise<number> {
       JSON.stringify(
         {
           command: "init",
-          host,
           dryRun: Boolean(values["dry-run"]),
           package: { name: pkg.name, version: pkg.version, root: pkg.root },
           versionChecks,
@@ -180,7 +150,7 @@ export async function runInit(argv: string[]): Promise<number> {
 
   // --- write --------------------------------------------------------------
 
-  return applyPlannedWrites(plans, entry, pkg, host)
+  return applyPlannedWrites(plans, entry, pkg)
 }
 
 /** Apply precomputed file plans. Each plan is re-resolved against the current
@@ -193,12 +163,11 @@ export function applyPlannedWrites(
   plans: FilePlan[],
   entry: PluginEntry,
   pkg: PackageInfo,
-  host: HostGeneration = "v1",
 ): number {
   const written: string[] = []
   for (const plan of plans) {
     if (plan.action === "noop") continue
-    const fresh = planFileChange(plan.path, pkg, host)
+    const fresh = planFileChange(plan.path, pkg)
     if (
       fresh.action !== plan.action ||
       (plan.fingerprint !== undefined && fresh.fingerprint !== plan.fingerprint)
@@ -210,7 +179,7 @@ export function applyPlannedWrites(
     }
     if (fresh.action === "error") {
       console.error(
-        `init: ${plan.path} is malformed or has a non-array "plugin" key; refusing to write`,
+        `init: ${plan.path} is malformed or has a non-array "plugins" key; refusing to write`,
       )
       return 1
     }
@@ -219,7 +188,7 @@ export function applyPlannedWrites(
       console.error(`  backup: ${writeBackup(plan.path, fresh.backup)}`)
     }
     try {
-      writeEntry(plan.path, entry, fresh.action === "create", host, fresh.fingerprint)
+      writeEntry(plan.path, entry, fresh.action === "create", fresh.fingerprint)
     } catch (error) {
       // A file created in the residual race between re-planning and writing
       // must never be clobbered; anything else is unexpected and propagates.
@@ -275,7 +244,7 @@ export function writeBackup(source: string, preferred: string): string {
 
 function usage(): string {
   return `Usage:
-  opencode-permission-reviewer init [--project <dir>] [--global] [--tui]
+  opencode-permission-reviewer init [--project <dir>] [--global]
                                     [--npm] [--dry-run] [--print] [--yes] [--json]
 
 Register the permission-reviewer plugin in an OpenCode config file.
@@ -284,8 +253,6 @@ registered entry or a malformed config.
 
   --project <dir>   target project directory (default: cwd)
   --global          target ~/.config/opencode/opencode.json
-  --tui             also register in tui.json
-  --host <host>     v1, v2, or auto (default); auto refuses uncertain detection
   --binary <path>   OpenCode binary used for version detection
   --npm             emit an npm spec entry instead of a path reference
   --dry-run         print the plan, write nothing
@@ -319,24 +286,18 @@ function readPackageInfo(): PackageInfo {
   throw new Error("init: could not locate package.json")
 }
 
-function buildEntry(pkg: PackageInfo, npm: boolean, host: HostGeneration): PluginEntry {
+function buildEntry(pkg: PackageInfo, npm: boolean): PluginEntry {
   // When installed via npm the root is under node_modules; emit a bare spec so
   // opencode resolves it from its own node_modules. Otherwise emit an absolute
   // path reference (the documented dev workflow).
   const fromNodeModules = pkg.root.includes(join("node_modules", ""))
   if (npm || fromNodeModules) {
-    const name = `${pkg.name}@^${pkg.version}`
-    return host === "v2" ? { package: name, options: {} } : name
+    return { package: `${pkg.name}@^${pkg.version}`, options: {} }
   }
-  return host === "v2" ? { package: pkg.root, options: {} } : pkg.root
+  return { package: pkg.root, options: {} }
 }
 
-function resolveTargets(
-  directory: string,
-  forceGlobal: boolean,
-  wantTui: boolean,
-  host: HostGeneration,
-): { config: string; tui?: string } {
+function resolveTarget(directory: string, forceGlobal: boolean): string {
   const globalDir = join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode")
   const globalCfg = pickExisting([
     join(globalDir, "opencode.json"),
@@ -348,17 +309,9 @@ function resolveTargets(
     join(directory, ".opencode", "opencode.json"),
     join(directory, ".opencode", "opencode.jsonc"),
   ])
-  const configPath = forceGlobal
+  return forceGlobal
     ? (globalCfg ?? join(globalDir, "opencode.json"))
     : (projectCfg ?? globalCfg ?? join(directory, "opencode.json"))
-
-  if (!wantTui) return { config: configPath }
-  if (host === "v2") return { config: configPath, tui: join(globalDir, "cli.json") }
-
-  const tuiDir = forceGlobal ? globalDir : dirname(configPath)
-  const tuiPath =
-    pickExisting([join(tuiDir, "tui.json"), join(tuiDir, "tui.jsonc")]) ?? join(tuiDir, "tui.json")
-  return { config: configPath, tui: tuiPath }
 }
 
 function pickExisting(candidates: string[]): string | undefined {
@@ -431,16 +384,12 @@ interface FilePlan {
 
 export type { FilePlan, PackageInfo, PluginEntry }
 
-export function planFileChange(
-  path: string,
-  pkg: PackageInfo,
-  host: HostGeneration = "v1",
-): FilePlan {
+export function planFileChange(path: string, pkg: PackageInfo): FilePlan {
   const snapshot = readConfigFile(path)
   if (snapshot.status === "missing") return { path, action: "create" }
   if (snapshot.status === "error") return { path, action: "error" }
   const { config: cfg, fingerprint } = snapshot
-  const plugin = cfg[host === "v2" ? "plugins" : "plugin"]
+  const plugin = cfg.plugins
   if (plugin === undefined) {
     return { path, action: "append", backup: backupPath(path), fingerprint }
   }
@@ -452,13 +401,8 @@ export function planFileChange(
   if (matching.length === 1) {
     const existing = matching[0]
     const isObject = typeof existing === "object" && existing !== null && !Array.isArray(existing)
-    if (isObject !== (host === "v2")) return { path, action: "error" }
-    const spec =
-      typeof existing === "string"
-        ? existing
-        : Array.isArray(existing)
-          ? existing[0]
-          : existing.package
+    if (!isObject) return { path, action: "error" }
+    const spec = existing.package
     if (
       typeof spec === "string" &&
       spec.startsWith(`${pkg.name}@`) &&
@@ -483,19 +427,12 @@ export function writeEntry(
   path: string,
   entry: PluginEntry,
   create: boolean,
-  host: HostGeneration = "v1",
   fingerprint?: string,
 ): void {
-  const key = host === "v2" ? "plugins" : "plugin"
+  const key = "plugins"
   if (create) {
     mkdirSync(dirname(path), { recursive: true })
-    const schema =
-      path.includes("tui.json") || path.includes("tui.jsonc")
-        ? "https://opencode.ai/tui.json"
-        : "https://opencode.ai/config.json"
-    const fresh: Record<string, unknown> = path.endsWith("cli.json")
-      ? { [key]: [entry] }
-      : { $schema: schema, [key]: [entry] }
+    const fresh = { $schema: "https://opencode.ai/config.json", [key]: [entry] }
     // Exclusive create: a file that appeared after planning is never
     // clobbered; the EEXIST failure maps to a refusal in the caller.
     writeFileSync(path, `${JSON.stringify(fresh, null, 2)}\n`, { encoding: "utf8", flag: "wx" })
@@ -543,6 +480,7 @@ interface VersionCheck {
   version: string
   range: string
   ok: boolean
+  detected: boolean
 }
 
 async function runVersionChecks(pkg: PackageInfo, binary: string): Promise<VersionCheck[]> {
@@ -554,6 +492,7 @@ async function runVersionChecks(pkg: PackageInfo, binary: string): Promise<Versi
     version: bunVer,
     range: bunRange,
     ok: !pkg.engines.bun || satisfies(bunVer, pkg.engines.bun),
+    detected: true,
   })
   const ocVersion = await probeOpencodeVersion(binary)
   const ocRange = pkg.engines.opencode ?? "(unstated)"
@@ -561,10 +500,8 @@ async function runVersionChecks(pkg: PackageInfo, binary: string): Promise<Versi
     name: "opencode",
     version: ocVersion ?? "(not found)",
     range: ocRange,
-    ok:
-      ocVersion !== undefined &&
-      (!pkg.engines.opencode || satisfies(ocVersion, pkg.engines.opencode)) &&
-      (!ocVersion.startsWith("2.") || satisfies(ocVersion, SUPPORTED_V2_RANGE)),
+    ok: ocVersion !== undefined && satisfies(ocVersion, SUPPORTED_V2_RANGE),
+    detected: ocVersion !== undefined,
   })
   return checks
 }

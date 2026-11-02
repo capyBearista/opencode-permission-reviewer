@@ -3,10 +3,9 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import contracts from "./host-contracts.json"
 
-const releases = Object.entries({
-  ...contracts.v2.integrities,
-  ...contracts.v2.optionalIntegrities,
-}).sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+const releases = Object.entries(contracts.v2.integrities).sort(([left], [right]) =>
+  left.localeCompare(right, undefined, { numeric: true }),
+)
 const python = process.env.PYTHON ?? "python"
 const build = Bun.spawn(["bun", "run", "build"], { stdout: "inherit", stderr: "inherit" })
 if ((await build.exited) !== 0) throw new Error("Plugin build failed")

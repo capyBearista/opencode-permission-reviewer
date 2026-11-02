@@ -4,11 +4,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import urllib.parse
 import urllib.request
 
 import pytest
 from test_v2_reviewer import (
+    V2_VERSIONS,
     model_server,
     v2_plugin_package,
 )  # noqa: F401
@@ -26,94 +26,47 @@ def decisions_server():
     fixture.close()
 
 
-CASES = [
-    (generation, version)
-    for generation in ("v1", "v2")
-    if os.environ.get("HOST_GENERATION", generation) == generation
-    for version in (
-        [os.environ[f"{generation.upper()}_HOST_VERSION"]]
-        if os.environ.get(f"{generation.upper()}_HOST_VERSION")
-        else (["1.18.29", "1.18.32"] if generation == "v1" else ["2.0.3", "2.0.20"])
-    )
-]
-
-
-@pytest.mark.parametrize("generation,version", CASES)
+@pytest.mark.parametrize("version", V2_VERSIONS)
 def test_local_executable_evidence_reaches_the_reviewer(
-    launch_host, activate_host, model_server, generation, version, tmp_path, request
+    launch_host, activate_host, model_server, decisions_server, version, tmp_path
 ):
-    binary = os.environ[f"OPENCODE_{generation.upper()}_{version.replace('.', '_')}"]
+    binary = os.environ[f"OPENCODE_V2_{version.replace('.', '_')}"]
     package = os.environ.get(
         "PLUGIN_PACKAGE_PATH", str(Path(__file__).resolve().parents[2])
     )
     model = {"name": "Fixture", "limit": {"context": 64000, "output": 1000}}
-    if generation == "v1":
-        probe = tmp_path / "permission-probe"
-        probe.mkdir()
-        command_file = tmp_path / "command.txt"
-        (probe / "package.json").write_text(
-            json.dumps({"name": "fixture-permission", "type": "module"})
-        )
-        (probe / "index.js").write_text(
-            'import { readFile } from "node:fs/promises"; export default { id: "fixture-permission", async server() { return { tool: { fixture_permission: { description: "Request a synthetic permission without executing the command", args: {}, async execute(_args, ctx) { const command = await readFile('
-            + json.dumps(str(command_file))
-            + ', "utf8"); await ctx.ask({ permission: "bash", patterns: [command], always: [], metadata: { command } }); return "COMPATIBILITY_EXECUTED"; } } } }; } };'
-        )
-        config = {"plugin": [package, str(probe)], "permission": {"bash": "ask"}}
-        provider = {
-            "provider": {
-                "fixture": {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "Fixture",
-                    "options": {
-                        "baseURL": model_server["url"],
-                        "apiKey": "synthetic-fixture",
-                    },
-                    "models": {"reviewer": model, "driver": model},
-                }
+    decisions_server.set_default_mode("inconclusive")
+    package = v2_plugin_package(tmp_path, decisions_server)
+    config = {"plugins": [package]}
+    provider = {
+        "providers": {
+            "fixture": {
+                "package": "@opencode/ai/providers/openai-compatible",
+                "settings": {
+                    "baseURL": model_server["url"],
+                    "apiKey": "synthetic-fixture",
+                },
+                "models": {
+                    "reviewer": {
+                        **model,
+                        "variants": [{"id": "medium", "settings": {}}],
+                        "capabilities": {
+                            "tools": True,
+                            "input": ["text"],
+                            "output": ["text"],
+                        },
+                    }
+                },
             }
         }
-        model_server["control"]["tool"] = "fixture_permission"
-    else:
-        decisions = request.getfixturevalue("decisions_server")
-        decisions.set_default_mode("inconclusive")
-        package = v2_plugin_package(tmp_path, decisions)
-        config = {"plugins": [package]}
-        provider = {
-            "providers": {
-                "fixture": {
-                    "package": "@opencode/ai/providers/openai-compatible",
-                    "settings": {
-                        "baseURL": model_server["url"],
-                        "apiKey": "synthetic-fixture",
-                    },
-                    "models": {
-                        "reviewer": {
-                            **model,
-                            "variants": [{"id": "medium", "settings": {}}],
-                            "capabilities": {
-                                "tools": True,
-                                "input": ["text"],
-                                "output": ["text"],
-                            },
-                        }
-                    },
-                }
-            }
-        }
-    reviewer = (
-        {"model": "fixture/reviewer", "timeoutMs": 15000, "reviewBudgetMs": 30000}
-        if generation == "v1"
-        else v2_reviewer_config(
-            timeout_ms=15000,
-            review_budget_ms=30000,
-            reasoning_timeout_ms=15000,
-        )
+    }
+    reviewer = v2_reviewer_config(
+        timeout_ms=15000,
+        review_budget_ms=30000,
+        reasoning_timeout_ms=15000,
     )
-    host = launch_host(
-        generation, binary, config, reviewer=reviewer, global_config=provider
-    )
-    activate_host(host, generation)
+    host = launch_host(binary, config, reviewer=reviewer, global_config=provider)
+    activate_host(host)
     project = host["project"]
     (project / "--actual.js").write_text('console.log("ACTUAL_EXECUTED_SENTINEL")')
     (project / "argument.js").write_text('console.log("UNEXECUTED_ARGUMENT_SENTINEL")')
@@ -132,13 +85,8 @@ def test_local_executable_evidence_reaches_the_reviewer(
         subprocess.run(["git", *args], cwd=project, check=True, capture_output=True)
 
     def request(path, body):
-        query = (
-            "?" + urllib.parse.urlencode({"directory": str(project)})
-            if generation == "v1"
-            else ""
-        )
         req = urllib.request.Request(
-            host["url"] + path + query,
+            host["url"] + path,
             data=json.dumps(body).encode(),
             headers={**host["headers"], "Content-Type": "application/json"},
         )
@@ -160,45 +108,26 @@ def test_local_executable_evidence_reaches_the_reviewer(
         ("git push origin", ["https://local.example.invalid/project.git"]),
     ]:
         before = len(model_server["calls"])
-        if generation == "v2":
-            decisions_before = len(decisions.calls)
-        if generation == "v1":
-            command_file.write_text(command)
-            session = request("/session", {"title": "Local evidence fixture"})
-            request(
-                f"/session/{session['id']}/message",
-                {
-                    "model": {"providerID": "fixture", "modelID": "driver"},
-                    "parts": [
-                        {
-                            "type": "text",
-                            "text": "Request the synthetic fixture permission without executing a command",
-                        }
-                    ],
-                },
-            )
-        else:
-            session = request(
-                "/api/session",
-                {
-                    "title": "Local evidence fixture",
-                    "location": {"directory": str(project)},
-                    "permissions": [
-                        {"action": "shell", "resource": "*", "effect": "ask"}
-                    ],
-                },
-            )
-            request(
-                f"/api/session/{session['id']}/permission",
-                {
-                    "action": "shell",
-                    "resources": [command],
-                    "metadata": {"command": command},
-                },
-            )
-            assert len(decisions.calls) == decisions_before + 1, command
-            assert decisions.calls[-1]["destination"] == DECISIONS_URLS[0]
-            assert decisions.calls[-1]["body"]["model"] == "jev-1.13-free"
+        decisions_before = len(decisions_server.calls)
+        session = request(
+            "/api/session",
+            {
+                "title": "Local evidence fixture",
+                "location": {"directory": str(project)},
+                "permissions": [{"action": "shell", "resource": "*", "effect": "ask"}],
+            },
+        )
+        request(
+            f"/api/session/{session['id']}/permission",
+            {
+                "action": "shell",
+                "resources": [command],
+                "metadata": {"command": command},
+            },
+        )
+        assert len(decisions_server.calls) == decisions_before + 1, command
+        assert decisions_server.calls[-1]["destination"] == DECISIONS_URLS[0]
+        assert decisions_server.calls[-1]["body"]["model"] == "jev-1.13-free"
         calls = [
             call
             for call in model_server["calls"][before:]

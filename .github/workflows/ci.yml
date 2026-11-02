@@ -7,13 +7,13 @@ on:
 
 jobs:
   check:
-    name: check (bun 1.4.2)
+    name: check (bun 1.4.4)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - run: bun run check
 
@@ -24,9 +24,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
-      - run: bun run test:coverage
+      - run: bun test --coverage --coverage-reporter lcov --coverage-dir ./coverage
+      # Separate step: a failing test must not hide a coverage regression.
+      - if: ${{ !cancelled() }}
+        run: bun scripts/check-coverage.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -44,7 +47,7 @@ jobs:
           node-version: "22"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - run: bun install --frozen-lockfile
       - working-directory: benchmarks/permission-reviewer
         run: |
@@ -53,19 +56,18 @@ jobs:
           bun tests/plugin-parity.mjs --repo ../..
 
   hosts:
-    name: hosts (${{ matrix.host }}, ${{ matrix.package-manager }})
+    name: hosts (${{ matrix.package-manager }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        host: [v1, v2]
         package-manager: [npm, bun]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.4"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
@@ -73,28 +75,13 @@ jobs:
       - run: bun run build
       - run: python -m pip install pytest==9.1.1
       - name: Install pinned hosts in scratch directories
-        env:
-          HOST_GENERATION: ${{ matrix.host }}
-        run: |
-          bun tests/compatibility/install-hosts.ts
-          if [ "$HOST_GENERATION" = v2 ]; then
-            HOST_GENERATION=v1 bun tests/compatibility/install-hosts.ts
-          fi
+        run: bun tests/compatibility/install-hosts.ts
       - name: Install the packed plugin without lifecycle scripts
         env:
           PACKAGE_MANAGER: ${{ matrix.package-manager }}
         run: bun tests/compatibility/install-package.ts
       - name: Exercise real hosts with isolated config and synthetic models
-        env:
-          HOST_GENERATION: ${{ matrix.host }}
-        run: |
-          if [ "$HOST_GENERATION" = v1 ]; then
-            python -m pytest tests/compatibility/test_opencode_v1.py tests/compatibility/test_evidence_recovery.py tests/compatibility/test_local_evidence.py -q
-            python -m pytest tests/compatibility/test_tui.py -k v1 -q
-          else
-            python -m pytest tests/compatibility/test_opencode_v2.py tests/compatibility/test_v2_reviewer.py tests/compatibility/test_v2_analysis_regressions.py tests/compatibility/test_rollback.py tests/compatibility/test_evidence_recovery.py tests/compatibility/test_local_evidence.py -q
-            python -m pytest tests/compatibility/test_tui.py -k v2 -q
-          fi
+        run: python -m pytest tests/compatibility -q
 
   # Stable required-check name for branch protection. Matrix leg names change
   # when Bun versions drift; this gate does not.

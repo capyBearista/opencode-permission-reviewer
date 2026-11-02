@@ -778,8 +778,11 @@ function redirectionOperatorAt(token: ShellToken, index: number): string | undef
   const value = token.value
   const live = (offset: number) =>
     offset < value.length && !tokenCharIsQuoted(token, offset) ? value[offset] : undefined
+  // An operator is a run of unquoted characters starting at `index`.
   const first = live(index)
-  const tail = `${first ?? ""}${live(index + 1) ?? ""}${live(index + 2) ?? ""}`
+  if (first === undefined) return undefined
+  const second = live(index + 1)
+  const tail = `${first}${second ?? ""}${second === undefined ? "" : (live(index + 2) ?? "")}`
   if (tail.startsWith("&>>")) return "&>>"
   if (tail.startsWith("<<<")) return "<<<"
   if (tail.startsWith("<<-")) return "<<-"
@@ -832,8 +835,13 @@ export function normalizeShellRedirections(tokens: ShellToken[]): {
       let operator = found.operator
       const prefix = token.value.slice(cursor, found.index)
       // An all-digit prefix immediately before the operator is an IO number,
-      // not a command word (`2>`, `10>>`).
-      if (cursor === 0 && /^[0-9]+$/.test(prefix)) {
+      // not a command word (`2>`, `10>>`). Quoted or escaped digits (`'2'>`,
+      // `\2>`) are an ordinary word, as in the shell.
+      if (
+        cursor === 0 &&
+        /^[0-9]+$/.test(prefix) &&
+        !Array.from(prefix, (_, index) => index).some((index) => tokenCharIsQuoted(token, index))
+      ) {
         operator = `${prefix}${operator}`
         wordEnd = cursor
       }

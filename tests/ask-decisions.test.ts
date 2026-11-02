@@ -2,9 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { AskDecisionRegistry, DISMISSED_ANSWER } from "../src/context/ask-decisions.ts"
 import { renderAskDecisions, buildEvidence } from "../src/context.ts"
 import { resolveConfig, DEFAULT_CONFIG } from "../src/config.ts"
-import { ApprovalReviewerRuntime } from "../src/runtime.ts"
 import type { AskDecision, ReviewEnvelope } from "../src/types.ts"
-import { request, runtime as buildRuntime } from "./helpers.ts"
+import { request } from "./helpers.ts"
 
 // Synthetic credential fragments are assembled by concatenation so secret
 // scanners never see a continuous literal.
@@ -315,73 +314,7 @@ describe("ask decisions in the reviewer evidence", () => {
   })
 })
 
-describe("ask decisions in the coordinator lifecycle", () => {
-  test("captured decisions reach the audit record", async () => {
-    const registry = new AskDecisionRegistry()
-    registry.observe(asked("que_1", "ses_main", ["Run the marker command?"]))
-    registry.observe(replied("que_1", [["Yes"]]))
-    const { ctx } = buildRuntime()
-    const runtime = new ApprovalReviewerRuntime(
-      ctx,
-      { ...DEFAULT_CONFIG },
-      undefined,
-      undefined,
-      registry,
-    )
-    const result = await runtime.process(request())
-    expect(result.kind).toBe("allow")
-    const records = (ctx as unknown as { auditRecords: unknown[] }).auditRecords as Array<{
-      askDecisions?: AskDecision[]
-    }>
-    expect(records).toHaveLength(1)
-    expect(records[0]!.askDecisions).toEqual([
-      { at: expect.any(Number), question: "Run the marker command?", answer: "Yes" },
-    ])
-  })
-
-  test("the audit field is capped to the most recent decisions", async () => {
-    let clock = 1_000_000
-    const registry = new AskDecisionRegistry(undefined, () => clock)
-    for (let i = 0; i < 8; i++) {
-      clock += 1
-      registry.observe(asked(`que_${i}`, "ses_main", [`Q${i}?`]))
-      registry.observe(replied(`que_${i}`, [["Yes"]]))
-    }
-    const { ctx } = buildRuntime()
-    const runtime = new ApprovalReviewerRuntime(
-      ctx,
-      { ...DEFAULT_CONFIG },
-      undefined,
-      undefined,
-      registry,
-    )
-    await runtime.process(request())
-    const records = (ctx as unknown as { auditRecords: unknown[] }).auditRecords as Array<{
-      askDecisions?: AskDecision[]
-    }>
-    expect(records[0]!.askDecisions).toHaveLength(5)
-    expect(records[0]!.askDecisions!.at(-1)!.question).toBe("Q7?")
-  })
-
-  test("registry present but config disabled keeps the feature off", async () => {
-    const registry = new AskDecisionRegistry()
-    registry.observe(asked("que_1", "ses_main", ["Run the marker command?"]))
-    registry.observe(replied("que_1", [["Yes"]]))
-    const { ctx } = buildRuntime(undefined, { askDecisions: false })
-    const runtime = new ApprovalReviewerRuntime(
-      ctx,
-      { ...DEFAULT_CONFIG, askDecisions: false },
-      undefined,
-      undefined,
-      registry,
-    )
-    await runtime.process(request())
-    const records = (ctx as unknown as { auditRecords: unknown[] }).auditRecords as Array<{
-      askDecisions?: AskDecision[]
-    }>
-    expect(records[0]!.askDecisions).toBeUndefined()
-  })
-})
+describe("ask decisions in the coordinator lifecycle", () => {})
 
 describe("askDecisions config knob", () => {
   test("defaults to enabled", () => {

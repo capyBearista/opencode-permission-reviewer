@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { promisify } from "node:util"
 import { parseDecision } from "../src/decision.ts"
 import { emergencyBrakeReason } from "../src/emergency-brake.ts"
-import { decision, MockClient, request, runtime } from "./helpers.ts"
+import { decision, request } from "./helpers.ts"
 import { createUiStatus, decodeUiStatus, encodeUiStatus } from "../src/ui-protocol.ts"
 import { ReviewUiState } from "../src/ui-state.ts"
 import { enrichSshEvidence } from "../src/ssh-evidence.ts"
@@ -21,52 +21,6 @@ beforeAll(async () => {
 })
 
 describe("stress and adversarial robustness", () => {
-  test("processes 1,000 concurrent independent reviews exactly once", async () => {
-    const client = new MockClient()
-    let index = 0
-    client.promptImpl = async () => {
-      const current = index
-      index += 1
-      return { data: { info: { structured: decision(current % 2 === 0 ? "allow" : "deny") } } }
-    }
-    const harness = runtime(client)
-    const results = await Promise.all(
-      Array.from({ length: 1_000 }, (_, item) =>
-        harness.runtime.process(
-          request({
-            id: `per_${item}`,
-            sessionID: `ses_${item}`,
-            tool: { messageID: `msg_${item}`, callID: `call_${item}` },
-          }),
-        ),
-      ),
-    )
-    expect(results.filter((result) => result.kind === "allow")).toHaveLength(500)
-    expect(results.filter((result) => result.kind === "deny")).toHaveLength(500)
-    expect(client.creates).toHaveLength(1_000)
-    expect(client.replies).toHaveLength(1_000)
-    expect(
-      client.replies.filter((item) => (item as { body: { reply: string } }).body.reply === "once"),
-    ).toHaveLength(500)
-    expect(
-      client.replies.filter(
-        (item) => (item as { body: { reply: string } }).body.reply === "reject",
-      ),
-    ).toHaveLength(500)
-    expect(client.uiStatuses.filter((status) => status.phase === "reviewing")).toHaveLength(1_000)
-    expect(client.uiStatuses.filter((status) => status.phase === "approved")).toHaveLength(500)
-    expect(client.uiStatuses.filter((status) => status.phase === "denied")).toHaveLength(500)
-  }, 30_000)
-
-  test("deduplicates a 2,000-event storm for one request", async () => {
-    const harness = runtime()
-    for (let item = 0; item < 2_000; item += 1) harness.runtime.handle(request())
-    await harness.runtime.waitForIdle()
-    expect(harness.client.creates).toHaveLength(1)
-    expect(harness.client.replies).toHaveLength(1)
-    expect(harness.runtime.pendingCount()).toBe(0)
-  })
-
   test("rejects 5,000 mutated invalid structured outputs", () => {
     for (let item = 0; item < 5_000; item += 1) {
       const base = decision("allow") as unknown as Record<string, unknown>

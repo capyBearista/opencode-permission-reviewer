@@ -9,10 +9,7 @@ import contracts from "./host-contracts.json"
 const [url, directory, hostVersion] = process.argv.slice(2)
 if (!url || !directory || !hostVersion || !process.env.OPENCODE_PASSWORD)
   throw new Error("Missing synthetic host settings")
-if (
-  !Object.hasOwn(contracts.v2.integrities, hostVersion) &&
-  !Object.hasOwn(contracts.v2.optionalIntegrities, hostVersion)
-)
+if (!Object.hasOwn(contracts.v2.integrities, hostVersion))
   throw new Error(`Unsupported fixture host ${hostVersion}`)
 const authorization = `Basic ${Buffer.from(`opencode:${process.env.OPENCODE_PASSWORD}`).toString("base64")}`
 const client = OpenCode.make({
@@ -61,20 +58,7 @@ try {
   if (!context.some((message) => message.id === admission.id && message.type === "user"))
     throw new Error("Inbox correlation changed")
   phase = "session fork"
-  const fork =
-    hostVersion === "2.0.3"
-      ? await fetch(new URL(`/api/session/${session.id}/fork`, url), {
-          method: "POST",
-          headers: { authorization, "content-type": "application/json" },
-          body: JSON.stringify({ boundary: { type: "through" } }),
-        }).then(async (response) => {
-          if (!response.ok) throw new Error(`Legacy fork failed with ${response.status}`)
-          const payload = (await response.json()) as {
-            data: Awaited<ReturnType<typeof client.session.fork>>
-          }
-          return payload.data
-        })
-      : await client.session.fork({ sessionID: session.id })
+  const fork = await client.session.fork({ sessionID: session.id })
   const reader = createV2ContextReader(client, controller.signal)
   phase = "fork context"
   const normalizedFork = (await reader.messages(fork.id, directory, 10)) as MessageWithParts[]
@@ -90,33 +74,13 @@ try {
     ] as const,
   }
   phase = "form creation"
-  const form =
-    hostVersion === "2.0.3"
-      ? await fetch(new URL(`/api/session/${session.id}/form`, url), {
-          method: "POST",
-          headers: { authorization, "content-type": "application/json" },
-          body: JSON.stringify(formInput),
-        }).then(async (response) => {
-          if (!response.ok) throw new Error(`Legacy form creation failed with ${response.status}`)
-          return ((await response.json()) as { data: { id: string } }).data
-        })
-      : await client.session.form.create({ sessionID: session.id, ...formInput })
-  if (hostVersion === "2.0.3") {
-    phase = "form reply"
-    const response = await fetch(new URL(`/api/session/${session.id}/form/${form.id}/reply`, url), {
-      method: "POST",
-      headers: { authorization, "content-type": "application/json" },
-      body: JSON.stringify({ answer: { scope: "read" } }),
-    })
-    if (!response.ok) throw new Error(`Legacy form reply failed with ${response.status}`)
-  } else {
-    phase = "form reply"
-    await client.session.form.reply({
-      sessionID: session.id,
-      formID: form.id,
-      answer: { scope: "read" },
-    })
-  }
+  const form = await client.session.form.create({ sessionID: session.id, ...formInput })
+  phase = "form reply"
+  await client.session.form.reply({
+    sessionID: session.id,
+    formID: form.id,
+    answer: { scope: "read" },
+  })
   const deadline = Date.now() + 3000
   phase = "form event"
   while (!registry.recentFor([session.id]).length && Date.now() < deadline) await Bun.sleep(10)

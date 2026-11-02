@@ -5,11 +5,14 @@ import { pathToFileURL } from "node:url"
 import type { OpenCodeClient } from "@opencode/client"
 import type { Plugin } from "@opencode/plugin"
 import { V2ReviewerBackend } from "../src/opencode/v2/reviewer-backend.ts"
+import { DEFAULT_CONFIG } from "../src/config.ts"
 import { ReviewAttempt } from "../src/core/review-attempt.ts"
 import type { ReviewEnvelope, ReviewerConfig } from "../src/types.ts"
 import { config, decision, request } from "./helpers.ts"
 
 type Context = Parameters<Plugin.Plugin["setup"]>[0]
+type McpEditor = Parameters<Parameters<Context["mcp"]["transform"]>[0]>[0]
+type McpServer = NonNullable<ReturnType<McpEditor["get"]>>
 type Tool = {
   input: { parse(value: unknown): unknown }
   execute(value: unknown, event: { sessionID: string }): Promise<unknown>
@@ -30,6 +33,7 @@ function fixture(
     missingModel?: boolean
     noTools?: boolean
     variant?: string
+    modelVariants?: string[]
     retain?: boolean
     wrongLocation?: boolean
     activationFailed?: boolean
@@ -37,12 +41,14 @@ function fixture(
     activationDelayed?: boolean
     activationRepresentation?: "directory-slash" | "file-url" | "id-only" | "id-new-path"
     mcpServers?: boolean | "after-first"
+    pluginMcp?: boolean
   } = {},
 ) {
   let tool!: Tool
   let contextHook!: (event: ContextEvent) => void
   let toolHook!: (event: { sessionID: string; tool: string }) => void
   let directory = ""
+  let requestedVariant: string | undefined
   const directories: string[] = []
   const activated = new Set<string>()
   let sessionID = ""
@@ -52,16 +58,25 @@ function fixture(
   const attempts: ReviewAttempt[] = []
   let prompts = 0
   let mcpLists = 0
+  const mcpTransforms: Array<(editor: McpEditor) => void> = []
   let disposed = 0
   let checks = 0
   let setups = 0
   let pluginID = ""
   let hostCleanup: (() => Promise<void>) | undefined
-  const registration = () => ({
-    dispose: async () => {
-      disposed++
-    },
-  })
+  // Registrations made by the current bootstrap setup, which the host disposes on unload.
+  const scope: Array<{ dispose(): Promise<void> }> = []
+  const registration = (onDispose = () => void disposed++) => {
+    let active = true
+    const handle = {
+      dispose: async () => {
+        if (active) onDispose()
+        active = false
+      },
+    }
+    scope.push(handle)
+    return handle
+  }
   const ctx = {
     location: { directory: "/workspace/operational" },
     tool: {
@@ -84,6 +99,12 @@ function fixture(
         return registration()
       },
     },
+    mcp: {
+      transform: async (callback: (editor: McpEditor) => void) => {
+        mcpTransforms.push(callback)
+        return registration(() => void mcpTransforms.splice(mcpTransforms.indexOf(callback), 1))
+      },
+    },
   } as unknown as Context
   const client = {
     plugin: {
@@ -93,6 +114,7 @@ function fixture(
         if (!activated.has(directory)) {
           const plugin = await import(pathToFileURL(directory + "/index.js").href)
           pluginID = plugin.default.id
+          scope.length = 0
           hostCleanup = await plugin.default.setup({ ...ctx, location: { directory } })
           activated.add(directory)
           directories.push(directory)
@@ -139,7 +161,7 @@ function fixture(
                 providerID: "fixture",
                 id: "reviewer",
                 capabilities: { tools: !options.noTools },
-                variants: [{ id: "max" }],
+                variants: (options.modelVariants ?? ["max"]).map((id) => ({ id })),
               },
             ],
       }),
@@ -148,22 +170,34 @@ function fixture(
       list: async (input: { location: { directory: string } }) => {
         expect(input.location.directory).toBe(directory)
         mcpLists++
-        return {
-          location: input.location,
-          data:
-            options.mcpServers === true || (options.mcpServers === "after-first" && mcpLists > 1)
-              ? [{ name: "fixture" }]
-              : [],
+        const servers = new Map<string, McpServer>()
+        const editor: McpEditor = {
+          list: () => [...servers],
+          get: (name) => servers.get(name),
+          // The host stores a mutable copy of each config, so the fixture does too.
+          set: (name, config) => void servers.set(name, structuredClone(config) as McpServer),
+          update: () => {},
+          remove: (name) => void servers.delete(name),
         }
+        // A global plugin set up earlier adds a server, as @upstash/context7-opencode does.
+        if (options.pluginMcp)
+          editor.set("context7", { type: "remote", url: "https://mcp.invalid/mcp" })
+        for (const transform of mcpTransforms) transform(editor)
+        // Added after every transform, so the fail-closed inventory tests still see a server.
+        if (options.mcpServers === true || (options.mcpServers === "after-first" && mcpLists > 1))
+          servers.set("fixture", { type: "remote", url: "https://fixture.invalid/mcp" })
+        return { location: input.location, data: [...servers.keys()].map((name) => ({ name })) }
       },
     },
     session: {
       create: async (input: {
         id: string
         location: { directory: string }
+        model: { variant?: string }
         permissions: unknown[]
       }) => {
         sessionID = input.id
+        requestedVariant = input.model.variant
         sessionIDs.push(sessionID)
         expect(input.permissions[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
         return {
@@ -267,14 +301,18 @@ function fixture(
       sessionID,
       sessionIDs,
       removed: removed.has(sessionID),
+      requestedVariant,
       messagesBySession,
       prompts,
       mcpLists,
+      mcpTransforms: mcpTransforms.length,
       disposed,
       setups,
     }),
+    mcp: async () => (await client.mcp.list({ location: { directory } })).data,
     reload: async () => {
       await hostCleanup?.()
+      await Promise.all(scope.splice(0).map((handle) => handle.dispose()))
       const plugin = await import(pathToFileURL(directory + "/index.js").href)
       hostCleanup = await plugin.default.setup({ ...ctx, location: { directory } })
       setups++
@@ -429,6 +467,38 @@ test("unavailable model, unsupported format or variant, and wrong isolation fail
   }
 })
 
+test("the default variant falls back to the model default when the model lacks it", async () => {
+  for (const modelVariants of [[], ["low", "high"]]) {
+    const harness = fixture({ variant: DEFAULT_CONFIG.variant, modelVariants })
+    try {
+      expect((await harness.run()).kind).toBe("allow")
+      expect(harness.state().prompts).toBe(1)
+      expect(harness.state().requestedVariant).toBeUndefined()
+    } finally {
+      await harness.cleanup()
+    }
+  }
+  const offered = fixture({ variant: DEFAULT_CONFIG.variant, modelVariants: ["medium", "high"] })
+  try {
+    expect((await offered.run()).kind).toBe("allow")
+    expect(offered.state().requestedVariant).toBe(DEFAULT_CONFIG.variant)
+  } finally {
+    await offered.cleanup()
+  }
+})
+
+test("an explicit variant the model lacks fails closed with the offered variants", async () => {
+  const harness = fixture({ variant: "max", modelVariants: ["low", "high"] })
+  try {
+    const result = await harness.run()
+    expect(result.kind).toBe("escalate")
+    expect(result.reason).toContain('variant "max" is unavailable (model offers: low, high)')
+    expect(harness.state().prompts).toBe(0)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
 test("review sessions share one MCP-free location without mixing concurrent evidence", async () => {
   const harness = fixture()
   try {
@@ -484,6 +554,32 @@ test("a later MCP addition prevents another review in the shared location", asyn
     expect(result.reason).toContain("contains MCP servers")
     expect(harness.state().sessionIDs).toHaveLength(1)
     expect(harness.state().mcpLists).toBe(2)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("plugin-added MCP servers are stripped from the isolated location", async () => {
+  const harness = fixture({ pluginMcp: true })
+  try {
+    const result = await harness.run()
+    expect(result.kind).toBe("allow")
+    expect(result.decisionSource).toBe("llm-reviewer")
+    expect(harness.state().mcpTransforms).toBe(1)
+    expect(harness.state().sessionIDs).toHaveLength(1)
+  } finally {
+    await harness.cleanup()
+  }
+})
+
+test("an inert bootstrap reload keeps stripping MCP after the backend releases it", async () => {
+  const harness = fixture({ pluginMcp: true })
+  try {
+    expect((await harness.run()).kind).toBe("allow")
+    await harness.backend.dispose()
+    await harness.reload()
+    expect(harness.state().mcpTransforms).toBe(1)
+    expect(await harness.mcp()).toEqual([])
   } finally {
     await harness.cleanup()
   }

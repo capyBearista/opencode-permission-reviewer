@@ -71,7 +71,6 @@ describe("config loader — trust boundary", () => {
         systemOneReasoningThreshold: 0,
         variant: "untrusted",
         escalationMode: "deny",
-        escalationReviewer: { model: "untrusted/reviewer" },
         debug: true,
         policyRules: [{ effect: "allow" }],
       },
@@ -84,23 +83,8 @@ describe("config loader — trust boundary", () => {
     expect(loaded.confidenceThreshold).toBe(DEFAULT_CONFIG.confidenceThreshold)
     expect(loaded.systemOneReasoningThreshold).toBe(DEFAULT_CONFIG.systemOneReasoningThreshold)
     expect(loaded.escalationMode).toBe("deny")
-    expect(loaded.escalationReviewer).toBeUndefined()
     expect(loaded.debug).toBe(false)
     expect(loaded.configDegraded).toBeUndefined()
-  })
-
-  test("project config cannot install a reasoning escalation reviewer", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-cfg-"))
-    try {
-      mkdirSync(join(dir, ".opencode"), { recursive: true })
-      writeFileSync(
-        projectConfigPath(dir),
-        JSON.stringify({ escalationReviewer: { model: "untrusted/reviewer" } }),
-      )
-      expect(loadResolvedConfig(undefined, dir).escalationReviewer).toBeUndefined()
-    } finally {
-      rmSync(dir, { recursive: true })
-    }
   })
 
   test("byte-identical to resolveConfig when no files exist", () => {
@@ -391,90 +375,6 @@ describe("config loader — trust boundary", () => {
       expect(loaded.confidenceThreshold).toBe(DEFAULT_CONFIG.confidenceThreshold)
     } finally {
       rmSync(dir, { recursive: true })
-    }
-  })
-
-  test("trusted free-primary fallback is retained, and unsupported routes are ignored", () => {
-    const good = loadResolvedConfig({
-      model: "opencode/jev-1.13-free",
-      systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
-    })
-    expect(good.systemOneFallback?.model).toBe("openrouter/typesafe/jev-1.13")
-    expect(good.configDegraded).toBeUndefined()
-
-    const unsupported = loadResolvedConfig({
-      model: "opencode/jev-1.13-free",
-      systemOneFallback: { model: "evil/endpoint" },
-    })
-    expect(unsupported.systemOneFallback).toBeUndefined()
-    expect(unsupported.configDegraded).toContain(
-      "inline config systemOneFallback is invalid and was ignored",
-    )
-
-    const mismatched = loadResolvedConfig({
-      model: "typesafe-ai/jev-latest",
-      systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
-    })
-    expect(mismatched.systemOneFallback).toBeUndefined()
-    expect(mismatched.configDegraded).toContain(
-      "trusted systemOneFallback requires opencode/jev-1.13-free as primary model",
-    )
-  })
-
-  test("project and unknown-origin settings cannot enable or redirect paid fallback", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-fallback-trust-"))
-    try {
-      mkdirSync(join(dir, ".opencode"), { recursive: true })
-      writeFileSync(
-        projectConfigPath(dir),
-        JSON.stringify({ systemOneFallback: { model: "openrouter/typesafe/jev-1.13" } }),
-      )
-      const untrusted = loadResolvedConfig({ model: "opencode/jev-1.13-free" }, dir)
-      expect(untrusted.systemOneFallback).toBeUndefined()
-
-      const trusted = loadResolvedConfig(
-        {
-          model: "opencode/jev-1.13-free",
-          systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
-        },
-        dir,
-      )
-      expect(trusted.systemOneFallback?.model).toBe("openrouter/typesafe/jev-1.13")
-
-      const unknown = loadResolvedConfig(
-        {
-          model: "opencode/jev-1.13-free",
-          systemOneFallback: { model: "openrouter/typesafe/jev-1.13" },
-        },
-        dir,
-        "unknown",
-      )
-      expect(unknown.systemOneFallback).toBeUndefined()
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  test("malformed trusted global fallback degrades the configuration", () => {
-    const dir = mkdtempSync(join(tmpdir(), "reviewer-global-fallback-"))
-    const global = join(dir, "global.jsonc")
-    setGlobalConfigPathForTests(global)
-    try {
-      writeFileSync(
-        global,
-        JSON.stringify({
-          model: "opencode/jev-1.13-free",
-          systemOneFallback: { model: "unknown/provider" },
-        }),
-      )
-      const loaded = loadResolvedConfig(undefined)
-      expect(loaded.systemOneFallback).toBeUndefined()
-      expect(loaded.configDegraded).toContain(
-        "global config systemOneFallback is invalid and was ignored",
-      )
-    } finally {
-      setGlobalConfigPathForTests(isolatedGlobal)
-      rmSync(dir, { recursive: true, force: true })
     }
   })
 
