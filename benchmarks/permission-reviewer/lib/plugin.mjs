@@ -14,7 +14,7 @@ export const PINNED_BLOBS = {
   "src/policy/policy-engine.ts": "b4470dc188d956cc0ed25454c2d34465110fe1be",
   "src/escalation.ts": "301d6e4e78bd101d7777c029a2019a80d8bf5e54",
   "src/core/review-engine.ts": "e17f72c6775191d8c20fb0d8b24bbf339272dc23",
-  "src/emergency-brake.ts": "f583b97b7d917b785c39ab208faa80b45fb6b6e8",
+  "src/emergency-brake.ts": "8a3cbfd6fcdb31d45248539725ad7ace3d001986",
   "src/redact.ts": "e93e4d379b64866de9848a8a5a9b5d7b1e4a8f3e",
   "src/capability/command-parser.ts": "926def261a0f1af1eec4a5991a89eb24da32af59",
   "src/capability/bash-analyzer.ts": "dcf60b95b18ffe3a0256a01075bd34634265bfec",

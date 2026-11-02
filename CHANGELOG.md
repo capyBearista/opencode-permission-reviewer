@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected large evidence, so the review fell back to a manual prompt without
   trying a larger model further down the list.
 
+- The emergency brake stops `1>&/dev/sda` the same way as `>&/dev/sda`. Bash
+  sends stdout to the named file for both, so the fd-prefixed form overwrote a
+  block device without tripping the brake.
+
 ## [2.4.0] - 2026-10-02
 
 ### Added

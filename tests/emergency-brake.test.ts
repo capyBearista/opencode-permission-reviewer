@@ -152,6 +152,11 @@ describe("deterministic emergency brake", () => {
     "env -u FOO -S 'rm -rf /'",
     "env --split-string='rm -rf /'",
     'script -c"rm -rf /" /dev/null',
+    // Bash duplicates stdout onto a file for `>&word` and `1>&word` alike.
+    "echo x >&/dev/sda",
+    "echo x 1>&/dev/sda",
+    "echo x 01>&/dev/sda",
+    "bash -c 'echo x 1>&/dev/sda'",
   ])("rejects unmistakable critical command: %s", (command) => {
     expect(emergencyBrakeReason(request({ metadata: { command } }))).toBeString()
   })
@@ -201,6 +206,13 @@ describe("deterministic emergency brake", () => {
     "printf 'dd if=/dev/zero of=/dev/nvme0n1'",
     'echo "sudo find / -delete"',
     'echo "shred /dev/sda"',
+    // `>&` onto a descriptor, a closed descriptor, or from another fd is no
+    // disk write (bash rejects `2>&/dev/sda` as an ambiguous redirect).
+    "sh -c 'echo x >&2'",
+    "sh -c 'echo x 2>&1'",
+    "sh -c 'echo x >&-'",
+    "echo x 2>&/dev/sda",
+    "cat </dev/sda",
     // Device inspection (non-destructive) must not trip.
     "wipefs /dev/sda",
     "sgdisk -p /dev/sda",

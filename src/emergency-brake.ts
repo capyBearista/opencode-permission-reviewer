@@ -353,11 +353,14 @@ function isDeviceDestruction(analyzed: AnalyzedSegment[]): boolean {
       if (redirectTargetsBlockDevice(tokens)) return true
       if (
         (redirections[commandIndex] ?? []).some((redirection) => {
-          const operator = redirection.operator.replace(/^\d+/, "")
+          const fd = /^\d+/.exec(redirection.operator)?.[0]
+          const operator = redirection.operator.slice(fd?.length ?? 0)
+          // Bash sends stdout to a file for `>&word` and `1>&word`; any other
+          // fd prefix makes a non-numeric word an ambiguous redirect.
           const writes =
             [">", ">>", ">|", "&>", "&>>", "<>"].includes(operator) ||
             (operator === ">&" &&
-              !/^\d/.test(redirection.operator) &&
+              (fd === undefined || Number(fd) === 1) &&
               redirection.target !== "-" &&
               !/^\d+$/.test(redirection.target))
           return writes && isBlockDeviceTarget(redirection.target)
