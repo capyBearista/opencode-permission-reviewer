@@ -531,3 +531,87 @@ test("live trace slices stay plain arrays and never leak derived pushes into the
     await reviewer.waitForIdle()
   }
 })
+
+test("a throwing reasoning reviewer fails closed and keeps Decisions attribution", async () => {
+  const transport: DecisionsTransport = async (request) => {
+    request.onRequestSent()
+    return systemOneResponse("jev-1.13-free", { basis: "destructive_effect" })
+  }
+  const reviewer = backend(config({ decisionModels: ["opencode/jev-1.13-free"] }), transport, {
+    model: "openrouter/vendor/reasoning-first",
+    review: async () => {
+      throw new Error("reasoning session crashed")
+    },
+  })
+  const attempt = new ReviewAttempt("generation", 8_000)
+
+  try {
+    const result = await reviewer.review(envelope(), attempt, {} as OpenCodeClient)
+    expect(result.kind).toBe("escalate")
+    expect(result.decisionSource).toBe("failure-safe")
+    expect(result.reviewerModel).toBe("opencode/jev-1.13-free")
+    expect(result.reviewerEscalatedFrom?.model).toBe("opencode/jev-1.13-free")
+  } finally {
+    attempt.close("finished")
+    await reviewer.waitForIdle()
+  }
+})
+
+test("a Decisions escalation without a reasoning reviewer stays a reviewer escalation", async () => {
+  const transport: DecisionsTransport = async (request) => {
+    request.onRequestSent()
+    return systemOneResponse("jev-1.13-free", { basis: "destructive_effect" })
+  }
+  const reviewer = backend(config({ decisionModels: ["opencode/jev-1.13-free"] }), transport)
+  const attempt = new ReviewAttempt("generation", 8_000)
+
+  try {
+    const result = await reviewer.review(envelope(), attempt, {} as OpenCodeClient)
+    expect(result.kind).toBe("escalate")
+    expect(result.decisionSource).toBe("system-one-reviewer")
+    expect(result.reviewerModel).toBe("opencode/jev-1.13-free")
+    expect(result.reviewerEscalatedFrom).toBeUndefined()
+  } finally {
+    attempt.close("finished")
+    await reviewer.waitForIdle()
+  }
+})
+
+test("audit attempts report every HTTP failure class as http-error", async () => {
+  const statuses = [401, 404, 413, 503, 400]
+  const models = statuses.map((status) => `openrouter/vendor/status-${status}`)
+  const transport: DecisionsTransport = async (request) => {
+    const status = Number(request.model.split("-").at(-1))
+    throw new DecisionsTransportError("http", { status, requestSent: true })
+  }
+  const reviewer = backend(config({ decisionModels: models }), transport)
+  const attempt = new ReviewAttempt("generation", 8_000)
+
+  try {
+    const result = await reviewer.review(envelope(), attempt, {} as OpenCodeClient)
+    expect(
+      result.decisionAttempts?.map(({ outcome, httpStatus }) => [outcome, httpStatus]),
+    ).toEqual(statuses.map((status) => ["http-error", status]))
+  } finally {
+    attempt.close("finished")
+    await reviewer.waitForIdle()
+  }
+})
+
+test("audit attempts report an expired review deadline as deadline", async () => {
+  const attempt = new ReviewAttempt("generation", 8_000)
+  const transport: DecisionsTransport = async (request) => {
+    request.onRequestSent()
+    attempt.close("expired")
+    return new Promise<unknown>(() => {})
+  }
+  const reviewer = backend(config({ decisionModels: ["openrouter/vendor/model"] }), transport)
+
+  try {
+    const result = await reviewer.review(envelope(), attempt, {} as OpenCodeClient)
+    expect(result.decisionAttempts?.map(({ outcome }) => outcome)).toEqual(["deadline"])
+  } finally {
+    attempt.close("finished")
+    await reviewer.waitForIdle()
+  }
+})

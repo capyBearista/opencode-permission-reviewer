@@ -817,4 +817,64 @@ describe("ordered V2 Decisions selection", () => {
       attempt.close("finished")
     }
   })
+
+  test("retries a transport network failure on the same model", async () => {
+    let calls = 0
+    const transport: DecisionsTransport = async (request) => {
+      calls++
+      if (calls === 1) throw new DecisionsTransportError("network", { requestSent: true })
+      return send(request, validResponse("vendor/model"))
+    }
+    const attempt = new ReviewAttempt("g", 10_000)
+    try {
+      const result = await settings(["openrouter/vendor/model"], transport)(STATE, attempt)
+      expect(result.kind).toBe("selected")
+      expect(result.attempts.map(({ outcome }) => outcome)).toEqual(["network-error", "selected"])
+    } finally {
+      attempt.close("finished")
+    }
+  })
+
+  test.each([
+    ["a transport cancellation", new DecisionsTransportError("cancelled", { requestSent: true })],
+    [
+      "an HTTP failure without a status",
+      new DecisionsTransportError("http", { requestSent: true }),
+    ],
+    ["an internal transport failure", new DecisionsTransportError("internal")],
+    ["an unexpected error", new Error("unexpected")],
+  ])("stops routing on %s without trying later models", async (_, error) => {
+    let calls = 0
+    const transport: DecisionsTransport = async (request) => {
+      calls++
+      request.onRequestSent()
+      throw error
+    }
+    const models = ["openrouter/vendor/first", "openrouter/vendor/second"]
+    const attempt = new ReviewAttempt("g", 10_000)
+    try {
+      const result = await settings(models, transport)(STATE, attempt)
+      expect(result.kind).toBe("failed")
+      if (result.kind === "failed") expect(result.category).toBe("reviewer-failure")
+      expect(calls).toBe(1)
+    } finally {
+      attempt.close("finished")
+    }
+  })
+
+  test("does not route a review that was already cancelled", async () => {
+    let calls = 0
+    const attempt = new ReviewAttempt("g", 10_000)
+    attempt.close("cancelled")
+    const result = await settings(["openrouter/vendor/model"], async () => {
+      calls++
+      throw new Error("must not be called")
+    })(STATE, attempt)
+    expect(result.kind).toBe("failed")
+    if (result.kind === "failed") {
+      expect(result.category).toBe("reviewer-failure")
+      expect(result.reason).toBe("Review cancelled or expired before Decisions routing.")
+    }
+    expect(calls).toBe(0)
+  })
 })

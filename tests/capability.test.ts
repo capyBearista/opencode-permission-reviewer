@@ -580,3 +580,41 @@ describe("capability analyzer - credential reads", () => {
     ).toBe("unknown")
   })
 })
+
+describe("heredoc delimiter decoding matches bash", () => {
+  // Each body line is data; only the decoded delimiter line ends it.
+  test.each([
+    ["$'E\\x4fF'", "EOF"],
+    ["$'\\105OF'", "EOF"],
+    ["$'E\\117F'", "EOF"],
+    ["$'\\x45OF'", "EOF"],
+    ['"E\\$OF"', "E$OF"],
+    ['"E\\qF"', "E\\qF"],
+  ])("decodes %s as %s", (word, delimiter) => {
+    const lines = ["EOF", "E$OF", "E\\qF"].filter((line) => line !== delimiter)
+    const { heredocs, sanitizedCommand } = extractHeredocs(
+      `cat <<${word}\nrm -rf /\n${lines.join("\n")}\n${delimiter}\necho after`,
+    )
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.delimiter).toBe(delimiter)
+    expect(heredocs[0]!.expansionDisabled).toBe(true)
+    expect(heredocs[0]!.bodyBounded).toBe(`${["rm -rf /", ...lines].join("\n")}\n`)
+    expect(sanitizedCommand).not.toContain("rm -rf /")
+    expect(sanitizedCommand).toContain("echo after")
+  })
+
+  test("an unclosed ANSI-C delimiter fails closed as unresolved", () => {
+    const { heredocs, sanitizedCommand } = extractHeredocs("cat <<$'EOF\nbody\nEOF")
+    expect(heredocs).toHaveLength(1)
+    expect(heredocs[0]!.delimiter).toBe("")
+    expect(heredocs[0]!.truncated).toBe(true)
+    expect(sanitizedCommand).toContain("<unresolved>")
+  })
+
+  test("an oversized body is bounded and marked truncated", () => {
+    const body = "x".repeat(5000)
+    const { heredocs } = extractHeredocs(`cat <<'EOF'\n${body}\nEOF`)
+    expect(heredocs[0]!.truncated).toBe(true)
+    expect(heredocs[0]!.bodyBounded).toBe(`${"x".repeat(4096)}\n…[truncated]`)
+  })
+})

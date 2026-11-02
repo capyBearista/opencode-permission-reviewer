@@ -1052,6 +1052,29 @@ test("invalid-decision disposition keeps its closed trace without reviewer attri
   }
 })
 
+test("an action that cannot be re-read after review is denied", async () => {
+  let release!: () => void
+  const harness = await fixture({
+    delay: new Promise<void>((resolve) => {
+      release = resolve
+    }),
+  })
+  try {
+    const input = harness.input()
+    const work = harness.evaluate(input)
+    while (harness.reviews() === 0) await Bun.sleep(1)
+    // JSON cannot serialize a BigInt, so the post-review snapshot throws.
+    Reflect.set(input, "metadata", { command: "printf safe", size: 1n })
+    release()
+    await work
+    expect(input.effect).toBe("deny")
+    expect(input.message).toContain("could not be revalidated")
+  } finally {
+    release()
+    await harness.cleanup()
+  }
+})
+
 test("action mutations and incomplete evidence cannot reuse an approval, and connection failures stay visible", async () => {
   let release!: () => void
   const changing = await fixture({
