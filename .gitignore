@@ -41,4 +41,5 @@ tests/.tmp-reviewer-isolated/
 __pycache__/
 .pytest_cache/
 /plan_*.md
-.slim/deepwork/
+.slim/deepwork/ses_*
+.slim/deepwork/.runtime
