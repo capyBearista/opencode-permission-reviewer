@@ -10,6 +10,7 @@ The user (Arjun Pramanik, GitHub `capyBearista`) owns a fork `capyBearista/openc
 3. Independently test whether OpenCode's free `jev-1.13-free` Decisions endpoint is reachable. The user saw issues in `packages/opencode-auto-advisor` (in the `opencode-plugins` repo), which uses `ctx.experimental.generate.decisions`.
 
 The work later expanded, at the user's direction:
+
 - Raise the fork's minimum to OpenCode 2.2.5 and OpenTUI 0.8.
 - Fix the CI V1 check.
 - File an Issue instead of migrating to `generate.decisions`.
@@ -18,10 +19,12 @@ The work later expanded, at the user's direction:
 - Move the remaining workflows to Bun 1.4.4.
 - Fix the zod advisory and update dependencies to their latest versions.
 - Push, merge PR #6, sync locally, clean up the worktrees, and bump the submodule in the config repo.
-</original_task>
+  </original_task>
 
 <work_completed>
+
 ## Research findings
+
 - **OpenCode 2.2.0 → 2.2.5** (diffed by tag in the shallow clone `~/codebases/opencode`; tag v2.2.5 was fetched with `git fetch --depth=1 origin 'refs/tags/v2.2.5:refs/tags/v2.2.5'`):
   - The plugin-facing files are byte-identical: `host.ts`, `permission.ts`, `promise/permission.ts`, `mcp.ts`, `rpc.ts`, `server/src/location.ts`, and `tui/src/plugin/*`.
   - The `generate.decisions` input is unchanged; only its types were renamed, and the old names remain as deprecated aliases.
@@ -47,7 +50,9 @@ The work later expanded, at the user's direction:
   The user also said: don't switch to the `inference` URL.
 
 ## Commits merged via PR #6
+
 Merged into `personal/active` as merge commit **`412b440`**. The remote branch is kept at `d9168f5`. All commits are SSH-signed. The commits from the earlier session (`9ca041c` … `6c0392b`) are also in this merge. This session's commits:
+
 1. `a353365 fix(compat)`: `tests/compatibility/install-package.ts` now requires `default.setup` and rejects a `server` key. The error message is "must export a V2 setup entry and no V1 server".
 2. `2aeea1f build!: require OpenCode 2.2.5 and OpenTUI 0.8`:
    - `SUPPORTED_V2_RANGE`, engines and the peer are now `>=2.2.5 <3`; OpenTUI peers `>=0.8.0`.
@@ -74,12 +79,15 @@ Merged into `personal/active` as merge commit **`412b440`**. The remote branch i
     - semver 7.8.6, OpenTUI 0.8.1, solid-js 1.9.18, and tooling at latest.
 
 ## Verification
+
 CI on `d9168f5` was **all green**:
+
 - check: 1142 pass, 0 fail;
 - coverage: 90.9%;
 - hosts (npm, bun), benchmark and CodeQL: pass.
 
 Locally:
+
 - the real-host suite on OpenCode 2.2.5 passed 28/28 via the npm-packed package, the bun-packed package and source;
 - benchmark 79/79, parity check passes;
 - a consumer-tree npm audit reports 0 advisories.
@@ -87,6 +95,7 @@ Locally:
 Four independent code reviews found no critical or important issues.
 
 ## Wrap-up
+
 - The PR #6 body was rewritten via REST. `gh pr edit` fails on a Projects-classic GraphQL error, so use `gh api -X PATCH repos/capyBearista/opencode-permission-reviewer/pulls/6 -F body=@file`.
 - Fork checkout `~/opencode-plugins/external/opencode-permission-reviewer` is at `412b440`, clean, with dependencies installed and `dist/` rebuilt.
 - The fork worktree under `.claude/worktrees/...` was removed and its branch deleted with `-d`.
@@ -94,9 +103,10 @@ Four independent code reviews found no critical or important issues.
 - Config repo `~/.config/opencode`:
   - The submodule `integrations/opencode-permission-reviewer` was fast-forwarded to `412b440`, then `bun install --frozen-lockfile` and `bun run build`. Smoke check: `dist/index.js` exports `{id, setup}` with no `server` key.
   - Committed **`d5db041 build(integrations): bump opencode-permission-reviewer to 412b440`**, containing only the gitlink. Not pushed.
-</work_completed>
+    </work_completed>
 
 <work_remaining>
+
 1. **User:** fully restart OpenCode so the bumped reviewer loads. Re-enable the reviewer if it is still disabled; it lives in `opencode.jsonc`, which only the user edits.
 2. **Optional:** push the config repo (`~/.config/opencode`, 1 ahead of `origin/main` with `d5db041`), but only if the user asks.
 3. **Optional follow-ups**, none requested:
@@ -108,9 +118,10 @@ Four independent code reviews found no critical or important issues.
    - Move to TypeScript 7 once `typescript-eslint` supports it.
    - Align `release.yml` Node 20 with CI's 22.
    - Add a comment at `command-parser.ts` noting that each command and its redirections are pushed together.
-</work_remaining>
+     </work_remaining>
 
 <attempted_approaches>
+
 - **"zod has no fix"** was carried over from the previous handoff and was wrong. The audit flagged zod `<4.6.6`, with a fix in 4.6.6. npm said "no fix" only because the package pinned 4.6.5 exactly.
 - **`@typesafe-ai/sdk` 0.7.0 was rejected.** Its `bufferResponse` locks and then releases the original body. Bun 1.4.4 then reports a buffered body as used, so every request fails with "Body already used", even against a real HTTP server. Node is fine.
 - **TypeScript 7** is blocked: `typescript-eslint` 8.72.1 peers TypeScript `<6.1.0`.
@@ -127,9 +138,10 @@ Four independent code reviews found no critical or important issues.
 - **Unreachable code was left without fake tests:** router deadline expiry while the review is still active (`decisions-router.ts:380-385`), and the backend's outer catch.
 - **Init and explain CLI coverage** stays low because their tests use `Bun.spawn`, which coverage can't instrument.
 - **An earlier note said the global config loads the fork checkout.** It doesn't: both `opencode.jsonc` and `cli.json` load `./integrations/opencode-permission-reviewer`, the submodule.
-</attempted_approaches>
+  </attempted_approaches>
 
 <critical_context>
+
 - **User rules:**
   - investigate the root cause (`systematic-debugging`);
   - verify the real runtime path;
@@ -150,9 +162,10 @@ Four independent code reviews found no critical or important issues.
 - **Never run `decisions-compat-probe.ts`.** It makes real requests.
 - **Benchmark pins:** `benchmarks/permission-reviewer/lib/plugin.mjs` pins the git blobs of reviewed sources. Update only the pins whose source changed, after reviewing the change.
 - **GitHub:** `personal/active` has no branch protection or rulesets.
-</critical_context>
+  </critical_context>
 
 <current_state>
+
 - **Complete:**
   - the research and the free-endpoint probe;
   - Issue #7;
@@ -163,4 +176,4 @@ Four independent code reviews found no critical or important issues.
 - **Not started (user):** restart OpenCode and re-enable the reviewer.
 - **Open:** whether to push the config repo commit `d5db041`. Default: don't.
 - **Temporary files:** this `HANDOFF.md` (untracked in the fork root).
-</current_state>
+  </current_state>
