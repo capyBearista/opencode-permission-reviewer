@@ -60,6 +60,10 @@ test("explicit V2 host URLs reject embedded credentials and non-loopback HTTP", 
   expect(() => validateHostEndpoint("http://example.invalid:4096/")).toThrow(
     "outside loopback require HTTPS",
   )
+  expect(() => validateHostEndpoint("http://0.0.0.0:4096/")).toThrow(
+    "outside loopback require HTTPS",
+  )
+  expect(() => validateHostEndpoint("http://[::]:4096/")).toThrow("outside loopback require HTTPS")
   expect(validateHostEndpoint("http://127.0.0.1:4096/").href).toBe("http://127.0.0.1:4096/")
   expect(validateHostEndpoint("https://example.invalid/").href).toBe("https://example.invalid/")
 })
@@ -165,6 +169,40 @@ test("V2 host connection falls back to a compatible registered service", async (
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test.each([
+  ["http://0.0.0.0:4096/", "http://127.0.0.1:4096/"],
+  ["http://[::]:4197/", "http://[::1]:4197/"],
+])(
+  "registered V2 wildcard service URL %s connects over loopback",
+  async (registeredUrl, expectedUrl) => {
+    delete process.env[hostUrl]
+    const root = await mkdtemp(join(tmpdir(), "reviewer-v2-service-"))
+    process.env[stateHome] = root
+    await mkdir(join(root, "opencode"))
+    await writeFile(
+      join(root, "opencode", "service.json"),
+      JSON.stringify({
+        version: "2.0.3",
+        url: registeredUrl,
+        pid: process.pid,
+        password: "synthetic-service-password",
+      }),
+    )
+    const { make, restore } = stubMake(() => fakeClient("expected"))
+    try {
+      await connectV2Host("/workspace", "expected", "2.0.3", AbortSignal.timeout(1000))
+      expect(make).toHaveBeenCalledTimes(1)
+      const options = (
+        make.mock.calls as unknown as Array<[Parameters<typeof OpenCode.make>[0]]>
+      )[0]?.[0]
+      expect(options?.baseUrl).toBe(expectedUrl)
+    } finally {
+      restore()
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+)
 
 test("registered V2 services must be local and belong to a live process", async () => {
   delete process.env[hostUrl]
