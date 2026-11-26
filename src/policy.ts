@@ -11,8 +11,7 @@ import type { ReviewerOutputFormat } from "./types.ts"
  * paraphrased or derived from the Codex source (Apache-2.0, Copyright OpenAI
  * and contributors). This adaptation adds OpenCode permission semantics, a
  * human-escalation outcome, confidence scoring, tool-free operation, and
- * SSH / local-script / Git evidence enrichment. See NOTICE for full
- * attribution.
+ * SSH / local-script / Git evidence enrichment.
  */
 
 export const DEFAULT_TENANT_POLICY = `

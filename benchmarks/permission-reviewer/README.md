@@ -142,4 +142,4 @@ core replay do not reproduce the complete OpenCode V1/V2 host lifecycle.
 
 See [the annotation guide](./docs/ANNOTATION_GUIDE.md) for reviewing disputed
 labels and model explanations. The repository's root [LICENSE](../../LICENSE)
-and [NOTICE](../../NOTICE) apply.
+applies.

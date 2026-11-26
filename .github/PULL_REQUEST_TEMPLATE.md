@@ -26,5 +26,5 @@
 ## Test evidence
 
 <!-- For runtime/transport/TUI/build changes: attach the live smoke result
-     against a fresh `opencode serve` (see CONTRIBUTING.md). For refactor-only
+     against a fresh `opencode serve`. For refactor-only
      changes, note that `bun run check` + `bun run test:package` pass. -->
