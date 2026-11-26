@@ -7,7 +7,7 @@ import { assert, sha256 } from "./util.mjs"
 
 // Git blob hashes of the security-critical files actually inspected for this kit.
 export const PINNED_BLOBS = {
-  "src/policy.ts": "72dc68cc8de6f536b196e3ffbe840f8b2236cd01",
+  "src/policy.ts": "b492b451274d36449763944d8198d891d35d967e",
   "src/context.ts": "5473abbe19ccce27163ceaaf87a63e63e6d5215a",
   "src/config.ts": "dfbc6642a0324c23a39806c98b2d292f304aebd1",
   "src/decision.ts": "ad3443f3bf2ca1b34b3b23e8115c79148e19238b",

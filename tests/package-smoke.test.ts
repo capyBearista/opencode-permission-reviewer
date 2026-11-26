@@ -83,12 +83,9 @@ describe("npm pack ship set", () => {
       "README.md",
       "CHANGELOG.md",
       "LICENSE",
-      "NOTICE",
-      "SECURITY.md",
       "dist/index.js",
       "dist/index.d.ts",
       "dist/rpc.js",
-      "MIGRATION.md",
       "dist/explain.js",
       // TUI ships as raw TSX so the host compiles it with its Solid pipeline.
       "dist/tui/tui.tsx",

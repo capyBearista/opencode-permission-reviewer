@@ -39,7 +39,7 @@ the host and configuration.
   native approval controls.
 
 > **Policy design inspired by [OpenAI Codex Guardian](https://github.com/openai/codex/tree/main/codex-rs/core/src/guardian).**
-> The wording and implementation are independent. See [`NOTICE`](./NOTICE).
+> The wording and implementation are independent.
 
 ---
 
@@ -803,8 +803,7 @@ paths (`scripts/copy-tui.ts`). Do not add a
 prebundled TUI entry — it will not render on the host.
 
 The live end-to-end harness in `tests/live-harness.ts` runs against a real
-OpenCode server + model and is **not** part of `bun test`; see
-[`CONTRIBUTING.md`](./CONTRIBUTING.md).
+OpenCode server + model and is **not** part of `bun test`.
 
 The [synthetic model benchmark](./benchmarks/permission-reviewer/README.md)
 evaluates 600 permission-review cases against the current reviewer prompt and
@@ -817,8 +816,7 @@ and [results table](./benchmarks/permission-reviewer/RESULTS.md).
 
 The reviewer policy design is inspired by
 [OpenAI Codex Guardian](https://github.com/openai/codex/tree/main/codex-rs/core/src/guardian).
-The wording and implementation are independent. See [`NOTICE`](./NOTICE) for
-full attribution and license details.
+The wording and implementation are independent.
 
 ## License
 

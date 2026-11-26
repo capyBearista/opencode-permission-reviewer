@@ -35,11 +35,8 @@
   "files": [
     "dist/",
     "README.md",
-    "MIGRATION.md",
     "CHANGELOG.md",
-    "NOTICE",
-    "LICENSE",
-    "SECURITY.md"
+    "LICENSE"
   ],
   "license": "Apache-2.0",
   "author": "Warc0s",

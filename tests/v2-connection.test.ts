@@ -257,3 +257,53 @@ test("registered V2 services must match the active host version", async () => {
     await rm(root, { recursive: true, force: true })
   }
 })
+
+test("registered V2 services accept any supported host version", async () => {
+  delete process.env[hostUrl]
+  const root = await mkdtemp(join(tmpdir(), "reviewer-v2-service-"))
+  process.env[stateHome] = root
+  await mkdir(join(root, "opencode"))
+  const registration = join(root, "opencode", "service.json")
+  const { make, restore } = stubMake(() => fakeClient("expected"))
+  try {
+    await writeFile(
+      registration,
+      JSON.stringify({
+        version: "2.2.5",
+        url: "http://127.0.0.1:4096/",
+        pid: process.pid,
+        password: "synthetic-service-password",
+      }),
+    )
+    await connectV2Host("/workspace", "expected", "2.4.2", AbortSignal.timeout(1000))
+    expect(make).toHaveBeenCalledTimes(1)
+  } finally {
+    restore()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("registered V2 services accept the native serve version scheme", async () => {
+  delete process.env[hostUrl]
+  const root = await mkdtemp(join(tmpdir(), "reviewer-v2-service-"))
+  process.env[stateHome] = root
+  await mkdir(join(root, "opencode"))
+  const registration = join(root, "opencode", "service.json")
+  const { make, restore } = stubMake(() => fakeClient("expected"))
+  try {
+    await writeFile(
+      registration,
+      JSON.stringify({
+        version: "0.0.0-native-47",
+        url: "http://127.0.0.1:4096/",
+        pid: process.pid,
+        password: "synthetic-service-password",
+      }),
+    )
+    await connectV2Host("/workspace", "expected", "2.4.2", AbortSignal.timeout(1000))
+    expect(make).toHaveBeenCalledTimes(1)
+  } finally {
+    restore()
+    await rm(root, { recursive: true, force: true })
+  }
+})
