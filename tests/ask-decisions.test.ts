@@ -258,8 +258,19 @@ describe("renderAskDecisions", () => {
     ]
     const text = renderAskDecisions(decisions)!
     expect(text.split("\n")).toHaveLength(2)
-    expect(text).toContain("[12:01:03Z] Q: Run tests? A: Yes")
-    expect(text).toContain("[12:02:41Z] Q: Push? A: No")
+    expect(text).toContain("[2026-09-01T12:01:03.000Z] Q: Run tests? A: Yes")
+    expect(text).toContain("[2026-09-01T12:02:41.000Z] Q: Push? A: No")
+  })
+
+  test("distinguishes decisions on different days at the same UTC time", () => {
+    const decisions: AskDecision[] = [
+      { at: Date.UTC(2026, 8, 1, 12, 1, 3), question: "Run tests?", answer: "Yes" },
+      { at: Date.UTC(2026, 8, 2, 12, 1, 3), question: "Run tests?", answer: "Yes" },
+    ]
+    expect(renderAskDecisions(decisions)).toBe(
+      "[2026-09-01T12:01:03.000Z] Q: Run tests? A: Yes\n" +
+        "[2026-09-02T12:01:03.000Z] Q: Run tests? A: Yes",
+    )
   })
 
   test("returns undefined when there is nothing to show", () => {
