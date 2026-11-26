@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test"
+import { analyzeCapability } from "../src/capability/bash-analyzer.ts"
+import { parseCommand } from "../src/capability/command-parser.ts"
 import { evaluatePolicy, PROFILE_TEMPLATES } from "../src/policy/policy-engine.ts"
 import type { ActorContext, CapabilityAssessment, PolicyRule } from "../src/types.ts"
 import { DEFAULT_CONFIG } from "../src/config.ts"
+
+function shellCapability(command: string): CapabilityAssessment {
+  return analyzeCapability(parseCommand(command), "/home/user/project", "/home/user/project")
+}
 
 function cap(overrides: Partial<CapabilityAssessment> = {}): CapabilityAssessment {
   return {
@@ -153,6 +159,25 @@ describe("policy engine — condition matching", () => {
       },
     })
     expect(evaluatePolicy(c, undefined, config, rules).matchedRules).toHaveLength(1)
+  })
+
+  test.each([
+    "xxd -capitalize input.bin /etc/reviewer-output",
+    "xxd --capitalize input.bin /etc/reviewer-output",
+    "tree -L1 -R /etc",
+    "tree -RL1 /etc",
+  ])("%s triggers the external-write policy condition", (command) => {
+    const rules: PolicyRule[] = [
+      {
+        id: "external-write",
+        source: "builtin",
+        when: { writesExternal: true },
+        effect: "manual",
+        reason: "external write",
+      },
+    ]
+    const trace = evaluatePolicy(shellCapability(command), undefined, config, rules)
+    expect(trace.matchedRules.map((rule) => rule.id)).toEqual(["external-write"])
   })
 
   test("actionClass condition matches", () => {

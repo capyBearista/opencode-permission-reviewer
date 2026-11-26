@@ -204,6 +204,58 @@ test.each([
   },
 )
 
+test.each([
+  [
+    "embedded credentials",
+    "http://user:pass@[::]:4197/",
+    "expected",
+    "without embedded credentials",
+    0,
+  ],
+  ["a non-root path", "http://0.0.0.0:4096/api", "expected", "must be a loopback origin", 0],
+  [
+    "a query string",
+    "http://0.0.0.0:4096/?redirect=external",
+    "expected",
+    "must be a loopback origin",
+    0,
+  ],
+  [
+    "an identity mismatch",
+    "http://[::]:4197/",
+    "another-instance",
+    "does not belong to this host generation",
+    1,
+  ],
+] as const)(
+  "registered V2 wildcard service URL rejects %s",
+  async (_label, registeredUrl, actualIdentity, error, expectedCalls) => {
+    delete process.env[hostUrl]
+    const root = await mkdtemp(join(tmpdir(), "reviewer-v2-service-"))
+    process.env[stateHome] = root
+    await mkdir(join(root, "opencode"))
+    await writeFile(
+      join(root, "opencode", "service.json"),
+      JSON.stringify({
+        version: "2.0.3",
+        url: registeredUrl,
+        pid: process.pid,
+        password: "synthetic-service-password",
+      }),
+    )
+    const { make, restore } = stubMake(() => fakeClient(actualIdentity))
+    try {
+      await expect(
+        connectV2Host("/workspace", "expected", "2.0.3", AbortSignal.timeout(1000)),
+      ).rejects.toThrow(error)
+      expect(make).toHaveBeenCalledTimes(expectedCalls)
+    } finally {
+      restore()
+      await rm(root, { recursive: true, force: true })
+    }
+  },
+)
+
 test("registered V2 services must be local and belong to a live process", async () => {
   delete process.env[hostUrl]
   const root = await mkdtemp(join(tmpdir(), "reviewer-v2-service-"))

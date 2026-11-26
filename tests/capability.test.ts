@@ -470,6 +470,15 @@ describe("capability analyzer — mutating read-only tool forms", () => {
     expect(a.actionClass.value).toBe("external-write")
   })
 
+  test.each(["-C", "-capitalize", "--capitalize"])(
+    "xxd %s does not consume the input before its output operand",
+    (option) => {
+      const a = assess(`xxd ${option} input.bin /etc/reviewer-output`)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.actionClass.value).toBe("external-write")
+    },
+  )
+
   test("tree -o FILE reports the output file as an external write", () => {
     const a = assess("tree -o /etc/reviewer-output .")
     expect(a.writeEffects.externalWrite.value).toBe(true)
@@ -482,26 +491,52 @@ describe("capability analyzer — mutating read-only tool forms", () => {
     expect(a.actionClass.value).toBe("workspace-write")
   })
 
+  test.each(["tree -L1 -R /etc", "tree -RL1 /etc"])(
+    "%s preserves -R after an attached recursion level",
+    (command) => {
+      const a = assess(command)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.actionClass.value).toBe("external-write")
+    },
+  )
+
   test("yq -iP reports in-place edits as external writes", () => {
     const a = assess("yq -iP '.x' /etc/config.yaml")
     expect(a.writeEffects.externalWrite.value).toBe(true)
     expect(a.actionClass.value).toBe("external-write")
   })
 
-  test("yq --inplace=true reports in-place edits as external writes", () => {
-    const a = assess("yq --inplace=true '.x' /etc/config.yaml")
+  test.each([
+    "--inplace",
+    "--inplace=1",
+    "--inplace=t",
+    "--inplace=T",
+    "--inplace=TRUE",
+    "--inplace=true",
+    "--inplace=True",
+  ])("yq %s reports in-place edits as external writes", (option) => {
+    const a = assess(`yq ${option} '.x' /etc/config.yaml`)
     expect(a.writeEffects.externalWrite.value).toBe(true)
     expect(a.actionClass.value).toBe("external-write")
   })
 
-  test.each(["sort input.txt", "uniq input.txt", "yq '.x' /etc/config.yaml"])(
-    "%s remains read-only",
-    (command) => {
-      const a = assess(command)
-      expect(a.actionClass.value).toBe("read-only")
-      for (const effect of Object.values(a.writeEffects)) expect(effect.value).not.toBe(true)
-    },
-  )
+  test.each([
+    "sort input.txt",
+    "sort -o - input.txt",
+    "sort --output=- input.txt",
+    "uniq input.txt",
+    "yq '.x' /etc/config.yaml",
+    "yq --inplace=0 '.x' /etc/config.yaml",
+    "yq --inplace=f '.x' /etc/config.yaml",
+    "yq --inplace=F '.x' /etc/config.yaml",
+    "yq --inplace=FALSE '.x' /etc/config.yaml",
+    "yq --inplace=false '.x' /etc/config.yaml",
+    "yq --inplace=False '.x' /etc/config.yaml",
+  ])("%s remains read-only", (command) => {
+    const a = assess(command)
+    expect(a.actionClass.value).toBe("read-only")
+    for (const effect of Object.values(a.writeEffects)) expect(effect.value).not.toBe(true)
+  })
 })
 
 describe("capability analyzer — dynamic constructs + parser completeness", () => {

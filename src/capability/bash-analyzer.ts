@@ -589,7 +589,7 @@ function sortMutation(cmd: ShellToken[]): ReadOnlyToolMutation | undefined {
       if (output !== undefined) {
         const target = output.inline ?? cmd[index + 1]?.value
         if (output.inline === undefined) index += 1
-        if (target !== undefined) result.writeTargets.push(target)
+        if (target !== undefined && target !== "-") result.writeTargets.push(target)
         continue
       }
       if (longOption(value, "--compress-program", 4) !== undefined) result.executesCode = true
@@ -602,7 +602,8 @@ function sortMutation(cmd: ShellToken[]): ReadOnlyToolMutation | undefined {
         const attached = value.slice(at + 1)
         const argument = attached !== "" ? attached : cmd[index + 1]?.value
         if (attached === "") index += 1
-        if (letter === "o" && argument !== undefined) result.writeTargets.push(argument)
+        if (letter === "o" && argument !== undefined && argument !== "-")
+          result.writeTargets.push(argument)
         break
       }
     }
@@ -641,12 +642,13 @@ const UNIQ_OPTIONS: OperandToolOptions = {
 }
 
 const XXD_OPTIONS: OperandToolOptions = {
-  // xxd spells options as words with one or two dashes (`-cols 8`, `--cols 8`)
-  // and also accepts attached values (`-c8`).
+  // xxd accepts attached values (`-c8`) and full option words (`-cols 8`).
+  // Only these spellings consume the next word; `-C`/`-capitalize` do not.
   valued(value) {
-    const word = value.startsWith("--") ? value.slice(1) : value
-    if (!"cglosnR".includes(word[1] ?? "")) return false
-    return word.length === 2 || /^-[a-zA-Z]+$/.test(word)
+    const word = value.replace(/^--?/, "")
+    return ["c", "cols", "g", "groupsize", "l", "len", "n", "name", "o", "s", "seek", "R"].includes(
+      word,
+    )
   },
   permute: false,
 }
@@ -703,9 +705,11 @@ function treeMutation(cmd: ShellToken[]): ReadOnlyToolMutation | undefined {
       continue
     }
     let consumed = 0
-    for (const letter of value.slice(1)) {
+    for (let at = 1; at < value.length; at += 1) {
+      const letter = value[at]!
       if (letter === "R") recursiveOutput = true
       if ("LPIHTo".includes(letter)) {
+        if (letter === "L" && /^\d+$/.test(value.slice(at + 1))) break
         consumed += 1
         const argument = cmd[index + consumed]?.value
         if (letter === "o" && argument !== undefined) result.writeTargets.push(argument)
@@ -724,9 +728,8 @@ function yqInPlace(cmd: ShellToken[]): boolean {
     const value = token.value
     if (value === "--") return false
     if (value.startsWith("--")) {
-      // pflag takes no abbreviations; a boolean may carry `=true`/`=false`.
-      if (value === "--inplace" || (value.startsWith("--inplace=") && value !== "--inplace=false"))
-        return true
+      // pflag takes no abbreviations and uses Go's complete boolean vocabulary.
+      if (value === "--inplace" || /^--inplace=(?:1|t|T|TRUE|true|True)$/.test(value)) return true
       continue
     }
     if (!value.startsWith("-")) continue
