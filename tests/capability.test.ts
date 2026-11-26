@@ -432,6 +432,78 @@ describe("capability analyzer — classification matrix", () => {
   })
 })
 
+describe("capability analyzer — mutating read-only tool forms", () => {
+  test("sort -uo FILE reports the output file as an external write", () => {
+    const a = assess("sort -uo /etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort -nruoFILE reports the attached output file as an external write", () => {
+    const a = assess("sort -nruo/etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort --out=FILE reports the output file as an external write", () => {
+    const a = assess("sort --out=/etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort --compress-program reports execution of the compressor", () => {
+    const a = assess("sort --compress-program gzip input.txt")
+    expect(a.executesCode.value).toBe(true)
+    expect(a.process.childProcesses.value).toBe(true)
+    expect(a.actionClass.value).toBe("code-execution")
+  })
+
+  test("uniq reports its second operand as an external write", () => {
+    const a = assess("uniq input.txt /etc/reviewer-output")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("xxd reports its second operand as an external write", () => {
+    const a = assess("xxd input.bin /etc/reviewer-output")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("tree -o FILE reports the output file as an external write", () => {
+    const a = assess("tree -o /etc/reviewer-output .")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("tree -R reports generated HTML listings as workspace writes", () => {
+    const a = assess("tree -R .")
+    expect(a.writeEffects.workspaceWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("workspace-write")
+  })
+
+  test("yq -iP reports in-place edits as external writes", () => {
+    const a = assess("yq -iP '.x' /etc/config.yaml")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("yq --inplace=true reports in-place edits as external writes", () => {
+    const a = assess("yq --inplace=true '.x' /etc/config.yaml")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test.each(["sort input.txt", "uniq input.txt", "yq '.x' /etc/config.yaml"])(
+    "%s remains read-only",
+    (command) => {
+      const a = assess(command)
+      expect(a.actionClass.value).toBe("read-only")
+      for (const effect of Object.values(a.writeEffects)) expect(effect.value).not.toBe(true)
+    },
+  )
+})
+
 describe("capability analyzer — dynamic constructs + parser completeness", () => {
   test("variable expansion marks partial", () => {
     const a = assess("rm -rf $TARGET")
