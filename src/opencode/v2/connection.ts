@@ -3,7 +3,9 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { OpenCode, type OpenCodeClient } from "@opencode/client"
+import { satisfies } from "semver"
 import { ReviewerRpc } from "../../ui/rpc.ts"
+import { SUPPORTED_V2_RANGE } from "../host-guard.ts"
 
 interface ServiceEndpoint {
   url: string
@@ -75,8 +77,23 @@ async function readRegisteredService(version: string): Promise<ServiceEndpoint |
     pid?: unknown
     password?: unknown
   }
-  if (info.version !== version)
-    throw new Error("Reviewer service registration does not match this host version")
+  if (info.version !== version) {
+    // The 2.4 native serve wrapper reports its own build version
+    // (e.g. "0.0.0-native-47") instead of the CLI version, so exact
+    // equality pins every upgrade. Accept any registration whose
+    // service version is either in the supported range or native-style,
+    // as long as the active host itself is supported. PID liveness,
+    // loopback-origin, and the per-generation RPC identity check below
+    // still prove we reached the right host.
+    const hostSupported = satisfies(version, SUPPORTED_V2_RANGE)
+    const serviceVersion = typeof info.version === "string" ? info.version : undefined
+    const serviceSupported =
+      serviceVersion !== undefined && satisfies(serviceVersion, SUPPORTED_V2_RANGE)
+    const serviceNative =
+      serviceVersion !== undefined && /^0\.0\.0-native([.-].*)?$/.test(serviceVersion)
+    if (!(hostSupported && (serviceSupported || serviceNative)))
+      throw new Error("Reviewer service registration does not match this host version")
+  }
   if (typeof info.url !== "string")
     throw new Error("Reviewer service registration does not contain a URL")
   if (typeof info.password !== "string" || info.password.length === 0)
