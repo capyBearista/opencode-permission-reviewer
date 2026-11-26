@@ -87,7 +87,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@opencode/plugin": "2.2.5",
+    "@opencode/plugin": "2.4.1",
     "@opentui/core": "0.8.1",
     "@opentui/solid": "0.8.1",
     "@types/bun": "^1.4.4",
@@ -120,7 +120,7 @@
     "check": "bun run format:check && bun run lint && bun run build && bun run typecheck && bun run test"
   },
   "dependencies": {
-    "@opencode/client": "2.2.5",
+    "@opencode/client": "2.4.1",
     "jsonc-parser": "3.3.1",
     "semver": "7.8.6",
     "zod": "4.6.7"
