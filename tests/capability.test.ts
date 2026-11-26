@@ -432,6 +432,126 @@ describe("capability analyzer — classification matrix", () => {
   })
 })
 
+describe("capability analyzer — mutating read-only tool forms", () => {
+  test("sort -uo FILE reports the output file as an external write", () => {
+    const a = assess("sort -uo /etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort -nruoFILE reports the attached output file as an external write", () => {
+    const a = assess("sort -nruo/etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort --out=FILE reports the output file as an external write", () => {
+    const a = assess("sort --out=/etc/reviewer-output input.txt")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("sort --compress-program reports execution of the compressor", () => {
+    const a = assess("sort --compress-program gzip input.txt")
+    expect(a.executesCode.value).toBe(true)
+    expect(a.process.childProcesses.value).toBe(true)
+    expect(a.actionClass.value).toBe("code-execution")
+  })
+
+  test("uniq reports its second operand as an external write", () => {
+    const a = assess("uniq input.txt /etc/reviewer-output")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("xxd reports its second operand as an external write", () => {
+    const a = assess("xxd input.bin /etc/reviewer-output")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test.each(["-C", "-capitalize", "--capitalize"])(
+    "xxd %s does not consume the input before its output operand",
+    (option) => {
+      const a = assess(`xxd ${option} input.bin /etc/reviewer-output`)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.actionClass.value).toBe("external-write")
+    },
+  )
+
+  test.each([
+    "xxd -group 2 input.bin /etc/reviewer-output",
+    "xxd --group 2 input.bin /etc/reviewer-output",
+    "xxd -offset 0 input.bin /etc/reviewer-output",
+    "xxd --offset 0 input.bin /etc/reviewer-output",
+    "xxd -skip 0 input.bin /etc/reviewer-output",
+    "xxd --skip 0 input.bin /etc/reviewer-output",
+  ])("%s consumes its option value before the output operand", (command) => {
+    const a = assess(command)
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("tree -o FILE reports the output file as an external write", () => {
+    const a = assess("tree -o /etc/reviewer-output .")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test("tree -R reports generated HTML listings as workspace writes", () => {
+    const a = assess("tree -R .")
+    expect(a.writeEffects.workspaceWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("workspace-write")
+  })
+
+  test.each(["tree -L1 -R /etc", "tree -RL1 /etc", "tree -L1R /etc"])(
+    "%s preserves -R after an attached recursion level",
+    (command) => {
+      const a = assess(command)
+      expect(a.writeEffects.externalWrite.value).toBe(true)
+      expect(a.actionClass.value).toBe("external-write")
+    },
+  )
+
+  test("yq -iP reports in-place edits as external writes", () => {
+    const a = assess("yq -iP '.x' /etc/config.yaml")
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test.each([
+    "--inplace",
+    "--inplace=1",
+    "--inplace=t",
+    "--inplace=T",
+    "--inplace=TRUE",
+    "--inplace=true",
+    "--inplace=True",
+  ])("yq %s reports in-place edits as external writes", (option) => {
+    const a = assess(`yq ${option} '.x' /etc/config.yaml`)
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
+  test.each([
+    "sort input.txt",
+    "sort -o - input.txt",
+    "sort --output=- input.txt",
+    "uniq input.txt",
+    "yq '.x' /etc/config.yaml",
+    "yq --inplace=0 '.x' /etc/config.yaml",
+    "yq --inplace=f '.x' /etc/config.yaml",
+    "yq --inplace=F '.x' /etc/config.yaml",
+    "yq --inplace=FALSE '.x' /etc/config.yaml",
+    "yq --inplace=false '.x' /etc/config.yaml",
+    "yq --inplace=False '.x' /etc/config.yaml",
+  ])("%s remains read-only", (command) => {
+    const a = assess(command)
+    expect(a.actionClass.value).toBe("read-only")
+    for (const effect of Object.values(a.writeEffects)) expect(effect.value).not.toBe(true)
+  })
+})
+
 describe("capability analyzer — dynamic constructs + parser completeness", () => {
   test("variable expansion marks partial", () => {
     const a = assess("rm -rf $TARGET")
