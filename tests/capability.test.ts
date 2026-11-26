@@ -479,6 +479,19 @@ describe("capability analyzer — mutating read-only tool forms", () => {
     },
   )
 
+  test.each([
+    "xxd -group 2 input.bin /etc/reviewer-output",
+    "xxd --group 2 input.bin /etc/reviewer-output",
+    "xxd -offset 0 input.bin /etc/reviewer-output",
+    "xxd --offset 0 input.bin /etc/reviewer-output",
+    "xxd -skip 0 input.bin /etc/reviewer-output",
+    "xxd --skip 0 input.bin /etc/reviewer-output",
+  ])("%s consumes its option value before the output operand", (command) => {
+    const a = assess(command)
+    expect(a.writeEffects.externalWrite.value).toBe(true)
+    expect(a.actionClass.value).toBe("external-write")
+  })
+
   test("tree -o FILE reports the output file as an external write", () => {
     const a = assess("tree -o /etc/reviewer-output .")
     expect(a.writeEffects.externalWrite.value).toBe(true)
@@ -491,7 +504,7 @@ describe("capability analyzer — mutating read-only tool forms", () => {
     expect(a.actionClass.value).toBe("workspace-write")
   })
 
-  test.each(["tree -L1 -R /etc", "tree -RL1 /etc"])(
+  test.each(["tree -L1 -R /etc", "tree -RL1 /etc", "tree -L1R /etc"])(
     "%s preserves -R after an attached recursion level",
     (command) => {
       const a = assess(command)

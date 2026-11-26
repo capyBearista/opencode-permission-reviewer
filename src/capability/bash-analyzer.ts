@@ -646,9 +646,23 @@ const XXD_OPTIONS: OperandToolOptions = {
   // Only these spellings consume the next word; `-C`/`-capitalize` do not.
   valued(value) {
     const word = value.replace(/^--?/, "")
-    return ["c", "cols", "g", "groupsize", "l", "len", "n", "name", "o", "s", "seek", "R"].includes(
-      word,
-    )
+    return [
+      "c",
+      "cols",
+      "g",
+      "group",
+      "groupsize",
+      "l",
+      "len",
+      "n",
+      "name",
+      "o",
+      "offset",
+      "s",
+      "skip",
+      "seek",
+      "R",
+    ].includes(word)
   },
   permute: false,
 }
@@ -708,8 +722,14 @@ function treeMutation(cmd: ShellToken[]): ReadOnlyToolMutation | undefined {
     for (let at = 1; at < value.length; at += 1) {
       const letter = value[at]!
       if (letter === "R") recursiveOutput = true
+      if (letter === "L") {
+        const level = /^\d+/.exec(value.slice(at + 1))
+        if (level !== null) {
+          at += level[0].length
+          continue
+        }
+      }
       if ("LPIHTo".includes(letter)) {
-        if (letter === "L" && /^\d+$/.test(value.slice(at + 1))) break
         consumed += 1
         const argument = cmd[index + consumed]?.value
         if (letter === "o" && argument !== undefined) result.writeTargets.push(argument)

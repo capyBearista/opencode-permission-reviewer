@@ -164,8 +164,10 @@ describe("policy engine — condition matching", () => {
   test.each([
     "xxd -capitalize input.bin /etc/reviewer-output",
     "xxd --capitalize input.bin /etc/reviewer-output",
+    "xxd --offset 0 input.bin /etc/reviewer-output",
     "tree -L1 -R /etc",
     "tree -RL1 /etc",
+    "tree -L1R /etc",
   ])("%s triggers the external-write policy condition", (command) => {
     const rules: PolicyRule[] = [
       {
