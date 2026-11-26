@@ -81,8 +81,29 @@ describe("V2 Decisions response identity", () => {
       ),
     ).toBeDefined()
     expect(
+      parseSystemOneReview(
+        validResponse("perplexity/pplx-decider-v1.3:free"),
+        config,
+        decisionsIdentity,
+      ),
+    ).toBeDefined()
+    expect(
       parseSystemOneReview(validResponse("perplexity/other-model"), config, decisionsIdentity),
     ).toBeUndefined()
+    // Shared-prefix negatives: a naive startsWith match would accept these.
+    for (const returnedModel of [
+      "perplexity/pplx-decider-v1.3-sibling",
+      "perplexity/pplx-decider-v1.3-20260230",
+      "perplexity/pplx-decider-v1.3-20261301",
+      "perplexity/pplx-decider-v1.3-20261112-extra",
+      "perplexity/pplx-decider-v1.3evil",
+      "other/pplx-decider-v1.3",
+      "perplexity/pplx-decider-v1.3:free-extra",
+    ]) {
+      expect(
+        parseSystemOneReview(validResponse(returnedModel), config, decisionsIdentity),
+      ).toBeUndefined()
+    }
   })
 
   test("rejects vendor, sibling, version, arbitrary alias, and invalid-date identities", () => {
@@ -94,6 +115,11 @@ describe("V2 Decisions response identity", () => {
       ["openrouter/vendor/model-20260917", "vendor/model-20260917-20261013"],
       ["openrouter/acme/model:free", "acme/model"],
       ["openrouter/acme/model:free", "acme/model-20261013"],
+      ["openrouter/perplexity/other-model:free", "perplexity/other-model"],
+      ["openrouter/perplexity/other-model:free", "perplexity/other-model-20261112"],
+      ["openrouter/perplexity/pplx-decider-v1.3:other", "perplexity/pplx-decider-v1.3"],
+      ["openrouter/perplexity/pplx-decider-v1.3:other", "perplexity/pplx-decider-v1.3-20261112"],
+      ["openrouter/inception/other:free", "inception/other"],
       ["openrouter/vendor/model:other", "vendor/model:other-20261013"],
       ["opencode/jev-1.13-free", "jev-1.13-free-20260228"],
     ] as const
