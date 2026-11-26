@@ -61,6 +61,30 @@ describe("V2 Decisions response identity", () => {
     ).toBeDefined()
   })
 
+  test("accepts the observed pplx free-alias dated echo", () => {
+    const config = {
+      ...resolveConfig(undefined),
+      model: "openrouter/perplexity/pplx-decider-v1.3:free",
+    }
+    expect(
+      parseSystemOneReview(
+        validResponse("perplexity/pplx-decider-v1.3-20261112"),
+        config,
+        decisionsIdentity,
+      ),
+    ).toBeDefined()
+    expect(
+      parseSystemOneReview(
+        validResponse("perplexity/pplx-decider-v1.3"),
+        config,
+        decisionsIdentity,
+      ),
+    ).toBeDefined()
+    expect(
+      parseSystemOneReview(validResponse("perplexity/other-model"), config, decisionsIdentity),
+    ).toBeUndefined()
+  })
+
   test("rejects vendor, sibling, version, arbitrary alias, and invalid-date identities", () => {
     const cases = [
       ["openrouter/vendor/model", "other/model"],
