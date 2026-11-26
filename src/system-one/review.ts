@@ -207,7 +207,10 @@ function matchesOpenRouterIdentity(expected: string, returned: string): boolean 
   if (hasEightDigitDateSuffix(expected)) return false
   // Only unmapped base identifiers expand to an anchored calendar-valid
   // revision. A requested colon suffix (`:free`, `:other`, …) is exact-only
-  // unless it is the one explicitly observed Mercury alias handled below.
+  // unless it is one of the explicitly observed free aliases handled below:
+  // Mercury (echoes the bare base) and pplx decider (live API echo observed
+  // 2026-11-26: request `perplexity/pplx-decider-v1.3:free` answered with
+  // model `perplexity/pplx-decider-v1.3-20261112`).
   if (expected.includes(":")) return false
   const revision = returned.startsWith(`${expected}-`) ? returned.slice(expected.length + 1) : ""
   return revision.length === 8 && isCalendarDate(revision)
@@ -223,9 +226,15 @@ function matchesDecisionsIdentity(configuredModel: string, returnedModel: string
 
   if (matchesOpenRouterIdentity(nativeModel, returnedModel)) return true
   const mercuryFree = "inception/mercury-decide:free"
-  return (
+  if (
     nativeModel === mercuryFree &&
     matchesOpenRouterIdentity("inception/mercury-decide", returnedModel)
+  )
+    return true
+  const pplxFree = "perplexity/pplx-decider-v1.3:free"
+  return (
+    nativeModel === pplxFree &&
+    matchesOpenRouterIdentity("perplexity/pplx-decider-v1.3", returnedModel)
   )
 }
 
