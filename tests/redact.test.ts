@@ -239,6 +239,43 @@ describe("redactSecrets — credential formats", () => {
   })
 })
 
+describe("redactSecrets — session ID exemption", () => {
+  const id = "ses_" + "0a1b2c3d4e5f" + "AbCdEfGhIjKlMn"
+  const longId = id + "OpQrSt"
+  const nonHexId = "ses_" + "Z".repeat(12) + "AbCdEfGhIjKlMnOpQrSt"
+  const uppercaseTimestampId = "ses_" + "0A1B2C3D4E5F" + "AbCdEfGhIjKlMn"
+
+  test.each([
+    ["session assignment", `INTENT actor=user session=${id} message=msg_01`],
+    ["JSON sessionID assignment", `{"sessionID": "${longId}"}`],
+    ["snake-case session_id assignment", `session_id=${id}`],
+    ["sid assignment", `sid=${longId}`],
+    ["uppercase SESSION assignment", `SESSION=${id}`],
+  ])("keeps an exact OpenCode session ID in %s", (_label, input) => {
+    expect(redactSecrets(input)).toBe(input)
+  })
+
+  test.each([
+    ["a truncated 26-character ID", `session=${id.slice(0, -1)}`],
+    ["a truncated 32-character ID", `session=${longId.slice(0, -1)}`],
+    ["a 27-character padded ID", `session=${id}x`],
+    ["an ID with a padded prefix", `session=x${longId}`],
+    ["an ID embedded in a longer value", `session=prefix${id}/secretvalue`],
+    ["a 33-character ID", `session=${longId}x`],
+    ["a 32-character ID with a non-hex timestamp", `session=${nonHexId}`],
+    ["an ID with an uppercase timestamp", `session=${uppercaseTimestampId}`],
+  ])("redacts %s", (_label, input) => {
+    expect(redactSecrets(input)).toBe("session=[REDACTED:credential]")
+  })
+
+  test.each(["password", "token", "api_key"])(
+    "redacts an exact session ID under non-session key %s",
+    (key) => {
+      expect(redactSecrets(`${key}=${longId}`)).toBe(`${key}=[REDACTED:credential]`)
+    },
+  )
+})
+
 describe("redactSecrets — does not overreach", () => {
   test.each([
     "bun test",
